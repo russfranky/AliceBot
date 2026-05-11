@@ -3,9 +3,39 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import scripts.run_archive_maintenance as maintenance
+
+
+class _CursorStub:
+    def __init__(self, calls: list[tuple[str, tuple[object, ...]]]) -> None:
+        self._calls = calls
+
+    def __enter__(self) -> "_CursorStub":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        del exc_type
+        del exc
+        del traceback
+
+    def execute(self, query: str, params: tuple[object, ...]) -> None:
+        self._calls.append((query, params))
+
+
+class _ConnectionStub:
+    def __init__(self, calls: list[tuple[str, tuple[object, ...]]]) -> None:
+        self._calls = calls
+
+    def cursor(self) -> _CursorStub:
+        return _CursorStub(self._calls)
+
+
+class _UserStoreStub:
+    def __init__(self, calls: list[tuple[str, tuple[object, ...]]]) -> None:
+        self.conn = _ConnectionStub(calls)
 
 
 def _write_go_summary(path: Path) -> None:
@@ -133,6 +163,97 @@ def test_run_job_sanitizes_unhandled_exception_message() -> None:
 
     assert result.status == "fail"
     assert result.errors == ["unhandled_exception:RuntimeError"]
+
+
+def test_ensure_user_uses_idempotent_insert() -> None:
+    calls: list[tuple[str, tuple[object, ...]]] = []
+    user_id = UUID("00000000-0000-0000-0000-000000000001")
+
+    maintenance._ensure_user(  # type: ignore[attr-defined]
+        _UserStoreStub(calls),  # type: ignore[arg-type]
+        user_id=user_id,
+        email="maintenance-bot@example.invalid",
+        display_name="Maintenance Bot",
+    )
+
+    assert len(calls) == 1
+    query, params = calls[0]
+    assert "ON CONFLICT (id) DO NOTHING" in query
+    assert params == (user_id, "maintenance-bot@example.invalid", "Maintenance Bot")
+
+
+def test_main_commits_maintenance_user_before_stateful_jobs(monkeypatch, tmp_path: Path) -> None:
+    events: list[str] = []
+    user_id = UUID("00000000-0000-0000-0000-000000000001")
+
+    class _StatefulConnectionContext:
+        def __enter__(self) -> object:
+            events.append("stateful_connection_opened")
+            return object()
+
+        def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+            del exc_type
+            del exc
+            del traceback
+            events.append("stateful_connection_closed")
+
+    monkeypatch.setattr(
+        maintenance,
+        "_parse_args",
+        lambda: SimpleNamespace(
+            database_url="postgresql://example",
+            user_id=str(user_id),
+            schedule="weekly",
+            report_path=str(tmp_path / "maintenance_status_latest.json"),
+            history_dir=str(tmp_path / "history"),
+            archive_index_path=str(tmp_path / "missing" / "index.json"),
+            checksum_manifest_path=str(tmp_path / "archive_checksum_manifest.json"),
+            stale_markers_path=str(tmp_path / "stale_fact_markers_latest.json"),
+            benchmark_report_path=str(tmp_path / "phase9_eval_latest.json"),
+            include_benchmark=True,
+            user_email="maintenance-bot@example.invalid",
+            display_name="Maintenance Bot",
+        ),
+    )
+    monkeypatch.setattr(
+        maintenance,
+        "_ensure_user_committed",
+        lambda **kwargs: events.append("user_bootstrap_committed"),
+    )
+    monkeypatch.setattr(
+        maintenance,
+        "user_connection",
+        lambda *_args, **_kwargs: _StatefulConnectionContext(),
+    )
+    monkeypatch.setattr(maintenance, "ContinuityStore", lambda _conn: object())
+    monkeypatch.setattr(
+        maintenance,
+        "_verify_archive_checksums",
+        lambda **_kwargs: {"status": "skipped", "details": {}, "errors": []},
+    )
+    monkeypatch.setattr(
+        maintenance,
+        "_mark_stale_facts",
+        lambda **_kwargs: {"status": "pass", "details": {}},
+    )
+    monkeypatch.setattr(
+        maintenance,
+        "_reembed_missing_segments",
+        lambda **_kwargs: {"status": "pass", "details": {}},
+    )
+    monkeypatch.setattr(
+        maintenance,
+        "_recompute_pattern_candidates",
+        lambda **_kwargs: {"status": "pass", "details": {}},
+    )
+    monkeypatch.setattr(
+        maintenance,
+        "_regenerate_benchmarks",
+        lambda **_kwargs: {"status": "pass", "details": {"benchmark_status": "pass"}},
+    )
+
+    assert maintenance.main() == 0
+    assert events.index("user_bootstrap_committed") < events.index("stateful_connection_opened")
 
 
 class _StaleStoreStub:

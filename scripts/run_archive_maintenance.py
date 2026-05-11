@@ -70,6 +70,11 @@ DEFAULT_PHASE9_REPORT_PATH = REPO_ROOT / "eval" / "reports" / "phase9_eval_lates
 DEFAULT_USER_EMAIL = "maintenance-bot@example.invalid"
 DEFAULT_USER_DISPLAY_NAME = "Maintenance Bot"
 _MAX_SANITIZED_REPORT_MESSAGE_CHARS = 200
+ENSURE_MAINTENANCE_USER_SQL = """
+                INSERT INTO users (id, email, display_name)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (id) DO NOTHING
+                """
 
 JOB_STATUS = Literal["pass", "warn", "fail", "skipped"]
 
@@ -589,11 +594,24 @@ def _regenerate_benchmarks(
 
 def _ensure_user(store: ContinuityStore, *, user_id: UUID, email: str, display_name: str) -> None:
     with store.conn.cursor() as cur:
-        cur.execute("SELECT 1 FROM users WHERE id = %s", (user_id,))
-        exists = cur.fetchone() is not None
-    if exists:
-        return
-    store.create_user(user_id, email, display_name)
+        cur.execute(ENSURE_MAINTENANCE_USER_SQL, (user_id, email, display_name))
+
+
+def _ensure_user_committed(
+    *,
+    database_url: str,
+    user_id: UUID,
+    email: str,
+    display_name: str,
+) -> None:
+    with user_connection(database_url, user_id) as conn:
+        store = ContinuityStore(conn)
+        _ensure_user(
+            store,
+            user_id=user_id,
+            email=email,
+            display_name=display_name,
+        )
 
 
 def _serialize_job(job: MaintenanceJobResult) -> dict[str, object]:
@@ -759,6 +777,13 @@ def main() -> int:
     run_started = _iso8601_utc(_utc_now())
     jobs: list[MaintenanceJobResult] = []
 
+    _ensure_user_committed(
+        database_url=str(args.database_url),
+        user_id=user_id,
+        email=str(args.user_email),
+        display_name=str(args.display_name),
+    )
+
     jobs.append(
         _run_job(
             job_key="checksum_verification",
@@ -771,12 +796,6 @@ def main() -> int:
 
     with user_connection(str(args.database_url), user_id) as conn:
         store = ContinuityStore(conn)
-        _ensure_user(
-            store,
-            user_id=user_id,
-            email=str(args.user_email),
-            display_name=str(args.display_name),
-        )
 
         jobs.append(
             _run_job(
