@@ -1592,6 +1592,119 @@ code,
   gap: 14px;
 }
 
+.vnext-surface-nav {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(136px, 1fr));
+  gap: 10px;
+}
+
+.vnext-surface-nav__item {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.68);
+  color: var(--text-soft);
+  font-size: 0.86rem;
+  font-weight: 600;
+  line-height: 1.25;
+  text-align: center;
+  transition:
+    transform 140ms ease,
+    border-color 140ms ease,
+    background-color 140ms ease;
+}
+
+.vnext-surface-nav__item:hover,
+.vnext-surface-nav__item:focus-visible {
+  transform: translateY(-1px);
+  border-color: var(--border-strong);
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.vnext-review-layout {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.94fr) minmax(0, 1.22fr);
+  align-items: flex-start;
+  gap: 24px;
+}
+
+.vnext-review-button {
+  width: 100%;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.vnext-review-button .list-row__topline,
+.vnext-review-button .list-row__meta {
+  width: 100%;
+}
+
+.vnext-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.vnext-graph-grid {
+  display: grid;
+  gap: 18px;
+}
+
+.vnext-graph-canvas {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  min-height: 220px;
+  padding: 18px;
+  border-radius: 20px;
+  border: 1px solid rgba(42, 52, 66, 0.08);
+  background:
+    linear-gradient(135deg, rgba(39, 75, 99, 0.08), rgba(44, 110, 98, 0.06)),
+    rgba(255, 255, 255, 0.66);
+  align-content: center;
+}
+
+.vnext-graph-node {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 64px;
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(42, 52, 66, 0.1);
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--text);
+  font-size: 0.86rem;
+  font-weight: 600;
+  line-height: 1.35;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.vnext-graph-node--1,
+.vnext-graph-node--4 {
+  background: rgba(39, 75, 99, 0.1);
+  border-color: rgba(39, 75, 99, 0.16);
+}
+
+.vnext-graph-node--2,
+.vnext-graph-node--3 {
+  background: rgba(44, 110, 98, 0.1);
+  border-color: rgba(44, 110, 98, 0.16);
+}
+
+.vnext-graph-node--5 {
+  grid-column: 2 / 3;
+  background: rgba(142, 98, 32, 0.1);
+  border-color: rgba(142, 98, 32, 0.16);
+}
+
 .artifact-chunk__text {
   margin: 0;
   padding: 14px 16px;
@@ -1635,6 +1748,7 @@ code,
   .calendar-layout,
   .calendar-action-grid,
   .chat-workspace,
+  .vnext-review-layout,
   .metric-grid,
   .route-grid {
     grid-template-columns: 1fr;
@@ -1708,6 +1822,15 @@ code,
 
   .thread-review-grid {
     grid-template-columns: 1fr;
+  }
+
+  .vnext-graph-canvas {
+    grid-template-columns: 1fr;
+    min-height: auto;
+  }
+
+  .vnext-graph-node--5 {
+    grid-column: auto;
   }
 
   .form-field-group--two-up {

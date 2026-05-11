@@ -6,16 +6,16 @@ import { StatusBadge } from "../components/status-badge";
 
 const summaryCards = [
   {
-    value: "13",
+    value: "14",
     label: "Operator views",
     detail:
-      "Home, hosted onboarding/settings/admin, request composition, approvals, task inspection, artifact review, Gmail review, Calendar review, memory review, entity review, and explainability are all exposed in one bounded shell.",
+      "Home, vNext brain workspace, hosted onboarding/settings/admin, request composition, approvals, task inspection, artifact review, Gmail review, Calendar review, memory review, entity review, and explainability are all exposed in one bounded shell.",
   },
   {
-    value: "8",
+    value: "9",
     label: "Governance seams",
     detail:
-      "Requests, approvals, tasks, artifact review, Gmail account/ingestion seams, Calendar account/ingestion seams, memory review, and entity review stay visible instead of being hidden behind a consumer chat wrapper.",
+      "Requests, approvals, tasks, artifact review, Gmail account/ingestion seams, Calendar account/ingestion seams, memory review, vNext brain review, and entity review stay visible instead of being hidden behind a consumer chat wrapper.",
   },
   {
     value: "2",
@@ -30,6 +30,13 @@ const summaryCards = [
 ];
 
 const routeCards = [
+  {
+    href: "/vnext",
+    title: "vNext Brain Workspace",
+    description:
+      "Review memory candidates, ask Alice with provenance, read briefs, inspect generated artifacts, and keep projects, beliefs, loops, graph, and privacy labels visible.",
+    status: "preview",
+  },
   {
     href: "/onboarding",
     title: "Hosted Onboarding",

@@ -12,6 +12,11 @@ const navigation = [
     caption: "Shell landing and governed surface summary",
   },
   {
+    href: "/vnext",
+    label: "vNext Brain",
+    caption: "Second-brain dashboard, review, briefs, generated artifacts, and graph",
+  },
+  {
     href: "/onboarding",
     label: "Onboarding",
     caption: "Hosted identity and workspace bootstrap",
@@ -102,7 +107,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <p className="brand-description">
               Calm, governed views for hosted onboarding/settings plus requests, approvals, tasks,
               hosted admin operations, artifacts, Gmail, Calendar, memories, chief-of-staff
-              priorities, entities, and explainability.
+              priorities, vNext second-brain review, entities, and explainability.
             </p>
           </div>
 

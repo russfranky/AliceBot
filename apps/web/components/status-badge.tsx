@@ -10,7 +10,19 @@ function normalizeStatus(status: string) {
 function toneForStatus(status: string) {
   const normalized = normalizeStatus(status);
 
-  if (["approved", "executed", "completed", "active", "ready", "success", "ingested"].includes(normalized)) {
+  if (
+    [
+      "approved",
+      "executed",
+      "completed",
+      "active",
+      "ready",
+      "success",
+      "ingested",
+      "accepted",
+      "promoted",
+    ].includes(normalized)
+  ) {
     return "success";
   }
 
@@ -29,6 +41,7 @@ function toneForStatus(status: string) {
       "executing",
       "outdated",
       "insufficient_evidence",
+      "edited",
     ].includes(normalized)
   ) {
     return normalized === "blocked" ? "danger" : "warning";
