@@ -192,6 +192,222 @@ export type ToolRecord = {
 
 export type JsonObject = Record<string, unknown>;
 
+export type VNextRow = JsonObject & {
+  id: string;
+  status?: string;
+  title?: string | null;
+  domain?: string | null;
+  sensitivity?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type VNextSourceRecord = VNextRow & {
+  source_type: string;
+  captured_at: string;
+  metadata_json?: JsonObject;
+};
+
+export type VNextMemoryRecord = VNextRow & {
+  memory_key: string;
+  memory_type: string;
+  canonical_text: string;
+  summary?: string | null;
+  value?: JsonObject;
+  metadata_json?: JsonObject;
+};
+
+export type VNextArtifactRecord = VNextRow & {
+  artifact_type: string;
+  content_markdown: string;
+  generated_by: string;
+  metadata_json?: JsonObject;
+};
+
+export type VNextProjectRecord = VNextRow & {
+  name: string;
+  slug: string;
+  current_state?: string | null;
+  description?: string | null;
+  metadata_json?: JsonObject;
+};
+
+export type VNextOpenLoopRecord = VNextRow & {
+  title: string;
+  description?: string | null;
+  due_at?: string | null;
+  priority?: string | null;
+  memory_id?: string | null;
+  project_id?: string | null;
+  source_id?: string | null;
+  resolution_note?: string | null;
+  metadata_json?: JsonObject;
+};
+
+export type VNextPersonRecord = VNextRow & {
+  name: string;
+  relationship_type?: string | null;
+  organization?: string | null;
+  notes?: string | null;
+};
+
+export type VNextBeliefRecord = VNextRow & {
+  claim: string;
+  confidence?: number;
+  memory_id?: string;
+};
+
+export type VNextTaskRecord = VNextRow & {
+  title: string;
+  task_type: string;
+  instructions?: string;
+  write_policy?: string;
+};
+
+export type VNextEventRecord = VNextRow & {
+  event_type: string;
+  actor_type: string;
+  target_type?: string | null;
+  target_id?: string | null;
+  occurred_at: string;
+  payload_json?: JsonObject;
+};
+
+export type VNextBrainCharterRecord = VNextRow & {
+  content_markdown: string;
+  owner_json?: JsonObject;
+  memory_philosophy_json?: JsonObject;
+  life_domains_json?: JsonObject;
+  active_projects_json?: unknown[];
+  communication_style_json?: JsonObject;
+  priorities_json?: JsonObject;
+  autonomous_rules_json?: unknown[];
+  quality_standard_json?: unknown[];
+};
+
+export type VNextProjectDashboard = {
+  project: VNextProjectRecord;
+  state: string | null;
+  memories: VNextMemoryRecord[];
+  open_loops: VNextOpenLoopRecord[];
+  artifacts: VNextArtifactRecord[];
+  counts: {
+    memories: number;
+    open_loops: number;
+    artifacts: number;
+  };
+};
+
+export type VNextWorkspacePayload = {
+  mode: "live";
+  summary: {
+    source_count: number;
+    candidate_memory_count: number;
+    review_memory_count: number;
+    artifact_count: number;
+    open_loop_count: number;
+    project_count: number;
+    event_count: number;
+    memory_status_counts: Record<string, number>;
+    artifact_status_counts: Record<string, number>;
+    open_loop_status_counts: Record<string, number>;
+  };
+  sources: VNextSourceRecord[];
+  review_memories: VNextMemoryRecord[];
+  artifacts: VNextArtifactRecord[];
+  projects: VNextProjectRecord[];
+  project_dashboards: VNextProjectDashboard[];
+  open_loops: VNextOpenLoopRecord[];
+  people: VNextPersonRecord[];
+  beliefs: VNextBeliefRecord[];
+  tasks: VNextTaskRecord[];
+  recent_events: VNextEventRecord[];
+  brain_charter: VNextBrainCharterRecord | null;
+};
+
+export type VNextSourceCreatePayload = {
+  user_id: string;
+  raw_text: string;
+  title?: string | null;
+  domain: string;
+  sensitivity: string;
+};
+
+export type VNextMemoryReviewPayload = {
+  user_id: string;
+  action: "accept" | "edit" | "reject" | "private" | "assign_project" | "promote";
+  title?: string;
+  canonical_text?: string;
+  summary?: string;
+  domain?: string;
+  sensitivity?: string;
+  project_id?: string;
+  reason?: string;
+};
+
+export type VNextProjectCreatePayload = {
+  user_id: string;
+  name: string;
+  slug?: string;
+  description?: string;
+  current_state?: string;
+  domain: string;
+  sensitivity: string;
+};
+
+export type VNextOpenLoopCreatePayload = {
+  user_id: string;
+  title: string;
+  description?: string;
+  due_at?: string;
+  priority?: string;
+  memory_id?: string;
+  project_id?: string;
+  source_id?: string;
+  domain: string;
+  sensitivity: string;
+};
+
+export type VNextOpenLoopReviewPayload = {
+  user_id: string;
+  action: "close" | "snooze" | "edit" | "reopen";
+  title?: string;
+  description?: string;
+  due_at?: string;
+  priority?: string;
+  resolution_note?: string;
+};
+
+export type VNextBrainCharterUpsertPayload = {
+  user_id: string;
+  content_markdown: string;
+  owner_json?: JsonObject;
+  memory_philosophy_json?: JsonObject;
+  life_domains_json?: JsonObject;
+  active_projects_json?: unknown[];
+  communication_style_json?: JsonObject;
+  priorities_json?: JsonObject;
+  autonomous_rules_json?: unknown[];
+  quality_standard_json?: unknown[];
+  sensitivity: string;
+};
+
+export type VNextContextPack = JsonObject & {
+  context_pack_id: string;
+  query_interpretation: JsonObject;
+  current_known_state: VNextMemoryRecord[];
+  relevant_memories: VNextMemoryRecord[];
+  relevant_beliefs: VNextMemoryRecord[];
+  decisions: VNextMemoryRecord[];
+  open_loops: VNextOpenLoopRecord[];
+  supporting_evidence: JsonObject[];
+  contradicting_evidence: JsonObject[];
+  sources: VNextSourceRecord[];
+  warnings: string[];
+  trace_id: string;
+  trace: JsonObject;
+};
+
 export type GovernedRequestRecord = {
   thread_id: string;
   tool_id: string;
@@ -3602,6 +3818,153 @@ export function submitMemoryLabel(
     `/v0/memories/${memoryId}/labels`,
     {
       method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export function getVNextWorkspace(apiBaseUrl: string, userId: string) {
+  return requestJson<VNextWorkspacePayload>(
+    apiBaseUrl,
+    "/v0/vnext/workspace",
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function createVNextSource(apiBaseUrl: string, payload: VNextSourceCreatePayload) {
+  return requestJson<{
+    status: string;
+    source_id: string | null;
+    content_hash: string;
+    chunk_count: number;
+    candidate_memory_count: number;
+    duplicate: boolean;
+    errors: string[];
+  }>(apiBaseUrl, "/v0/vnext/sources", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function createVNextContextPack(
+  apiBaseUrl: string,
+  payload: {
+    user_id: string;
+    query: string;
+    scope?: JsonObject;
+    options?: JsonObject;
+  },
+) {
+  return requestJson<VNextContextPack>(apiBaseUrl, "/v0/vnext/context-packs", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function generateVNextDailyBrief(
+  apiBaseUrl: string,
+  payload: { user_id: string; scope?: JsonObject; options?: JsonObject },
+) {
+  return requestJson<VNextArtifactRecord>(apiBaseUrl, "/v0/vnext/artifacts/generate/daily-brief", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function generateVNextWeeklySynthesis(
+  apiBaseUrl: string,
+  payload: { user_id: string; scope?: JsonObject; options?: JsonObject },
+) {
+  return requestJson<VNextArtifactRecord>(
+    apiBaseUrl,
+    "/v0/vnext/artifacts/generate/weekly-synthesis",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export function reviewVNextArtifact(
+  apiBaseUrl: string,
+  artifactId: string,
+  payload: { user_id: string; action: "review" | "accept" | "reject" | "promote" | "archive" },
+) {
+  return requestJson<VNextArtifactRecord>(apiBaseUrl, `/v0/vnext/artifacts/${artifactId}/review`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function reviewVNextMemory(
+  apiBaseUrl: string,
+  memoryId: string,
+  payload: VNextMemoryReviewPayload,
+) {
+  return requestJson<{ memory: VNextMemoryRecord }>(
+    apiBaseUrl,
+    `/v0/vnext/memories/${memoryId}/review`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export function createVNextProject(apiBaseUrl: string, payload: VNextProjectCreatePayload) {
+  return requestJson<{ project: VNextProjectRecord }>(apiBaseUrl, "/v0/vnext/projects", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function generateVNextProjectUpdate(
+  apiBaseUrl: string,
+  payload: { user_id: string; scope?: JsonObject; options?: JsonObject },
+) {
+  return requestJson<VNextArtifactRecord>(apiBaseUrl, "/v0/vnext/projects/update-candidates", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function createVNextOpenLoop(apiBaseUrl: string, payload: VNextOpenLoopCreatePayload) {
+  return requestJson<{ open_loop: VNextOpenLoopRecord }>(apiBaseUrl, "/v0/vnext/open-loops", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function reviewVNextOpenLoop(
+  apiBaseUrl: string,
+  loopId: string,
+  payload: VNextOpenLoopReviewPayload,
+) {
+  return requestJson<VNextOpenLoopRecord>(apiBaseUrl, `/v0/vnext/open-loops/${loopId}/review`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getVNextBrainCharter(apiBaseUrl: string, userId: string) {
+  return requestJson<{ brain_charter: VNextBrainCharterRecord | null }>(
+    apiBaseUrl,
+    "/v0/vnext/settings/brain-charter",
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function upsertVNextBrainCharter(
+  apiBaseUrl: string,
+  payload: VNextBrainCharterUpsertPayload,
+) {
+  return requestJson<{ brain_charter: VNextBrainCharterRecord }>(
+    apiBaseUrl,
+    "/v0/vnext/settings/brain-charter",
+    {
+      method: "PUT",
       body: JSON.stringify(payload),
     },
   );

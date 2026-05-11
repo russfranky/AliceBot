@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from datetime import datetime
+from datetime import UTC, datetime
 import hmac
 import hashlib
 import ipaddress
 import json
 import logging
+import re
 import threading
 import time
 from typing import Annotated, Awaitable, Callable, Literal, TypedDict
@@ -1220,6 +1221,17 @@ class VNextProjectAutomationRequest(BaseModel):
     options: dict[str, object] = Field(default_factory=dict)
 
 
+class VNextProjectCreateRequest(BaseModel):
+    user_id: UUID
+    name: str = Field(min_length=1, max_length=280)
+    slug: str | None = Field(default=None, min_length=1, max_length=280)
+    status: str = Field(default="active", min_length=1, max_length=40)
+    description: str | None = Field(default=None, min_length=1, max_length=4000)
+    current_state: str | None = Field(default=None, min_length=1, max_length=4000)
+    domain: str = Field(default="project", min_length=1, max_length=80)
+    sensitivity: str = Field(default="private", min_length=1, max_length=80)
+
+
 class VNextProjectUpdateReviewRequest(BaseModel):
     user_id: UUID
     action: str = Field(min_length=1, max_length=40)
@@ -1234,6 +1246,31 @@ class VNextOpenLoopReviewRequest(BaseModel):
     due_at: str | None = Field(default=None, min_length=1, max_length=120)
     priority: str | None = Field(default=None, min_length=1, max_length=80)
     resolution_note: str | None = Field(default=None, min_length=1, max_length=4000)
+
+
+class VNextOpenLoopCreateRequest(BaseModel):
+    user_id: UUID
+    title: str = Field(min_length=1, max_length=280)
+    description: str | None = Field(default=None, min_length=1, max_length=4000)
+    due_at: str | None = Field(default=None, min_length=1, max_length=120)
+    priority: str = Field(default="normal", min_length=1, max_length=80)
+    memory_id: str | None = Field(default=None, min_length=1, max_length=120)
+    project_id: str | None = Field(default=None, min_length=1, max_length=120)
+    source_id: str | None = Field(default=None, min_length=1, max_length=120)
+    domain: str = Field(default="unknown", min_length=1, max_length=80)
+    sensitivity: str = Field(default="unknown", min_length=1, max_length=80)
+
+
+class VNextMemoryReviewRequest(BaseModel):
+    user_id: UUID
+    action: str = Field(min_length=1, max_length=40)
+    title: str | None = Field(default=None, min_length=1, max_length=280)
+    canonical_text: str | None = Field(default=None, min_length=1, max_length=4000)
+    summary: str | None = Field(default=None, min_length=1, max_length=4000)
+    domain: str | None = Field(default=None, min_length=1, max_length=80)
+    sensitivity: str | None = Field(default=None, min_length=1, max_length=80)
+    project_id: str | None = Field(default=None, min_length=1, max_length=120)
+    reason: str | None = Field(default=None, min_length=1, max_length=4000)
 
 
 class VNextQueueTaskCreateRequest(BaseModel):
@@ -1274,6 +1311,20 @@ class VNextArtifactExportRequest(BaseModel):
     output_dir: str = Field(min_length=1, max_length=1000)
 
 
+class VNextBrainCharterUpsertRequest(BaseModel):
+    user_id: UUID
+    content_markdown: str = Field(min_length=1, max_length=200_000)
+    owner_json: dict[str, object] = Field(default_factory=dict)
+    memory_philosophy_json: dict[str, object] = Field(default_factory=dict)
+    life_domains_json: dict[str, object] = Field(default_factory=dict)
+    active_projects_json: list[object] = Field(default_factory=list)
+    communication_style_json: dict[str, object] = Field(default_factory=dict)
+    priorities_json: dict[str, object] = Field(default_factory=dict)
+    autonomous_rules_json: list[object] = Field(default_factory=list)
+    quality_standard_json: list[object] = Field(default_factory=list)
+    sensitivity: str = Field(default="private", min_length=1, max_length=80)
+
+
 def _vnext_public_error_response(*, status_code: int, detail: str) -> JSONResponse:
     return JSONResponse(status_code=status_code, content={"detail": detail})
 
@@ -1312,6 +1363,69 @@ def _vnext_float(mapping: dict[str, object], key: str) -> float | None:
     if isinstance(value, (int, float)):
         return float(value)
     return None
+
+
+def _vnext_slug(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", value.casefold()).strip("-") or "project"
+
+
+def _vnext_status_counts(rows: list[dict[str, object]], *, field: str = "status") -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        status = str(row.get(field, "unknown"))
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
+def _vnext_workspace_payload(store: PostgresVNextStore) -> dict[str, object]:
+    sensitivity_allowed = ["public", "internal", "private", "unknown"]
+    sources = store.list_sources(sensitivity_allowed=sensitivity_allowed, limit=20)
+    memories = store.list_memories(status=None)
+    review_memories = [
+        memory
+        for memory in memories
+        if str(memory.get("status")) in {"candidate", "needs_review", "private_only", "accepted", "rejected"}
+    ][:30]
+    artifacts = store.list_artifacts(sensitivity_allowed=sensitivity_allowed, limit=30)
+    projects = store.list_projects(status=None, sensitivity_allowed=sensitivity_allowed, limit=20)
+    open_loops = store.list_open_loops(status=None, sensitivity_allowed=sensitivity_allowed, limit=30)
+    people = store.list_people(sensitivity_allowed=sensitivity_allowed, limit=12)
+    beliefs = store.list_beliefs(status=None, sensitivity_allowed=sensitivity_allowed, limit=12)
+    tasks = store.list_tasks(status=None, limit=12)
+    recent_events = store.list_events(limit=20)
+    project_service = VNextProjectService(store)
+    project_dashboards: list[dict[str, object]] = []
+    for project in projects[:5]:
+        try:
+            project_dashboards.append(project_service.project_dashboard(project_id=str(project["id"])))
+        except VNextProjectValidationError:
+            continue
+    return {
+        "mode": "live",
+        "summary": {
+            "source_count": len(sources),
+            "candidate_memory_count": len([memory for memory in memories if memory.get("status") == "candidate"]),
+            "review_memory_count": len(review_memories),
+            "artifact_count": len(artifacts),
+            "open_loop_count": len([loop for loop in open_loops if loop.get("status") == "open"]),
+            "project_count": len(projects),
+            "event_count": len(recent_events),
+            "memory_status_counts": _vnext_status_counts(memories),
+            "artifact_status_counts": _vnext_status_counts(artifacts),
+            "open_loop_status_counts": _vnext_status_counts(open_loops),
+        },
+        "sources": sources,
+        "review_memories": review_memories,
+        "artifacts": artifacts,
+        "projects": projects,
+        "project_dashboards": project_dashboards,
+        "open_loops": open_loops,
+        "people": people,
+        "beliefs": beliefs,
+        "tasks": tasks,
+        "recent_events": recent_events,
+        "brain_charter": store.get_brain_charter(),
+    }
 
 
 def _vnext_brain_artifact_request(request: VNextBrainArtifactGenerateRequest) -> BrainArtifactRequest:
@@ -5569,6 +5683,16 @@ def create_continuity_capture(request: ContinuityCaptureRequest) -> JSONResponse
     )
 
 
+@app.get("/v0/vnext/workspace")
+def get_vnext_workspace(user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = _vnext_workspace_payload(PostgresVNextStore(conn))
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
 @app.post("/v0/vnext/sources")
 def create_vnext_source(request: VNextSourceCaptureRequest) -> JSONResponse:
     settings = get_settings()
@@ -5587,6 +5711,42 @@ def create_vnext_source(request: VNextSourceCaptureRequest) -> JSONResponse:
     return JSONResponse(
         status_code=201,
         content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/vnext/projects")
+def create_vnext_project(request: VNextProjectCreateRequest) -> JSONResponse:
+    settings = get_settings()
+    slug = request.slug or _vnext_slug(request.name)
+
+    with user_connection(settings.database_url, request.user_id) as conn:
+        payload = PostgresVNextStore(conn).create_project(
+            {
+                "name": request.name.strip(),
+                "slug": slug,
+                "status": request.status,
+                "description": request.description,
+                "current_state": request.current_state,
+                "domain": request.domain,
+                "sensitivity": request.sensitivity,
+                "metadata_json": {"created_from": "vnext_workspace"},
+            },
+            actor_type="user",
+        )
+
+    return JSONResponse(status_code=201, content=jsonable_encoder({"project": payload}))
+
+
+@app.get("/v0/vnext/projects")
+def list_vnext_projects(user_id: UUID, status: str | None = "active", limit: int = 20) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = PostgresVNextStore(conn).list_projects(status=status, limit=limit)
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder({"items": payload, "count": len(payload), "order": ["updated_at_desc", "id_desc"]}),
     )
 
 
@@ -5687,6 +5847,100 @@ def create_vnext_context_pack(request: VNextContextPackRequest) -> JSONResponse:
         status_code=201,
         content=jsonable_encoder(payload),
     )
+
+
+@app.post("/v0/vnext/memories/{memory_id}/review")
+def review_vnext_memory(memory_id: UUID, request: VNextMemoryReviewRequest) -> JSONResponse:
+    settings = get_settings()
+    action = request.action.strip().casefold()
+    if action not in {"accept", "edit", "reject", "private", "assign_project", "promote"}:
+        return _vnext_public_error_response(status_code=400, detail="vNext memory review action is invalid")
+
+    with user_connection(settings.database_url, request.user_id) as conn:
+        store = PostgresVNextStore(conn)
+        existing = store.get_memory(str(memory_id))
+        if existing is None:
+            return _vnext_public_error_response(status_code=404, detail="vNext memory was not found")
+
+        existing_metadata = existing.get("metadata_json") if isinstance(existing.get("metadata_json"), dict) else {}
+        patch: dict[str, object] = {
+            "last_reviewed_at": datetime.now(UTC).isoformat(),
+        }
+        revision_type = "edited"
+        if action == "accept":
+            patch["status"] = "active"
+            revision_type = "promoted"
+        elif action == "reject":
+            patch["status"] = "rejected"
+            revision_type = "rejected"
+        elif action == "private":
+            patch["status"] = "private_only"
+            patch["sensitivity"] = "private"
+        elif action == "promote":
+            patch["status"] = "active"
+            patch["confirmation_status"] = "confirmed"
+            revision_type = "promoted"
+        elif action == "assign_project":
+            if request.project_id is None:
+                return _vnext_public_error_response(status_code=400, detail="project_id is required")
+            patch["metadata_json"] = {
+                **existing_metadata,
+                "project_id": request.project_id,
+                "assigned_from": "vnext_workspace",
+            }
+        else:
+            patch["status"] = "active"
+
+        if request.title is not None:
+            patch["title"] = request.title
+        if request.canonical_text is not None:
+            patch["canonical_text"] = request.canonical_text
+            patch["value"] = {
+                **(existing.get("value") if isinstance(existing.get("value"), dict) else {}),
+                "text": request.canonical_text,
+            }
+        if request.summary is not None:
+            patch["summary"] = request.summary
+        if request.domain is not None:
+            patch["domain"] = request.domain
+        if request.sensitivity is not None:
+            patch["sensitivity"] = request.sensitivity
+
+        updated = store.update_memory(memory_id=str(memory_id), patch=patch, actor_type="user")
+        if action == "assign_project" and request.project_id is not None:
+            store.create_edge(
+                {
+                    "from_type": "memory",
+                    "from_id": str(memory_id),
+                    "to_type": "project",
+                    "to_id": request.project_id,
+                    "edge_type": "belongs_to_project",
+                    "confidence": 1.0,
+                    "explanation": "Assigned from live /vnext memory review.",
+                    "created_by": "user",
+                    "metadata_json": {"review_action": action},
+                },
+                actor_type="user",
+            )
+        store.append_revision(
+            {
+                "memory_id": str(memory_id),
+                "memory_key": str(updated["memory_key"]),
+                "previous_value": existing.get("value"),
+                "new_value": updated.get("value"),
+                "source_event_ids": updated.get("source_event_ids"),
+                "revision_type": revision_type,
+                "action": f"memory_review_{action}",
+                "text_before": existing.get("canonical_text"),
+                "text_after": str(updated.get("canonical_text", "")),
+                "reason": request.reason or f"vNext workspace memory review action: {action}",
+                "actor_type": "user",
+                "metadata_json": {"action": action, "project_id": request.project_id},
+            },
+            actor_type="user",
+        )
+
+    return JSONResponse(status_code=200, content=jsonable_encoder({"memory": updated}))
 
 
 @app.post("/v0/vnext/artifacts/generate/daily-brief")
@@ -5799,6 +6053,19 @@ def process_next_vnext_queue_task(request: VNextQueueProcessNextRequest) -> JSON
     return JSONResponse(
         status_code=200,
         content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/vnext/artifacts")
+def list_vnext_artifacts(user_id: UUID, artifact_type: str | None = None, limit: int = 30) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = PostgresVNextStore(conn).list_artifacts(artifact_type=artifact_type, limit=limit)
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder({"items": payload, "count": len(payload), "order": ["created_at_desc", "id_desc"]}),
     )
 
 
@@ -5972,6 +6239,64 @@ def get_vnext_project_dashboard(project_id: str, user_id: UUID) -> JSONResponse:
         return _vnext_public_error_response(status_code=404, detail="vNext project was not found")
 
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.post("/v0/vnext/open-loops")
+def create_vnext_open_loop(request: VNextOpenLoopCreateRequest) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, request.user_id) as conn:
+        payload = PostgresVNextStore(conn).create_open_loop(
+            {
+                "title": request.title.strip(),
+                "description": request.description,
+                "due_at": request.due_at,
+                "priority": request.priority,
+                "memory_id": request.memory_id,
+                "project_id": request.project_id,
+                "source_id": request.source_id,
+                "domain": request.domain,
+                "sensitivity": request.sensitivity,
+                "metadata_json": {"created_from": "vnext_workspace"},
+            },
+            actor_type="user",
+        )
+
+    return JSONResponse(status_code=201, content=jsonable_encoder({"open_loop": payload}))
+
+
+@app.get("/v0/vnext/settings/brain-charter")
+def get_vnext_brain_charter(user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = PostgresVNextStore(conn).get_brain_charter()
+
+    return JSONResponse(status_code=200, content=jsonable_encoder({"brain_charter": payload}))
+
+
+@app.put("/v0/vnext/settings/brain-charter")
+def upsert_vnext_brain_charter(request: VNextBrainCharterUpsertRequest) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, request.user_id) as conn:
+        payload = PostgresVNextStore(conn).upsert_brain_charter(
+            {
+                "content_markdown": request.content_markdown,
+                "owner_json": request.owner_json,
+                "memory_philosophy_json": request.memory_philosophy_json,
+                "life_domains_json": request.life_domains_json,
+                "active_projects_json": request.active_projects_json,
+                "communication_style_json": request.communication_style_json,
+                "priorities_json": request.priorities_json,
+                "autonomous_rules_json": request.autonomous_rules_json,
+                "quality_standard_json": request.quality_standard_json,
+                "sensitivity": request.sensitivity,
+            },
+            actor_type="user",
+        )
+
+    return JSONResponse(status_code=200, content=jsonable_encoder({"brain_charter": payload}))
 
 
 @app.post("/v0/vnext/open-loops/extract")

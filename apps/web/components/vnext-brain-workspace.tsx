@@ -1,7 +1,39 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
+import type {
+  ApiSource,
+  JsonObject,
+  VNextArtifactRecord,
+  VNextBeliefRecord,
+  VNextBrainCharterRecord,
+  VNextContextPack,
+  VNextEventRecord,
+  VNextMemoryRecord,
+  VNextOpenLoopRecord,
+  VNextPersonRecord,
+  VNextProjectDashboard,
+  VNextProjectRecord,
+  VNextSourceRecord,
+  VNextTaskRecord,
+  VNextWorkspacePayload,
+} from "../lib/api";
+import {
+  createVNextContextPack,
+  createVNextOpenLoop,
+  createVNextProject,
+  createVNextSource,
+  generateVNextDailyBrief,
+  generateVNextProjectUpdate,
+  generateVNextWeeklySynthesis,
+  getVNextWorkspace,
+  reviewVNextArtifact,
+  reviewVNextMemory,
+  reviewVNextOpenLoop,
+  upsertVNextBrainCharter,
+} from "../lib/api";
+import { EmptyState } from "./empty-state";
 import { SectionCard } from "./section-card";
 import { StatusBadge } from "./status-badge";
 
@@ -44,43 +76,6 @@ export const VNEXT_SUPPORTED_CONNECTOR_IDS = [
 
 type Domain = (typeof VNEXT_DOMAIN_OPTIONS)[number]["value"];
 type Sensitivity = (typeof VNEXT_SENSITIVITY_OPTIONS)[number]["value"];
-type ReviewStatus = "requires_review" | "accepted" | "edited" | "rejected" | "promoted";
-
-type ReviewItem = {
-  id: string;
-  title: string;
-  kind: string;
-  status: ReviewStatus;
-  note: string;
-  domain: Domain;
-  sensitivity: Sensitivity;
-  project: string;
-  updatedAt: string;
-  sourceIds: string[];
-  provenance: string;
-};
-
-type OpenLoopItem = {
-  id: string;
-  title: string;
-  status: string;
-  due: string;
-  domain: Domain;
-  sensitivity: Sensitivity;
-  sourceIds: string[];
-};
-
-type GeneratedArtifact = {
-  id: string;
-  title: string;
-  type: string;
-  status: string;
-  summary: string;
-  domain: Domain;
-  sensitivity: Sensitivity;
-  sources: string[];
-  provenance: string;
-};
 
 type AskAnswer = {
   question: string;
@@ -105,20 +100,28 @@ type ConnectorSetting = {
   failureMode: string;
 };
 
-function optionLabel<T extends string>(
-  options: readonly { value: T; label: string }[],
-  value: T,
-) {
-  return options.find((option) => option.value === value)?.label ?? value;
-}
+type WorkspaceSummary = VNextWorkspacePayload["summary"];
 
-function domainLabel(domain: Domain) {
-  return optionLabel(VNEXT_DOMAIN_OPTIONS, domain);
-}
+type WorkspaceView = {
+  summary: WorkspaceSummary;
+  sources: VNextSourceRecord[];
+  reviewItems: VNextMemoryRecord[];
+  artifacts: VNextArtifactRecord[];
+  projects: VNextProjectRecord[];
+  projectDashboards: VNextProjectDashboard[];
+  openLoops: VNextOpenLoopRecord[];
+  people: VNextPersonRecord[];
+  beliefs: VNextBeliefRecord[];
+  tasks: VNextTaskRecord[];
+  recentEvents: VNextEventRecord[];
+  brainCharter: VNextBrainCharterRecord | null;
+};
 
-function sensitivityLabel(sensitivity: Sensitivity) {
-  return optionLabel(VNEXT_SENSITIVITY_OPTIONS, sensitivity);
-}
+type VNextBrainWorkspaceProps = {
+  apiBaseUrl?: string;
+  userId?: string;
+  initialSource?: ApiSource;
+};
 
 const SURFACES = [
   "Home",
@@ -139,117 +142,273 @@ const SURFACES = [
   "Settings",
 ];
 
-const DEFAULT_REVIEW_ITEM: ReviewItem = {
-  id: "review-1",
-  title: "Launch checklist owner should be confirmed before the product review.",
-  kind: "memory_candidate",
-  status: "requires_review",
-  note: "Promoted from a project meeting capture where the owner was implied but not explicitly confirmed.",
-  domain: "project",
-  sensitivity: "private",
-  project: "Product launch",
-  updatedAt: "2026-05-10T08:30:00Z",
-  sourceIds: ["capture.launch-review.042", "artifact.product-review-notes"],
-  provenance: "Captured from meeting notes and ranked by recency plus project match.",
-};
+function optionLabel<T extends string>(
+  options: readonly { value: T; label: string }[],
+  value: T,
+) {
+  return options.find((option) => option.value === value)?.label ?? value;
+}
 
-const INITIAL_REVIEW_ITEMS: ReviewItem[] = [
-  DEFAULT_REVIEW_ITEM,
+function asDomain(value: unknown): Domain {
+  return VNEXT_DOMAIN_OPTIONS.some((option) => option.value === value)
+    ? (value as Domain)
+    : "unknown";
+}
+
+function asSensitivity(value: unknown): Sensitivity {
+  return VNEXT_SENSITIVITY_OPTIONS.some((option) => option.value === value)
+    ? (value as Sensitivity)
+    : "unknown";
+}
+
+function domainLabel(domain: Domain) {
+  return optionLabel(VNEXT_DOMAIN_OPTIONS, domain);
+}
+
+function sensitivityLabel(sensitivity: Sensitivity) {
+  return optionLabel(VNEXT_SENSITIVITY_OPTIONS, sensitivity);
+}
+
+function asRecord(value: unknown): JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as JsonObject)
+    : {};
+}
+
+function textValue(value: unknown) {
+  return typeof value === "string" ? value : "";
+}
+
+function summarizeSources(sources: string[]) {
+  return sources.length ? sources.join(", ") : "No source references";
+}
+
+function memoryText(memory: VNextMemoryRecord) {
+  return memory.canonical_text || textValue(memory.summary) || textValue(memory.title) || memory.memory_key;
+}
+
+function sourceText(source: VNextSourceRecord) {
+  const metadata = asRecord(source.metadata_json);
+  return textValue(metadata.raw_text) || textValue(source.title) || source.source_type;
+}
+
+function artifactExcerpt(artifact: VNextArtifactRecord) {
+  return artifact.content_markdown.replace(/\s+/g, " ").trim().slice(0, 320) || "No artifact body yet.";
+}
+
+function eventTitle(event: VNextEventRecord) {
+  const target = event.target_type && event.target_id ? ` ${event.target_type}:${event.target_id}` : "";
+  return `${event.event_type}${target}`;
+}
+
+function createSummary(view: Omit<WorkspaceView, "summary">): WorkspaceSummary {
+  const memoryStatusCounts = Object.fromEntries(
+    Array.from(new Set(view.reviewItems.map((item) => item.status ?? "unknown"))).map((status) => [
+      status,
+      view.reviewItems.filter((item) => (item.status ?? "unknown") === status).length,
+    ]),
+  );
+  const artifactStatusCounts = Object.fromEntries(
+    Array.from(new Set(view.artifacts.map((item) => item.status ?? "unknown"))).map((status) => [
+      status,
+      view.artifacts.filter((item) => (item.status ?? "unknown") === status).length,
+    ]),
+  );
+  const openLoopStatusCounts = Object.fromEntries(
+    Array.from(new Set(view.openLoops.map((item) => item.status ?? "unknown"))).map((status) => [
+      status,
+      view.openLoops.filter((item) => (item.status ?? "unknown") === status).length,
+    ]),
+  );
+
+  return {
+    source_count: view.sources.length,
+    candidate_memory_count: view.reviewItems.filter((item) => item.status === "candidate").length,
+    review_memory_count: view.reviewItems.length,
+    artifact_count: view.artifacts.length,
+    open_loop_count: view.openLoops.filter((item) => item.status === "open").length,
+    project_count: view.projects.length,
+    event_count: view.recentEvents.length,
+    memory_status_counts: memoryStatusCounts,
+    artifact_status_counts: artifactStatusCounts,
+    open_loop_status_counts: openLoopStatusCounts,
+  };
+}
+
+const FIXTURE_SOURCES: VNextSourceRecord[] = [
   {
-    id: "review-2",
-    title: "Health lab PDF needs a manual sensitivity check before retrieval.",
-    kind: "artifact_memory",
-    status: "requires_review",
-    note: "File parser extracted a personal health signal, but the document sensitivity is not operator-confirmed.",
-    domain: "health",
-    sensitivity: "highly_sensitive",
-    project: "Personal admin",
-    updatedAt: "2026-05-10T07:45:00Z",
-    sourceIds: ["artifact.lab-panel.pdf", "capture.health-admin.011"],
-    provenance: "Artifact ingestion candidate held for review because the label is sensitive.",
+    id: "source-fixture-1",
+    source_type: "manual_text",
+    title: "Launch review note",
+    captured_at: "2026-05-10T08:30:00Z",
+    domain: "project",
+    sensitivity: "private",
+    metadata_json: {
+      raw_text:
+        "Decision: Keep the launch cohort small.\nTodo: Confirm launch checklist owner before product review.",
+    },
   },
   {
-    id: "review-3",
-    title: "Vendor legal review is still waiting for Priya.",
-    kind: "open_loop_candidate",
-    status: "requires_review",
-    note: "Waiting-for signal appeared in weekly synthesis and should remain visible until closed.",
+    id: "source-fixture-2",
+    source_type: "manual_text",
+    title: "Vendor legal note",
+    captured_at: "2026-05-09T16:20:00Z",
     domain: "legal",
     sensitivity: "internal",
-    project: "Vendor onboarding",
-    updatedAt: "2026-05-09T16:20:00Z",
-    sourceIds: ["brief.weekly.2026-W19", "person.priya"],
-    provenance: "Derived from unresolved waiting-for items and person graph edges.",
+    metadata_json: { raw_text: "Waiting on: Priya for vendor legal review ETA." },
   },
 ];
 
-const INITIAL_OPEN_LOOPS: OpenLoopItem[] = [
+const FIXTURE_REVIEW_ITEMS: VNextMemoryRecord[] = [
   {
-    id: "loop-1",
+    id: "memory-fixture-1",
+    memory_key: "vnext.capture.decision.launch-owner",
+    memory_type: "decision",
+    status: "candidate",
+    title: "Launch checklist owner should be confirmed before product review.",
+    canonical_text: "Launch checklist owner should be confirmed before product review.",
+    summary: "Owner is implied but not confirmed.",
+    domain: "project",
+    sensitivity: "private",
+    value: { text: "Launch checklist owner should be confirmed before product review." },
+    metadata_json: { source_id: "source-fixture-1", project_id: "project-fixture-1" },
+  },
+  {
+    id: "memory-fixture-2",
+    memory_key: "vnext.capture.open_loop.vendor-legal",
+    memory_type: "open_loop",
+    status: "candidate",
+    title: "Vendor legal review is waiting for Priya.",
+    canonical_text: "Vendor legal review is waiting for Priya.",
+    summary: "Waiting-for signal from weekly synthesis.",
+    domain: "legal",
+    sensitivity: "internal",
+    value: { text: "Vendor legal review is waiting for Priya." },
+    metadata_json: { source_id: "source-fixture-2" },
+  },
+];
+
+const FIXTURE_PROJECTS: VNextProjectRecord[] = [
+  {
+    id: "project-fixture-1",
+    name: "Product launch",
+    slug: "product-launch",
+    status: "active",
+    current_state: "Launch ownership is unresolved.",
+    description: "First preview cohort launch.",
+    domain: "project",
+    sensitivity: "private",
+  },
+  {
+    id: "project-fixture-2",
+    name: "Vendor onboarding",
+    slug: "vendor-onboarding",
+    status: "active",
+    current_state: "Waiting on legal review.",
+    description: "Vendor legal and operations readiness.",
+    domain: "legal",
+    sensitivity: "internal",
+  },
+];
+
+const FIXTURE_OPEN_LOOPS: VNextOpenLoopRecord[] = [
+  {
+    id: "loop-fixture-1",
     title: "Confirm launch checklist owner",
-    status: "due_soon",
-    due: "Today",
+    status: "open",
+    due_at: "2026-05-11T17:00:00Z",
+    priority: "high",
+    project_id: "project-fixture-1",
+    source_id: "source-fixture-1",
     domain: "project",
     sensitivity: "private",
-    sourceIds: ["capture.launch-review.042"],
   },
   {
-    id: "loop-2",
+    id: "loop-fixture-2",
     title: "Ask Priya for vendor legal review ETA",
-    status: "waiting_for",
-    due: "Tomorrow",
+    status: "open",
+    priority: "normal",
+    project_id: "project-fixture-2",
+    source_id: "source-fixture-2",
     domain: "legal",
     sensitivity: "internal",
-    sourceIds: ["person.priya", "brief.weekly.2026-W19"],
   },
 ];
 
-const INITIAL_ARTIFACTS: GeneratedArtifact[] = [
+const FIXTURE_ARTIFACTS: VNextArtifactRecord[] = [
   {
-    id: "artifact-1",
-    title: "daily-brief-2026-05-10.md",
-    type: "Daily Brief",
-    status: "ready",
-    summary: "Focus on the launch checklist owner, unresolved vendor legal review, and one sensitive health document review.",
+    id: "artifact-fixture-1",
+    artifact_type: "daily_brief",
+    title: "Daily Brief - 2026-05-10",
+    content_markdown:
+      "# Daily Brief - 2026-05-10\n\n## Suggested Focus\n- Confirm the launch checklist owner.\n- Clear the vendor legal waiting-for item.",
+    status: "needs_review",
     domain: "project",
     sensitivity: "private",
-    sources: ["capture.launch-review.042", "open_loop.loop-1", "memory.review-1"],
-    provenance: "Generated by daily brief assembly from reviewed memories, open loops, and queue state.",
+    generated_by: "vnext_daily_brief",
+    metadata_json: { workflow: "daily_brief", source_ids: ["source-fixture-1"] },
   },
   {
-    id: "artifact-2",
-    title: "weekly-synthesis-2026-W19.md",
-    type: "Weekly Synthesis",
-    status: "ready",
-    summary: "Work graph pressure is concentrated around launch ownership, vendor waiting-for items, and project follow-through.",
+    id: "artifact-fixture-2",
+    artifact_type: "weekly_synthesis",
+    title: "Weekly Synthesis - 2026-W19",
+    content_markdown:
+      "# Weekly Synthesis - 2026-W19\n\nLaunch pressure is concentrated around ownership and legal review.",
+    status: "needs_review",
     domain: "professional",
     sensitivity: "internal",
-    sources: ["brief.daily.2026-05-10", "person.priya", "project.vendor-onboarding"],
-    provenance: "Generated by weekly synthesis from accepted brief items and graph edges.",
+    generated_by: "vnext_weekly_synthesis",
+    metadata_json: { workflow: "weekly_synthesis" },
   },
 ];
 
-const INITIAL_ANSWER: AskAnswer = {
-  question: "What should I focus on before the product review?",
-  summary:
-    "Start by confirming the launch checklist owner, then resolve the vendor legal review waiting-for item before reading lower-priority queue items.",
-  memoriesUsed: [
-    "Launch checklist owner is unresolved.",
-    "Vendor legal review is waiting on Priya.",
-    "Daily brief marked the health lab PDF as sensitive and not product-review relevant.",
-  ],
-  contradictions: [
-    "One older note says Morgan owns the checklist; a newer meeting note says ownership was not confirmed.",
-  ],
-  why: [
-    "The selected items are active open loops due soon.",
-    "Both items are attached to the Product launch project and have direct source provenance.",
-    "Sensitive health evidence is excluded from this work-domain answer.",
-  ],
-  sources: ["open_loop.loop-1", "memory.review-1", "person.priya", "brief.daily.2026-05-10"],
-  domain: "project",
-  sensitivity: "private",
-};
+const FIXTURE_PEOPLE: VNextPersonRecord[] = [
+  {
+    id: "person-fixture-1",
+    name: "Priya",
+    sensitivity: "internal",
+    relationship_type: "Vendor legal owner",
+    notes: "Referenced by waiting-for loop and weekly synthesis.",
+  },
+  {
+    id: "person-fixture-2",
+    name: "Morgan",
+    sensitivity: "private",
+    relationship_type: "Possible launch checklist owner",
+    notes: "Older note conflicts with newer meeting capture.",
+  },
+];
+
+const FIXTURE_BELIEFS: VNextBeliefRecord[] = [
+  {
+    id: "belief-fixture-1",
+    memory_id: "memory-fixture-1",
+    claim: "Launch readiness depends on explicit ownership.",
+    status: "emerging",
+    confidence: 0.62,
+  },
+];
+
+const FIXTURE_EVENTS: VNextEventRecord[] = [
+  {
+    id: "event-fixture-1",
+    event_type: "source.captured",
+    actor_type: "system",
+    target_type: "source",
+    target_id: "source-fixture-1",
+    occurred_at: "2026-05-10T08:30:00Z",
+    payload_json: { source_type: "manual_text" },
+  },
+  {
+    id: "event-fixture-2",
+    event_type: "memory.candidate_created",
+    actor_type: "system",
+    target_type: "memory",
+    target_id: "memory-fixture-1",
+    occurred_at: "2026-05-10T08:31:00Z",
+    payload_json: { memory_type: "decision" },
+  },
+];
 
 export const INITIAL_CONNECTORS: ConnectorSetting[] = [
   {
@@ -331,327 +490,768 @@ export const INITIAL_CONNECTORS: ConnectorSetting[] = [
   },
 ];
 
-const DAILY_BRIEF_ITEMS = [
-  {
-    title: "Confirm launch checklist owner",
-    body: "This is the top unresolved work item and blocks the product review handoff.",
-    status: "requires_review",
-    sources: ["capture.launch-review.042", "open_loop.loop-1"],
-  },
-  {
-    title: "Review sensitive artifact labels",
-    body: "A health lab PDF remains out of work-domain retrieval until the sensitivity label is confirmed.",
-    status: "blocked",
-    sources: ["artifact.lab-panel.pdf", "memory.review-2"],
-  },
-];
+function fixtureWorkspace(): WorkspaceView {
+  const projectDashboards: VNextProjectDashboard[] = FIXTURE_PROJECTS.map((project) => {
+    const openLoops = FIXTURE_OPEN_LOOPS.filter((loop) => loop.project_id === project.id);
+    const memories = FIXTURE_REVIEW_ITEMS.filter(
+      (memory) => asRecord(memory.metadata_json).project_id === project.id,
+    );
+    const artifacts = FIXTURE_ARTIFACTS.filter((artifact) => artifact.domain === project.domain);
+    return {
+      project,
+      state: project.current_state ?? null,
+      memories,
+      open_loops: openLoops,
+      artifacts,
+      counts: {
+        memories: memories.length,
+        open_loops: openLoops.length,
+        artifacts: artifacts.length,
+      },
+    };
+  });
+  const view = {
+    sources: FIXTURE_SOURCES,
+    reviewItems: FIXTURE_REVIEW_ITEMS,
+    artifacts: FIXTURE_ARTIFACTS,
+    projects: FIXTURE_PROJECTS,
+    projectDashboards,
+    openLoops: FIXTURE_OPEN_LOOPS,
+    people: FIXTURE_PEOPLE,
+    beliefs: FIXTURE_BELIEFS,
+    tasks: [],
+    recentEvents: FIXTURE_EVENTS,
+    brainCharter: {
+      id: "brain-charter-fixture",
+      content_markdown: "# ALICE.md\n\nKeep generated artifacts reviewable before promotion.",
+      sensitivity: "private",
+    },
+  };
+  return { ...view, summary: createSummary(view) };
+}
 
-const WEEKLY_SIGNALS = [
-  {
-    label: "Decision",
-    text: "Keep the launch rollout to one cohort until ownership and vendor legal review are settled.",
-    sources: ["brief.weekly.2026-W19", "project.product-launch"],
-  },
-  {
-    label: "Connection",
-    text: "Priya is linked to vendor onboarding, legal review, and the launch dependency cluster.",
-    sources: ["person.priya", "graph.edge.vendor-legal"],
-  },
-];
+function emptyWorkspace(): WorkspaceView {
+  const view = {
+    sources: [],
+    reviewItems: [],
+    artifacts: [],
+    projects: [],
+    projectDashboards: [],
+    openLoops: [],
+    people: [],
+    beliefs: [],
+    tasks: [],
+    recentEvents: [],
+    brainCharter: null,
+  };
+  return { ...view, summary: createSummary(view) };
+}
 
-const PROJECTS = [
-  {
-    name: "Product launch",
-    status: "active",
-    progress: "3 of 5 loops closed",
-    next: "Confirm checklist owner",
-    domain: "project" as Domain,
-    sensitivity: "private" as Sensitivity,
-  },
-  {
-    name: "Vendor onboarding",
-    status: "blocked",
-    progress: "Waiting on legal review",
-    next: "Ask Priya for ETA",
-    domain: "legal" as Domain,
-    sensitivity: "internal" as Sensitivity,
-  },
-];
+function workspaceFromPayload(payload: VNextWorkspacePayload): WorkspaceView {
+  return {
+    summary: payload.summary,
+    sources: payload.sources,
+    reviewItems: payload.review_memories,
+    artifacts: payload.artifacts,
+    projects: payload.projects,
+    projectDashboards: payload.project_dashboards,
+    openLoops: payload.open_loops,
+    people: payload.people,
+    beliefs: payload.beliefs,
+    tasks: payload.tasks,
+    recentEvents: payload.recent_events,
+    brainCharter: payload.brain_charter,
+  };
+}
 
-const PEOPLE = [
-  {
-    name: "Priya",
-    relation: "Vendor legal owner",
-    evidence: "Referenced by waiting-for loop and weekly synthesis.",
-    sensitivity: "internal" as Sensitivity,
-  },
-  {
-    name: "Morgan",
-    relation: "Possible launch checklist owner",
-    evidence: "Older note conflicts with newer meeting capture.",
-    sensitivity: "private" as Sensitivity,
-  },
-];
+function answerFromContextPack(question: string, pack: VNextContextPack): AskAnswer {
+  const memories = pack.relevant_memories ?? [];
+  const sources = pack.sources ?? [];
+  const evidence = pack.supporting_evidence ?? [];
+  const interpretation = asRecord(pack.query_interpretation);
+  const filters = asRecord(asRecord(pack.trace).filters);
+  const summary =
+    memories.length > 0
+      ? `Alice found ${memories.length} relevant memory item${memories.length === 1 ? "" : "s"} for "${question}". ${memoryText(memories[0])}`
+      : sources.length > 0
+        ? `Alice found source evidence for "${question}", but no reviewed memory was selected yet.`
+        : `Alice could not find matching reviewed memory or source evidence for "${question}".`;
+  const sourceIds = [
+    ...sources.map((source) => `source:${source.id}`),
+    ...evidence.map((item) => {
+      const sourceId = item.source_id;
+      return typeof sourceId === "string" ? `source:${sourceId}` : "";
+    }),
+  ].filter(Boolean);
+
+  return {
+    question,
+    summary,
+    memoriesUsed: memories.map(memoryText),
+    contradictions:
+      pack.contradicting_evidence.length > 0
+        ? pack.contradicting_evidence.map((item) => JSON.stringify(item))
+        : ["No contradicting evidence selected by this context pack."],
+    why: [
+      `Query type: ${textValue(interpretation.query_type) || "strategic_synthesis"}.`,
+      `Trace: ${textValue(pack.trace_id)} selected evidence from ${String(asRecord(pack.trace).selected_count ?? 0)} candidates.`,
+      `Sensitivity allowed: ${Array.isArray(filters.sensitivity_allowed) ? filters.sensitivity_allowed.join(", ") : "default"}.`,
+      ...(pack.warnings.length ? pack.warnings.map((warning) => `Warning: ${warning}.`) : []),
+    ],
+    sources: sourceIds.length ? Array.from(new Set(sourceIds)) : ["No source evidence selected"],
+    domain: asDomain(Array.isArray(filters.domains) ? filters.domains[0] : "unknown"),
+    sensitivity: "private",
+  };
+}
 
 export function getVNextWorkspaceFixtureContract() {
+  const fixture = fixtureWorkspace();
   return {
     domains: [
-      ...INITIAL_REVIEW_ITEMS.map((item) => item.domain),
-      ...INITIAL_OPEN_LOOPS.map((loop) => loop.domain),
-      ...INITIAL_ARTIFACTS.map((artifact) => artifact.domain),
-      INITIAL_ANSWER.domain,
-      ...PROJECTS.map((project) => project.domain),
+      ...fixture.reviewItems.map((item) => asDomain(item.domain)),
+      ...fixture.openLoops.map((loop) => asDomain(loop.domain)),
+      ...fixture.artifacts.map((artifact) => asDomain(artifact.domain)),
+      ...fixture.projects.map((project) => asDomain(project.domain)),
       ...INITIAL_CONNECTORS.map((connector) => connector.defaultDomain),
     ],
     sensitivities: [
-      ...INITIAL_REVIEW_ITEMS.map((item) => item.sensitivity),
-      ...INITIAL_OPEN_LOOPS.map((loop) => loop.sensitivity),
-      ...INITIAL_ARTIFACTS.map((artifact) => artifact.sensitivity),
-      INITIAL_ANSWER.sensitivity,
-      ...PROJECTS.map((project) => project.sensitivity),
-      ...PEOPLE.map((person) => person.sensitivity),
+      ...fixture.reviewItems.map((item) => asSensitivity(item.sensitivity)),
+      ...fixture.openLoops.map((loop) => asSensitivity(loop.sensitivity)),
+      ...fixture.artifacts.map((artifact) => asSensitivity(artifact.sensitivity)),
+      ...fixture.projects.map((project) => asSensitivity(project.sensitivity)),
+      ...fixture.people.map((person) => asSensitivity(person.sensitivity)),
       ...INITIAL_CONNECTORS.map((connector) => connector.defaultSensitivity),
     ],
     connectorIds: INITIAL_CONNECTORS.map((connector) => connector.id),
   };
 }
 
-const BELIEFS = [
-  {
-    title: "Launch readiness depends on explicit ownership.",
-    confidence: "medium",
-    status: "needs_review",
-    evidence: ["memory.review-1", "open_loop.loop-1"],
-  },
-  {
-    title: "Sensitive health artifacts should stay outside work retrieval.",
-    confidence: "high",
-    status: "active",
-    evidence: ["artifact.lab-panel.pdf", "policy.domain-isolation"],
-  },
-];
-
-const TIMELINE = [
-  {
-    time: "Today 08:30",
-    title: "Inbox candidate created",
-    detail: "Launch checklist owner memory entered review with work/private labels.",
-  },
-  {
-    time: "Today 07:45",
-    title: "Sensitive artifact held",
-    detail: "Health PDF memory candidate paused until sensitivity review is complete.",
-  },
-  {
-    time: "Yesterday 16:20",
-    title: "Weekly synthesis found waiting-for pressure",
-    detail: "Vendor legal review connected Priya to product launch risk.",
-  },
-];
-
-const GRAPH_NODES = [
-  "Product launch",
-  "Priya",
-  "Vendor legal review",
-  "Launch checklist owner",
-  "daily-brief-2026-05-10.md",
-];
-
-function summarizeSources(sources: string[]) {
-  return sources.join(", ");
-}
-
 function pushBoundedLog(message: string, previous: string[]) {
-  return [message, ...previous].slice(0, 5);
+  return [message, ...previous].slice(0, 6);
 }
 
-export function VNextBrainWorkspace() {
-  const [reviewItems, setReviewItems] = useState<ReviewItem[]>(INITIAL_REVIEW_ITEMS);
-  const [selectedReviewId, setSelectedReviewId] = useState(DEFAULT_REVIEW_ITEM.id);
-  const [draftTitle, setDraftTitle] = useState(DEFAULT_REVIEW_ITEM.title);
-  const [draftNote, setDraftNote] = useState(DEFAULT_REVIEW_ITEM.note);
-  const [draftDomain, setDraftDomain] = useState<Domain>(DEFAULT_REVIEW_ITEM.domain);
-  const [draftSensitivity, setDraftSensitivity] = useState<Sensitivity>(
-    DEFAULT_REVIEW_ITEM.sensitivity,
+function latestArtifact(artifacts: VNextArtifactRecord[], artifactType: string) {
+  return artifacts.find((artifact) => artifact.artifact_type === artifactType) ?? null;
+}
+
+export function VNextBrainWorkspace({
+  apiBaseUrl,
+  userId,
+  initialSource = "fixture",
+}: VNextBrainWorkspaceProps) {
+  const liveModeReady = Boolean(apiBaseUrl && userId && initialSource === "live");
+  const [workspace, setWorkspace] = useState<WorkspaceView>(() =>
+    liveModeReady ? emptyWorkspace() : fixtureWorkspace(),
   );
-  const [draftProject, setDraftProject] = useState(DEFAULT_REVIEW_ITEM.project);
-  const [openLoopTitle, setOpenLoopTitle] = useState(DEFAULT_REVIEW_ITEM.title);
-  const [openLoops, setOpenLoops] = useState<OpenLoopItem[]>(INITIAL_OPEN_LOOPS);
-  const [artifacts, setArtifacts] = useState<GeneratedArtifact[]>(INITIAL_ARTIFACTS);
-  const [connectors, setConnectors] = useState<ConnectorSetting[]>(INITIAL_CONNECTORS);
-  const [selectedConnectorId, setSelectedConnectorId] = useState(INITIAL_CONNECTORS[0].id);
-  const [connectorDomain, setConnectorDomain] = useState<Domain>(INITIAL_CONNECTORS[0].defaultDomain);
-  const [connectorSensitivity, setConnectorSensitivity] = useState<Sensitivity>(
-    INITIAL_CONNECTORS[0].defaultSensitivity,
+  const [dataSource, setDataSource] = useState<ApiSource>(liveModeReady ? "live" : "fixture");
+  const [isRefreshing, setIsRefreshing] = useState(liveModeReady);
+  const [pendingAction, setPendingAction] = useState("");
+  const [statusText, setStatusText] = useState(
+    liveModeReady
+      ? "Loading live vNext workspace from the local API."
+      : "Demo mode is using fixture data. Add local API config to use live mode.",
   );
-  const [question, setQuestion] = useState(INITIAL_ANSWER.question);
-  const [answer, setAnswer] = useState<AskAnswer>(INITIAL_ANSWER);
+  const [statusTone, setStatusTone] = useState<"info" | "success" | "danger">("info");
   const [actionLog, setActionLog] = useState<string[]>([
-    "Select a candidate, adjust labels, then accept, reject, promote, assign, or create a loop.",
+    liveModeReady ? "Live workspace is default for this local configuration." : "Fixture demo mode is active.",
   ]);
 
-  const selectedReview =
-    reviewItems.find((item) => item.id === selectedReviewId) ?? DEFAULT_REVIEW_ITEM;
-  const selectedConnector =
-    connectors.find((connector) => connector.id === selectedConnectorId) ?? INITIAL_CONNECTORS[0];
-  const activeReviewCount = reviewItems.filter((item) => item.status === "requires_review").length;
-  const promotedCount = reviewItems.filter((item) => item.status === "promoted").length;
+  const [captureTitle, setCaptureTitle] = useState("Launch note");
+  const [captureText, setCaptureText] = useState(
+    "Decision: Keep the launch cohort small.\nTodo: Confirm launch checklist owner before product review.",
+  );
+  const [defaultDomain, setDefaultDomain] = useState<Domain>("project");
+  const [defaultSensitivity, setDefaultSensitivity] = useState<Sensitivity>("private");
 
-  function logAction(message: string) {
+  const [selectedReviewId, setSelectedReviewId] = useState("");
+  const selectedReview = useMemo(
+    () => workspace.reviewItems.find((item) => item.id === selectedReviewId) ?? workspace.reviewItems[0] ?? null,
+    [selectedReviewId, workspace.reviewItems],
+  );
+  const [draftTitle, setDraftTitle] = useState("");
+  const [draftText, setDraftText] = useState("");
+  const [draftDomain, setDraftDomain] = useState<Domain>("project");
+  const [draftSensitivity, setDraftSensitivity] = useState<Sensitivity>("private");
+  const [selectedProjectId, setSelectedProjectId] = useState("");
+
+  const [question, setQuestion] = useState("What should I focus on before the product review?");
+  const [answer, setAnswer] = useState<AskAnswer>({
+    question,
+    summary:
+      "Ask Alice will call the live context-pack endpoint when local API configuration is present.",
+    memoriesUsed: [],
+    contradictions: [],
+    why: ["No retrieval has run yet in this session."],
+    sources: [],
+    domain: "project",
+    sensitivity: "private",
+  });
+
+  const [openLoopTitle, setOpenLoopTitle] = useState("Confirm launch checklist owner");
+  const [openLoopDescription, setOpenLoopDescription] = useState("Created from the selected memory candidate.");
+  const [openLoopDueAt, setOpenLoopDueAt] = useState("");
+  const [openLoopPriority, setOpenLoopPriority] = useState("normal");
+  const [selectedOpenLoopId, setSelectedOpenLoopId] = useState("");
+
+  const [newProjectName, setNewProjectName] = useState("Product launch");
+  const [newProjectState, setNewProjectState] = useState("Launch ownership is unresolved.");
+
+  const [charterText, setCharterText] = useState("# ALICE.md\n\nKeep generated artifacts reviewable before promotion.");
+  const [charterSensitivity, setCharterSensitivity] = useState<Sensitivity>("private");
+
+  const dailyArtifact = latestArtifact(workspace.artifacts, "daily_brief");
+  const weeklyArtifact = latestArtifact(workspace.artifacts, "weekly_synthesis");
+  const projectUpdateArtifacts = workspace.artifacts.filter((artifact) => artifact.artifact_type === "project_update");
+
+  const refreshWorkspace = useCallback(
+    async (successMessage?: string) => {
+      if (!liveModeReady || !apiBaseUrl || !userId) {
+        return;
+      }
+      setIsRefreshing(true);
+      setStatusTone("info");
+      setStatusText("Refreshing live vNext workspace...");
+      try {
+        const payload = await getVNextWorkspace(apiBaseUrl, userId);
+        const nextWorkspace = workspaceFromPayload(payload);
+        setWorkspace(nextWorkspace);
+        setDataSource("live");
+        setStatusTone("success");
+        setStatusText(successMessage ?? "Live vNext workspace loaded.");
+        setActionLog((previous) => pushBoundedLog(successMessage ?? "Live workspace refreshed.", previous));
+      } catch (error) {
+        setStatusTone("danger");
+        setStatusText(`Unable to load live workspace: ${error instanceof Error ? error.message : "Request failed"}`);
+        setDataSource("live");
+      } finally {
+        setIsRefreshing(false);
+      }
+    },
+    [apiBaseUrl, liveModeReady, userId],
+  );
+
+  useEffect(() => {
+    if (liveModeReady) {
+      void refreshWorkspace("Live vNext workspace loaded.");
+    }
+  }, [liveModeReady, refreshWorkspace]);
+
+  useEffect(() => {
+    if (selectedReview) {
+      setSelectedReviewId(selectedReview.id);
+      setDraftTitle(textValue(selectedReview.title) || memoryText(selectedReview));
+      setDraftText(memoryText(selectedReview));
+      setDraftDomain(asDomain(selectedReview.domain));
+      setDraftSensitivity(asSensitivity(selectedReview.sensitivity));
+      const metadata = asRecord(selectedReview.metadata_json);
+      setSelectedProjectId(textValue(metadata.project_id) || workspace.projects[0]?.id || "");
+      setOpenLoopTitle(memoryText(selectedReview));
+    } else {
+      setSelectedReviewId("");
+      setDraftTitle("");
+      setDraftText("");
+      setSelectedProjectId(workspace.projects[0]?.id ?? "");
+    }
+  }, [selectedReview, workspace.projects]);
+
+  useEffect(() => {
+    if (workspace.openLoops.length > 0 && !workspace.openLoops.some((loop) => loop.id === selectedOpenLoopId)) {
+      setSelectedOpenLoopId(workspace.openLoops[0].id);
+    }
+  }, [selectedOpenLoopId, workspace.openLoops]);
+
+  useEffect(() => {
+    if (workspace.brainCharter) {
+      setCharterText(workspace.brainCharter.content_markdown);
+      setCharterSensitivity(asSensitivity(workspace.brainCharter.sensitivity));
+    }
+  }, [workspace.brainCharter]);
+
+  function updateFixtureWorkspace(mutator: (previous: WorkspaceView) => WorkspaceView, message: string) {
+    setWorkspace((previous) => mutator(previous));
+    setStatusTone("success");
+    setStatusText(message);
     setActionLog((previous) => pushBoundedLog(message, previous));
   }
 
-  function selectReview(item: ReviewItem) {
-    setSelectedReviewId(item.id);
-    setDraftTitle(item.title);
-    setDraftNote(item.note);
-    setDraftDomain(item.domain);
-    setDraftSensitivity(item.sensitivity);
-    setDraftProject(item.project);
-    setOpenLoopTitle(item.title);
-    logAction(`Selected ${item.id} for review.`);
+  async function runLiveAction(label: string, action: () => Promise<void>, successMessage: string) {
+    if (!liveModeReady || !apiBaseUrl || !userId) {
+      setStatusTone("danger");
+      setStatusText("Live write is unavailable without local API configuration. Use demo mode for fixture actions.");
+      return;
+    }
+    setPendingAction(label);
+    setStatusTone("info");
+    setStatusText(label);
+    try {
+      await action();
+      await refreshWorkspace(successMessage);
+    } catch (error) {
+      setStatusTone("danger");
+      setStatusText(`${label} failed: ${error instanceof Error ? error.message : "Request failed"}`);
+    } finally {
+      setPendingAction("");
+    }
   }
 
-  function updateSelectedReview(patch: Partial<ReviewItem>) {
-    setReviewItems((items) =>
-      items.map((item) =>
-        item.id === selectedReview.id
-          ? {
-              ...item,
-              ...patch,
-              updatedAt: "Now",
-            }
-          : item,
-      ),
-    );
-  }
-
-  function acceptSelectedReview() {
-    updateSelectedReview({ status: "accepted" });
-    logAction("Accepted candidate from Inbox review.");
-  }
-
-  function rejectSelectedReview() {
-    updateSelectedReview({ status: "rejected" });
-    logAction("Rejected candidate and kept source provenance for audit.");
-  }
-
-  function saveSelectedEdit() {
-    const normalizedTitle = draftTitle.trim();
-    const normalizedNote = draftNote.trim();
-    if (!normalizedTitle) {
-      logAction("Edit was not saved because the title is empty.");
+  async function handleCapture(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const text = captureText.trim();
+    if (!text) {
+      setStatusTone("danger");
+      setStatusText("Enter source text before capture.");
       return;
     }
 
-    updateSelectedReview({
-      title: normalizedTitle,
-      note: normalizedNote || selectedReview.note,
-      status: "edited",
-    });
-    logAction("Saved edited memory text with review provenance intact.");
-  }
-
-  function promoteSelectedReview() {
-    updateSelectedReview({ status: "promoted" });
-    logAction("Promoted selected memory candidate to belief review.");
-  }
-
-  function applyLabels() {
-    updateSelectedReview({
-      domain: draftDomain,
-      sensitivity: draftSensitivity,
-    });
-    logAction(`Applied labels: ${domainLabel(draftDomain)} / ${sensitivityLabel(draftSensitivity)}.`);
-  }
-
-  function assignProject() {
-    const normalizedProject = draftProject.trim();
-    if (!normalizedProject) {
-      logAction("Project assignment needs a project name.");
+    if (!liveModeReady || !apiBaseUrl || !userId) {
+      const nextSource: VNextSourceRecord = {
+        id: `source-demo-${workspace.sources.length + 1}`,
+        source_type: "manual_text",
+        title: captureTitle.trim() || "Untitled note",
+        captured_at: new Date().toISOString(),
+        domain: defaultDomain,
+        sensitivity: defaultSensitivity,
+        metadata_json: { raw_text: text },
+      };
+      const nextMemory: VNextMemoryRecord = {
+        id: `memory-demo-${workspace.reviewItems.length + 1}`,
+        memory_key: `vnext.demo.${workspace.reviewItems.length + 1}`,
+        memory_type: text.toLowerCase().includes("todo") ? "open_loop" : "semantic",
+        status: "candidate",
+        title: text.split("\n")[0]?.replace(/^(decision|fact|todo):\s*/i, "") || "Captured candidate",
+        canonical_text: text.split("\n")[0]?.replace(/^(decision|fact|todo):\s*/i, "") || text,
+        summary: text.slice(0, 280),
+        domain: defaultDomain,
+        sensitivity: defaultSensitivity,
+        value: { text },
+        metadata_json: { source_id: nextSource.id },
+      };
+      updateFixtureWorkspace(
+        (previous) => {
+          const view = {
+            ...previous,
+            sources: [nextSource, ...previous.sources],
+            reviewItems: [nextMemory, ...previous.reviewItems],
+          };
+          return { ...view, summary: createSummary(view) };
+        },
+        "Demo source captured and candidate memory generated.",
+      );
+      setSelectedReviewId(nextMemory.id);
       return;
     }
 
-    updateSelectedReview({ project: normalizedProject });
-    logAction(`Assigned selected memory to ${normalizedProject}.`);
-  }
-
-  function createOpenLoop() {
-    const normalizedTitle = openLoopTitle.trim();
-    if (!normalizedTitle) {
-      logAction("Open-loop creation needs a title.");
-      return;
-    }
-
-    const nextLoop: OpenLoopItem = {
-      id: `loop-ui-${openLoops.length + 1}`,
-      title: normalizedTitle,
-      status: "open",
-      due: "Unscheduled",
-      domain: selectedReview.domain,
-      sensitivity: selectedReview.sensitivity,
-      sourceIds: selectedReview.sourceIds,
-    };
-    setOpenLoops((items) => [nextLoop, ...items]);
-    logAction("Created open loop from selected memory candidate.");
-  }
-
-  function selectConnector(connector: ConnectorSetting) {
-    setSelectedConnectorId(connector.id);
-    setConnectorDomain(connector.defaultDomain);
-    setConnectorSensitivity(connector.defaultSensitivity);
-    logAction(`Selected ${connector.name} connector settings.`);
-  }
-
-  function applyConnectorDefaults() {
-    setConnectors((items) =>
-      items.map((connector) =>
-        connector.id === selectedConnector.id
-          ? {
-              ...connector,
-              defaultDomain: connectorDomain,
-              defaultSensitivity: connectorSensitivity,
-            }
-          : connector,
-      ),
-    );
-    logAction(
-      `Saved ${selectedConnector.name} defaults: ${domainLabel(connectorDomain)} / ${sensitivityLabel(connectorSensitivity)}.`,
+    await runLiveAction(
+      "Capturing vNext source...",
+      async () => {
+        await createVNextSource(apiBaseUrl, {
+          user_id: userId,
+          raw_text: text,
+          title: captureTitle.trim() || null,
+          domain: defaultDomain,
+          sensitivity: defaultSensitivity,
+        });
+      },
+      "Source captured, chunked, and candidate memories refreshed.",
     );
   }
 
-  function askAlice(event: FormEvent<HTMLFormElement>) {
+  async function askAlice(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const normalizedQuestion = question.trim();
     if (!normalizedQuestion) {
-      logAction("Ask Alice needs a question before retrieval can run.");
+      setStatusTone("danger");
+      setStatusText("Ask Alice needs a question.");
       return;
     }
 
-    setAnswer({
-      ...INITIAL_ANSWER,
-      question: normalizedQuestion,
-      summary: `For "${normalizedQuestion}", Alice would focus on the launch owner and vendor legal waiting-for item, while excluding sensitive health evidence from the work-domain answer.`,
-    });
-    logAction("Ask Alice refreshed the answer with sources, memories, contradictions, and why explanation.");
+    if (!liveModeReady || !apiBaseUrl || !userId) {
+      setAnswer({
+        question: normalizedQuestion,
+        summary: `For "${normalizedQuestion}", Alice would focus on launch ownership and vendor legal review in demo mode.`,
+        memoriesUsed: workspace.reviewItems.slice(0, 3).map(memoryText),
+        contradictions: ["One older note names Morgan as owner; the latest capture says ownership is not confirmed."],
+        why: ["Demo mode ranks active open loops and project-matching memory candidates first."],
+        sources: workspace.sources.map((source) => `source:${source.id}`),
+        domain: defaultDomain,
+        sensitivity: defaultSensitivity,
+      });
+      setActionLog((previous) => pushBoundedLog("Demo Ask Alice answer refreshed.", previous));
+      return;
+    }
+
+    setPendingAction("Asking Alice...");
+    try {
+      const pack = await createVNextContextPack(apiBaseUrl, {
+        user_id: userId,
+        query: normalizedQuestion,
+        scope: { domains: [defaultDomain] },
+        options: {
+          include_sources: true,
+          include_contradictions: true,
+          sensitivity_allowed: ["public", "internal", "private", "unknown"],
+          max_items: 8,
+        },
+      });
+      setAnswer(answerFromContextPack(normalizedQuestion, pack));
+      await refreshWorkspace("Ask Alice context pack compiled with provenance.");
+    } catch (error) {
+      setStatusTone("danger");
+      setStatusText(`Ask Alice failed: ${error instanceof Error ? error.message : "Request failed"}`);
+    } finally {
+      setPendingAction("");
+    }
   }
 
-  function saveAnswerAsArtifact() {
-    const nextIndex = artifacts.length + 1;
-    const artifact: GeneratedArtifact = {
-      id: `artifact-ui-${nextIndex}`,
-      title: `ask-alice-answer-${nextIndex}.md`,
-      type: "Ask Alice Answer",
-      status: "registered",
-      summary: answer.summary,
-      domain: answer.domain,
-      sensitivity: answer.sensitivity,
-      sources: answer.sources,
-      provenance: "Saved from Ask Alice answer with retrieval context, memory use, contradictions, and why explanation.",
-    };
-    setArtifacts((items) => [artifact, ...items]);
-    logAction(`Saved ${artifact.title} with provenance.`);
+  async function handleMemoryAction(action: "accept" | "edit" | "reject" | "private" | "assign_project" | "promote") {
+    if (!selectedReview) {
+      return;
+    }
+
+    if (!liveModeReady || !apiBaseUrl || !userId) {
+      updateFixtureWorkspace(
+        (previous) => {
+          const nextItems = previous.reviewItems.map((item) =>
+            item.id === selectedReview.id
+              ? {
+                  ...item,
+                  title: draftTitle,
+                  canonical_text: draftText,
+                  summary: draftText.slice(0, 280),
+                  domain: draftDomain,
+                  sensitivity: action === "private" ? "private" : draftSensitivity,
+                  status:
+                    action === "reject"
+                      ? "rejected"
+                      : action === "private"
+                        ? "private_only"
+                        : action === "promote" || action === "accept" || action === "edit"
+                          ? "active"
+                          : item.status,
+                  metadata_json: {
+                    ...asRecord(item.metadata_json),
+                    project_id: action === "assign_project" ? selectedProjectId : asRecord(item.metadata_json).project_id,
+                  },
+                }
+              : item,
+          );
+          const view = { ...previous, reviewItems: nextItems };
+          return { ...view, summary: createSummary(view) };
+        },
+        `Demo memory review action applied: ${action}.`,
+      );
+      return;
+    }
+
+    await runLiveAction(
+      `Applying memory review action: ${action}...`,
+      async () => {
+        await reviewVNextMemory(apiBaseUrl, selectedReview.id, {
+          user_id: userId,
+          action,
+          title: draftTitle,
+          canonical_text: draftText,
+          summary: draftText.slice(0, 280),
+          domain: draftDomain,
+          sensitivity: action === "private" ? "private" : draftSensitivity,
+          project_id: action === "assign_project" ? selectedProjectId : undefined,
+          reason: "Reviewed from live /vnext workspace.",
+        });
+      },
+      `Memory review action applied: ${action}.`,
+    );
   }
+
+  async function handleCreateOpenLoop() {
+    const title = openLoopTitle.trim();
+    if (!title) {
+      setStatusTone("danger");
+      setStatusText("Open-loop creation needs a title.");
+      return;
+    }
+
+    if (!liveModeReady || !apiBaseUrl || !userId) {
+      const nextLoop: VNextOpenLoopRecord = {
+        id: `loop-demo-${workspace.openLoops.length + 1}`,
+        title,
+        description: openLoopDescription,
+        due_at: openLoopDueAt || null,
+        priority: openLoopPriority,
+        status: "open",
+        memory_id: selectedReview?.id ?? null,
+        project_id: selectedProjectId || null,
+        domain: selectedReview ? asDomain(selectedReview.domain) : defaultDomain,
+        sensitivity: selectedReview ? asSensitivity(selectedReview.sensitivity) : defaultSensitivity,
+      };
+      updateFixtureWorkspace(
+        (previous) => {
+          const view = { ...previous, openLoops: [nextLoop, ...previous.openLoops] };
+          return { ...view, summary: createSummary(view) };
+        },
+        "Demo open loop created.",
+      );
+      setSelectedOpenLoopId(nextLoop.id);
+      return;
+    }
+
+    await runLiveAction(
+      "Creating open loop...",
+      async () => {
+        await createVNextOpenLoop(apiBaseUrl, {
+          user_id: userId,
+          title,
+          description: openLoopDescription.trim() || undefined,
+          due_at: openLoopDueAt.trim() || undefined,
+          priority: openLoopPriority,
+          memory_id: selectedReview?.id,
+          project_id: selectedProjectId || undefined,
+          source_id: textValue(asRecord(selectedReview?.metadata_json).source_id) || undefined,
+          domain: selectedReview ? asDomain(selectedReview.domain) : defaultDomain,
+          sensitivity: selectedReview ? asSensitivity(selectedReview.sensitivity) : defaultSensitivity,
+        });
+      },
+      "Open loop created from live workspace.",
+    );
+  }
+
+  async function handleOpenLoopAction(action: "close" | "snooze" | "edit" | "reopen") {
+    const selectedLoop = workspace.openLoops.find((loop) => loop.id === selectedOpenLoopId);
+    if (!selectedLoop) {
+      return;
+    }
+
+    if (!liveModeReady || !apiBaseUrl || !userId) {
+      updateFixtureWorkspace(
+        (previous) => {
+          const nextLoops = previous.openLoops.map((loop) =>
+            loop.id === selectedLoop.id
+              ? {
+                  ...loop,
+                  status: action === "close" ? "resolved" : action === "reopen" ? "open" : loop.status,
+                  title: action === "edit" ? openLoopTitle : loop.title,
+                  description: action === "edit" ? openLoopDescription : loop.description,
+                  due_at: action === "snooze" || action === "edit" ? openLoopDueAt || loop.due_at : loop.due_at,
+                  priority: action === "edit" ? openLoopPriority : loop.priority,
+                }
+              : loop,
+          );
+          const view = { ...previous, openLoops: nextLoops };
+          return { ...view, summary: createSummary(view) };
+        },
+        `Demo open-loop action applied: ${action}.`,
+      );
+      return;
+    }
+
+    await runLiveAction(
+      `Applying open-loop action: ${action}...`,
+      async () => {
+        await reviewVNextOpenLoop(apiBaseUrl, selectedLoop.id, {
+          user_id: userId,
+          action,
+          title: action === "edit" ? openLoopTitle : undefined,
+          description: action === "edit" ? openLoopDescription : undefined,
+          due_at: action === "snooze" || action === "edit" ? openLoopDueAt || undefined : undefined,
+          priority: action === "edit" ? openLoopPriority : undefined,
+          resolution_note: action === "close" ? "Closed from live /vnext workspace." : undefined,
+        });
+      },
+      `Open-loop action applied: ${action}.`,
+    );
+  }
+
+  async function handleGenerateArtifact(kind: "daily" | "weekly" | "project") {
+    if (!liveModeReady || !apiBaseUrl || !userId) {
+      const artifactType =
+        kind === "daily" ? "daily_brief" : kind === "weekly" ? "weekly_synthesis" : "project_update";
+      const nextArtifact: VNextArtifactRecord = {
+        id: `artifact-demo-${workspace.artifacts.length + 1}`,
+        artifact_type: artifactType,
+        title:
+          kind === "daily"
+            ? "Daily Brief - Demo"
+            : kind === "weekly"
+              ? "Weekly Synthesis - Demo"
+              : "Project Update Candidate - Demo",
+        content_markdown: `# ${kind} demo artifact\n\nGenerated from fixture workspace state.`,
+        status: "needs_review",
+        domain: defaultDomain,
+        sensitivity: defaultSensitivity,
+        generated_by: "vnext_demo_workspace",
+        metadata_json: { workflow: artifactType, project_id: selectedProjectId },
+      };
+      updateFixtureWorkspace(
+        (previous) => {
+          const view = { ...previous, artifacts: [nextArtifact, ...previous.artifacts] };
+          return { ...view, summary: createSummary(view) };
+        },
+        `Demo ${kind} artifact generated.`,
+      );
+      return;
+    }
+
+    await runLiveAction(
+      `Generating ${kind} artifact...`,
+      async () => {
+        const payload = {
+          user_id: userId,
+          scope: { domains: [defaultDomain], project_id: selectedProjectId || undefined },
+          options: {
+            sensitivity_allowed: ["public", "internal", "private", "unknown"],
+            discover_open_loops: true,
+            create_candidate_memories: true,
+          },
+        };
+        if (kind === "daily") {
+          await generateVNextDailyBrief(apiBaseUrl, payload);
+        } else if (kind === "weekly") {
+          await generateVNextWeeklySynthesis(apiBaseUrl, payload);
+        } else {
+          await generateVNextProjectUpdate(apiBaseUrl, {
+            user_id: userId,
+            scope: { project_id: selectedProjectId || undefined, domains: [defaultDomain] },
+            options: { sensitivity_allowed: ["public", "internal", "private", "unknown"] },
+          });
+        }
+      },
+      `${kind} artifact generated and held for review.`,
+    );
+  }
+
+  async function handleArtifactAction(artifact: VNextArtifactRecord, action: "review" | "accept" | "reject" | "promote" | "archive") {
+    if (!liveModeReady || !apiBaseUrl || !userId) {
+      const statusMap = {
+        review: "reviewed",
+        accept: "accepted",
+        reject: "rejected",
+        promote: "promoted_to_memory",
+        archive: "archived",
+      };
+      updateFixtureWorkspace(
+        (previous) => {
+          const nextArtifacts = previous.artifacts.map((item) =>
+            item.id === artifact.id ? { ...item, status: statusMap[action] } : item,
+          );
+          const view = { ...previous, artifacts: nextArtifacts };
+          return { ...view, summary: createSummary(view) };
+        },
+        `Demo artifact action applied: ${action}.`,
+      );
+      return;
+    }
+
+    await runLiveAction(
+      `Applying artifact action: ${action}...`,
+      async () => {
+        await reviewVNextArtifact(apiBaseUrl, artifact.id, { user_id: userId, action });
+      },
+      `Artifact action applied: ${action}.`,
+    );
+  }
+
+  async function handleCreateProject(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const name = newProjectName.trim();
+    if (!name) {
+      setStatusTone("danger");
+      setStatusText("Project creation needs a name.");
+      return;
+    }
+
+    if (!liveModeReady || !apiBaseUrl || !userId) {
+      const nextProject: VNextProjectRecord = {
+        id: `project-demo-${workspace.projects.length + 1}`,
+        name,
+        slug: name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "project",
+        status: "active",
+        current_state: newProjectState,
+        domain: defaultDomain,
+        sensitivity: defaultSensitivity,
+      };
+      updateFixtureWorkspace(
+        (previous) => {
+          const nextDashboards = [
+            {
+              project: nextProject,
+              state: nextProject.current_state ?? null,
+              memories: [],
+              open_loops: [],
+              artifacts: [],
+              counts: { memories: 0, open_loops: 0, artifacts: 0 },
+            },
+            ...previous.projectDashboards,
+          ];
+          const view = {
+            ...previous,
+            projects: [nextProject, ...previous.projects],
+            projectDashboards: nextDashboards,
+          };
+          return { ...view, summary: createSummary(view) };
+        },
+        "Demo project created.",
+      );
+      setSelectedProjectId(nextProject.id);
+      return;
+    }
+
+    await runLiveAction(
+      "Creating project...",
+      async () => {
+        await createVNextProject(apiBaseUrl, {
+          user_id: userId,
+          name,
+          current_state: newProjectState.trim() || undefined,
+          domain: defaultDomain,
+          sensitivity: defaultSensitivity,
+        });
+      },
+      "Project created and dashboard refreshed.",
+    );
+  }
+
+  async function handleSaveCharter(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!charterText.trim()) {
+      setStatusTone("danger");
+      setStatusText("Brain Charter text is required.");
+      return;
+    }
+    if (!liveModeReady || !apiBaseUrl || !userId) {
+      const brainCharter: VNextBrainCharterRecord = {
+        id: workspace.brainCharter?.id ?? "brain-charter-demo",
+        content_markdown: charterText,
+        sensitivity: charterSensitivity,
+      };
+      updateFixtureWorkspace(
+        (previous) => ({ ...previous, brainCharter }),
+        "Demo Brain Charter settings saved.",
+      );
+      return;
+    }
+
+    await runLiveAction(
+      "Saving Brain Charter...",
+      async () => {
+        await upsertVNextBrainCharter(apiBaseUrl, {
+          user_id: userId,
+          content_markdown: charterText,
+          sensitivity: charterSensitivity,
+          life_domains_json: {
+            default_domain: defaultDomain,
+            default_sensitivity: defaultSensitivity,
+          },
+          autonomous_rules_json: ["Generated artifacts require explicit review before promotion."],
+          quality_standard_json: ["Show provenance for answers and generated artifacts."],
+        });
+      },
+      "Brain Charter settings saved.",
+    );
+  }
+
+  const selectedLoop = workspace.openLoops.find((loop) => loop.id === selectedOpenLoopId) ?? workspace.openLoops[0] ?? null;
+  const selectedConnector = INITIAL_CONNECTORS[0];
+  const activeSourceLabel = dataSource === "live" ? "Live API" : "Demo fixture";
+  const status = pendingAction ? "loading" : statusTone === "success" ? "success" : statusTone === "danger" ? "error" : isRefreshing ? "loading" : dataSource;
 
   return (
     <div className="page-stack">
@@ -667,168 +1267,72 @@ export function VNextBrainWorkspace() {
         ))}
       </nav>
 
+      <div className="composer-status" aria-live="polite">
+        <StatusBadge status={status} label={pendingAction ? "Working" : activeSourceLabel} />
+        <span>{statusText}</span>
+        <StatusBadge status="blocked" label="No auto-promotion" />
+      </div>
+
       <section id="vnext-home" className="metric-grid" aria-label="vNext home dashboard">
         <SectionCard className="section-card--metric">
-          <div className="metric-value">{activeReviewCount}</div>
+          <div className="metric-value">{workspace.summary.source_count}</div>
+          <div className="metric-label">Sources</div>
+          <p className="metric-detail">Captured notes and imported evidence in the vNext inbox.</p>
+        </SectionCard>
+        <SectionCard className="section-card--metric">
+          <div className="metric-value">{workspace.summary.review_memory_count}</div>
           <div className="metric-label">Review items</div>
-          <p className="metric-detail">Inbox candidates awaiting accept, edit, reject, or promotion.</p>
+          <p className="metric-detail">Candidate memories awaiting accept, edit, reject, privacy, or project action.</p>
         </SectionCard>
         <SectionCard className="section-card--metric">
-          <div className="metric-value">{openLoops.length}</div>
+          <div className="metric-value">{workspace.summary.open_loop_count}</div>
           <div className="metric-label">Open loops</div>
-          <p className="metric-detail">Due-soon and waiting-for items stay visible from the first screen.</p>
+          <p className="metric-detail">Source-backed due, waiting, or unresolved items.</p>
         </SectionCard>
         <SectionCard className="section-card--metric">
-          <div className="metric-value">{PROJECTS.length}</div>
-          <div className="metric-label">Active projects</div>
-          <p className="metric-detail">Project state includes next action, blockers, domain, and sensitivity.</p>
-        </SectionCard>
-        <SectionCard className="section-card--metric">
-          <div className="metric-value">{promotedCount}</div>
-          <div className="metric-label">Promoted beliefs</div>
-          <p className="metric-detail">Belief promotion is explicit and remains traceable to the reviewed source.</p>
+          <div className="metric-value">{workspace.summary.project_count}</div>
+          <div className="metric-label">Projects</div>
+          <p className="metric-detail">Live project dashboards and update candidates.</p>
         </SectionCard>
       </section>
 
       <div className="content-grid content-grid--wide">
         <SectionCard
           eyebrow="Home"
-          title="Today at a glance"
-          description="Brief, review pressure, open loops, active project status, connections, contradictions, and queue posture are visible before the operator asks anything."
+          title="Recent activity"
+          description="Live mode reads the append-only vNext event log so the dashboard reflects real workspace actions."
         >
-          <div className="detail-stack">
-            <div className="governance-banner">
-              <strong>Today&apos;s brief summary</strong>
-              <span>
-                Confirm launch ownership, clear one waiting-for item, and keep sensitive health evidence
-                out of work-domain retrieval until review is complete.
-              </span>
+          {isRefreshing ? (
+            <div className="loading-placeholder loading-placeholder--line" />
+          ) : workspace.recentEvents.length ? (
+            <div className="timeline-list">
+              {workspace.recentEvents.slice(0, 5).map((event) => (
+                <article key={event.id} className="timeline-item">
+                  <div className="timeline-item__topline">
+                    <span className="list-row__eyebrow mono">{event.occurred_at}</span>
+                    <h3 className="list-row__title">{eventTitle(event)}</h3>
+                  </div>
+                </article>
+              ))}
             </div>
-            <div className="key-value-grid">
-              <div>
-                <dt>Recent connection</dt>
-                <dd>Priya connects vendor legal review to the product launch blocker cluster.</dd>
-              </div>
-              <div>
-                <dt>Contradiction</dt>
-                <dd>Older notes name Morgan as owner; the latest capture says owner is not confirmed.</dd>
-              </div>
-              <div>
-                <dt>Queue status</dt>
-                <dd>Memory review has {activeReviewCount} candidates and one sensitive label gate.</dd>
-              </div>
-              <div>
-                <dt>Active project</dt>
-                <dd>Product launch is active with ownership still unresolved.</dd>
-              </div>
-            </div>
-          </div>
+          ) : (
+            <EmptyState title="No vNext activity yet" description="Capture a note to create the first live event-log entry." />
+          )}
         </SectionCard>
 
         <SectionCard
           eyebrow="Settings"
-          title="Privacy and retrieval posture"
-          description="Domain and sensitivity labels are visible on review items, generated artifacts, questions, and open loops."
+          title="Privacy defaults"
+          description="Capture, retrieval, generated artifacts, and review actions keep domain and sensitivity labels visible."
         >
           <div id="vnext-settings" className="detail-stack">
-            <div className="cluster">
-              <StatusBadge status="active" label="Local-first" />
-              <StatusBadge status="requires_review" label="Sensitive items held" />
-              <span className="meta-pill">Default domain: {domainLabel("professional")}</span>
-              <span className="meta-pill">Default sensitivity: {sensitivityLabel("private")}</span>
-            </div>
-            <p className="muted-copy">
-              Retrieval should use reviewed evidence first, suppress sensitive cross-domain evidence, and show
-              exactly which memories and artifacts influenced the answer.
-            </p>
-          </div>
-        </SectionCard>
-      </div>
-
-      <div id="vnext-inbox" className="vnext-review-layout">
-        <SectionCard
-          eyebrow="Inbox"
-          title="Review queue"
-          description="Candidates are fixture-backed here, but the controls exercise the intended accept, edit, reject, promote, assign, label, and open-loop flow end to end."
-        >
-          <div className="list-rows">
-            {reviewItems.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className={`list-row vnext-review-button${
-                  item.id === selectedReview.id ? " is-selected" : ""
-                }`}
-                onClick={() => selectReview(item)}
-              >
-                <span className="list-row__topline">
-                  <span className="detail-stack">
-                    <span className="list-row__eyebrow mono">{item.kind}</span>
-                    <span className="list-row__title">{item.title}</span>
-                  </span>
-                  <StatusBadge status={item.status} />
-                </span>
-                <span className="list-row__meta">
-                  <span className="meta-pill">Domain: {domainLabel(item.domain)}</span>
-                  <span className="meta-pill">Sensitivity: {sensitivityLabel(item.sensitivity)}</span>
-                  <span className="meta-pill">Project: {item.project}</span>
-                </span>
-              </button>
-            ))}
-          </div>
-        </SectionCard>
-
-        <SectionCard
-          eyebrow="Review actions"
-          title="Selected memory candidate"
-          description="The selected item keeps provenance, project assignment, and labels attached while review actions update visible state."
-        >
-          <div className="detail-stack">
-            <div className="cluster">
-              <StatusBadge status={selectedReview.status} />
-              <span className="meta-pill">Domain: {domainLabel(selectedReview.domain)}</span>
-              <span className="meta-pill">Sensitivity: {sensitivityLabel(selectedReview.sensitivity)}</span>
-              <span className="meta-pill">Project: {selectedReview.project}</span>
-            </div>
-
-            <div className="detail-group detail-group--muted">
-              <h3>Provenance</h3>
-              <p className="muted-copy">{selectedReview.provenance}</p>
-              <div className="cluster">
-                {selectedReview.sourceIds.map((source) => (
-                  <span key={source} className="meta-pill">
-                    {source}
-                  </span>
-                ))}
-              </div>
-            </div>
-
-            <div className="form-field-group">
-              <div className="form-field">
-                <label htmlFor="vnext-review-title">Edited memory title</label>
-                <textarea
-                  id="vnext-review-title"
-                  value={draftTitle}
-                  onChange={(event) => setDraftTitle(event.target.value)}
-                />
-              </div>
-              <div className="form-field">
-                <label htmlFor="vnext-review-note">Reviewer note</label>
-                <textarea
-                  id="vnext-review-note"
-                  value={draftNote}
-                  onChange={(event) => setDraftNote(event.target.value)}
-                />
-              </div>
-            </div>
-
             <div className="form-field-group form-field-group--two-up">
               <div className="form-field">
-                <label htmlFor="vnext-domain">Domain label</label>
+                <label htmlFor="vnext-default-domain">Default domain</label>
                 <select
-                  id="vnext-domain"
-                  value={draftDomain}
-                  onChange={(event) => setDraftDomain(event.target.value as Domain)}
+                  id="vnext-default-domain"
+                  value={defaultDomain}
+                  onChange={(event) => setDefaultDomain(event.target.value as Domain)}
                 >
                   {VNEXT_DOMAIN_OPTIONS.map((domain) => (
                     <option key={domain.value} value={domain.value}>
@@ -838,11 +1342,11 @@ export function VNextBrainWorkspace() {
                 </select>
               </div>
               <div className="form-field">
-                <label htmlFor="vnext-sensitivity">Sensitivity label</label>
+                <label htmlFor="vnext-default-sensitivity">Default sensitivity</label>
                 <select
-                  id="vnext-sensitivity"
-                  value={draftSensitivity}
-                  onChange={(event) => setDraftSensitivity(event.target.value as Sensitivity)}
+                  id="vnext-default-sensitivity"
+                  value={defaultSensitivity}
+                  onChange={(event) => setDefaultSensitivity(event.target.value as Sensitivity)}
                 >
                   {VNEXT_SENSITIVITY_OPTIONS.map((sensitivity) => (
                     <option key={sensitivity.value} value={sensitivity.value}>
@@ -852,54 +1356,99 @@ export function VNextBrainWorkspace() {
                 </select>
               </div>
             </div>
-
-            <div className="form-field-group form-field-group--two-up">
-              <div className="form-field">
-                <label htmlFor="vnext-project">Assigned project</label>
-                <input
-                  id="vnext-project"
-                  value={draftProject}
-                  onChange={(event) => setDraftProject(event.target.value)}
-                />
-              </div>
-              <div className="form-field">
-                <label htmlFor="vnext-open-loop">Open-loop title</label>
-                <input
-                  id="vnext-open-loop"
-                  value={openLoopTitle}
-                  onChange={(event) => setOpenLoopTitle(event.target.value)}
-                />
-              </div>
+            <div className="cluster">
+              <StatusBadge status="active" label="Local-first" />
+              <StatusBadge status="requires_review" label="Generated output held" />
+              <span className="meta-pill">Domain: {domainLabel(defaultDomain)}</span>
+              <span className="meta-pill">Sensitivity: {sensitivityLabel(defaultSensitivity)}</span>
             </div>
+          </div>
+        </SectionCard>
+      </div>
 
-            <div className="vnext-review-actions">
-              <button type="button" className="button" onClick={acceptSelectedReview}>
-                Accept selected memory
-              </button>
-              <button type="button" className="button-secondary" onClick={saveSelectedEdit}>
-                Save selected edit
-              </button>
-              <button type="button" className="button-secondary" onClick={promoteSelectedReview}>
-                Promote to belief
-              </button>
-              <button type="button" className="button-secondary" onClick={assignProject}>
-                Assign project
-              </button>
-              <button type="button" className="button-secondary" onClick={applyLabels}>
-                Apply domain and sensitivity labels
-              </button>
-              <button type="button" className="button-secondary" onClick={createOpenLoop}>
-                Create open loop from selected memory
-              </button>
-              <button type="button" className="button-secondary button-secondary--danger" onClick={rejectSelectedReview}>
-                Reject selected memory
-              </button>
+      <div id="vnext-inbox" className="vnext-review-layout">
+        <SectionCard
+          eyebrow="Inbox"
+          title="Source capture"
+          description="Adding a note calls the vNext source API in live mode, which creates source chunks, provenance, candidate memories, and event-log entries."
+        >
+          <form className="detail-stack" onSubmit={handleCapture}>
+            <div className="form-field">
+              <label htmlFor="vnext-capture-title">Source title</label>
+              <input
+                id="vnext-capture-title"
+                value={captureTitle}
+                onChange={(event) => setCaptureTitle(event.target.value)}
+              />
             </div>
+            <div className="form-field">
+              <label htmlFor="vnext-capture-text">Note or source text</label>
+              <textarea
+                id="vnext-capture-text"
+                value={captureText}
+                onChange={(event) => setCaptureText(event.target.value)}
+              />
+              <p className="field-hint">{captureText.length}/200000</p>
+            </div>
+            <button type="submit" className="button" disabled={Boolean(pendingAction)}>
+              Add note/source
+            </button>
+          </form>
 
-            <div className="composer-status" aria-live="polite">
-              <StatusBadge status={selectedReview.status} label="Latest action" />
-              <span>{actionLog[0]}</span>
-            </div>
+          <div className="list-rows">
+            {workspace.sources.length ? (
+              workspace.sources.slice(0, 5).map((source) => (
+                <article key={source.id} className="list-row">
+                  <div className="list-row__topline">
+                    <div>
+                      <span className="list-row__eyebrow mono">{source.source_type}</span>
+                      <h3 className="list-row__title">{source.title || source.id}</h3>
+                    </div>
+                    <StatusBadge status={source.sensitivity ?? "unknown"} />
+                  </div>
+                  <p>{sourceText(source).slice(0, 220)}</p>
+                  <div className="list-row__meta">
+                    <span className="meta-pill">Domain: {domainLabel(asDomain(source.domain))}</span>
+                    <span className="meta-pill">Captured: {source.captured_at}</span>
+                  </div>
+                </article>
+              ))
+            ) : (
+              <EmptyState title="Inbox is empty" description="Capture a note to create a live source and candidate memory." />
+            )}
+          </div>
+        </SectionCard>
+
+        <SectionCard
+          eyebrow="Inbox"
+          title="Candidate memories"
+          description="The live review list is backed by vNext memory rows and preserves source/provenance metadata."
+        >
+          <div className="list-rows">
+            {workspace.reviewItems.length ? (
+              workspace.reviewItems.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`list-row vnext-review-button${selectedReview?.id === item.id ? " is-selected" : ""}`}
+                  onClick={() => setSelectedReviewId(item.id)}
+                >
+                  <span className="list-row__topline">
+                    <span className="detail-stack">
+                      <span className="list-row__eyebrow mono">{item.memory_type}</span>
+                      <span className="list-row__title">{memoryText(item)}</span>
+                    </span>
+                    <StatusBadge status={item.status ?? "candidate"} />
+                  </span>
+                  <span className="list-row__meta">
+                    <span className="meta-pill">Domain: {domainLabel(asDomain(item.domain))}</span>
+                    <span className="meta-pill">Sensitivity: {sensitivityLabel(asSensitivity(item.sensitivity))}</span>
+                  </span>
+                </button>
+              ))
+            ) : (
+              <EmptyState title="No memory candidates" description="Candidate memories will appear after source capture extracts claims, decisions, or open loops." />
+            )}
           </div>
         </SectionCard>
       </div>
@@ -908,7 +1457,7 @@ export function VNextBrainWorkspace() {
         <SectionCard
           eyebrow="Ask Alice"
           title="Evidence-first answer"
-          description="Answers show direct sources, memories used, contradictions, why explanation, and a generated-artifact save action."
+          description="Live Ask Alice calls the context-pack endpoint and renders selected memories, source provenance, contradictions, and retrieval rationale."
         >
           <form className="detail-stack" onSubmit={askAlice}>
             <div className="form-field">
@@ -919,21 +1468,14 @@ export function VNextBrainWorkspace() {
                 onChange={(event) => setQuestion(event.target.value)}
               />
             </div>
-            <div className="composer-actions">
-              <button type="submit" className="button">
-                Ask Alice
-              </button>
-              <button type="button" className="button-secondary" onClick={saveAnswerAsArtifact}>
-                Save answer as artifact
-              </button>
-            </div>
+            <button type="submit" className="button" disabled={Boolean(pendingAction)}>
+              Ask Alice
+            </button>
           </form>
 
           <div className="transcript-entry transcript-entry--assistant" aria-live="polite">
             <div className="transcript-entry__heading">
-              <span className="transcript-entry__role transcript-entry__role--assistant">
-                Alice answer
-              </span>
+              <span className="transcript-entry__role transcript-entry__role--assistant">Alice answer</span>
               <span className="meta-pill">Domain: {domainLabel(answer.domain)}</span>
               <span className="meta-pill">Sensitivity: {sensitivityLabel(answer.sensitivity)}</span>
             </div>
@@ -941,7 +1483,7 @@ export function VNextBrainWorkspace() {
             <div className="key-value-grid">
               <div>
                 <dt>Memory sources used</dt>
-                <dd>{answer.memoriesUsed.join(" ")}</dd>
+                <dd>{answer.memoriesUsed.length ? answer.memoriesUsed.join(" ") : "No memory selected yet."}</dd>
               </div>
               <div>
                 <dt>Contradictions</dt>
@@ -961,28 +1503,44 @@ export function VNextBrainWorkspace() {
 
         <SectionCard
           eyebrow="Generated"
-          title="Artifacts with provenance"
-          description="Every generated item displays status, source IDs, provenance, domain, and sensitivity before it can be trusted."
+          title="Artifacts with review actions"
+          description="Generated artifacts are live rows and remain reviewable outputs unless the user explicitly reviews, promotes, or archives them."
         >
           <div id="vnext-generated" className="list-rows">
-            {artifacts.map((artifact) => (
-              <article key={artifact.id} className="list-row">
-                <div className="list-row__topline">
-                  <div className="detail-stack">
-                    <span className="list-row__eyebrow mono">{artifact.type}</span>
-                    <h3 className="list-row__title">{artifact.title}</h3>
+            {workspace.artifacts.length ? (
+              workspace.artifacts.map((artifact) => (
+                <article key={artifact.id} className="list-row">
+                  <div className="list-row__topline">
+                    <div>
+                      <span className="list-row__eyebrow mono">{artifact.artifact_type}</span>
+                      <h3 className="list-row__title">{artifact.title}</h3>
+                    </div>
+                    <StatusBadge status={artifact.status ?? "draft"} />
                   </div>
-                  <StatusBadge status={artifact.status} />
-                </div>
-                <p>{artifact.summary}</p>
-                <div className="list-row__meta">
-                  <span className="meta-pill">Domain: {domainLabel(artifact.domain)}</span>
-                  <span className="meta-pill">Sensitivity: {sensitivityLabel(artifact.sensitivity)}</span>
-                  <span className="meta-pill">Sources: {summarizeSources(artifact.sources)}</span>
-                </div>
-                <p className="responsive-note">Provenance: {artifact.provenance}</p>
-              </article>
-            ))}
+                  <p>{artifactExcerpt(artifact)}</p>
+                  <div className="list-row__meta">
+                    <span className="meta-pill">Domain: {domainLabel(asDomain(artifact.domain))}</span>
+                    <span className="meta-pill">Sensitivity: {sensitivityLabel(asSensitivity(artifact.sensitivity))}</span>
+                    <span className="meta-pill">Generated by: {artifact.generated_by}</span>
+                  </div>
+                  <div className="vnext-review-actions">
+                    {(["review", "accept", "reject", "promote", "archive"] as const).map((action) => (
+                      <button
+                        key={action}
+                        type="button"
+                        className={action === "reject" ? "button-secondary button-secondary--danger" : "button-secondary"}
+                        onClick={() => void handleArtifactAction(artifact, action)}
+                        disabled={Boolean(pendingAction)}
+                      >
+                        {action}
+                      </button>
+                    ))}
+                  </div>
+                </article>
+              ))
+            ) : (
+              <EmptyState title="No generated artifacts" description="Generate a daily brief, weekly synthesis, or project update to create reviewable artifacts." />
+            )}
           </div>
         </SectionCard>
       </div>
@@ -990,36 +1548,47 @@ export function VNextBrainWorkspace() {
       <div className="content-grid content-grid--wide">
         <SectionCard
           eyebrow="Daily Brief"
-          title="Daily brief review"
-          description="A non-technical operator can read the day, see why items were selected, and inspect source provenance."
+          title="Daily brief"
+          description="The generation button creates a live artifact and keeps it in review state."
         >
-          <div id="vnext-daily-brief" className="list-rows">
-            {DAILY_BRIEF_ITEMS.map((item) => (
-              <article key={item.title} className="list-row">
+          <div id="vnext-daily-brief" className="detail-stack">
+            <button type="button" className="button" onClick={() => void handleGenerateArtifact("daily")} disabled={Boolean(pendingAction)}>
+              Generate daily brief
+            </button>
+            {dailyArtifact ? (
+              <article className="list-row">
                 <div className="list-row__topline">
-                  <h3 className="list-row__title">{item.title}</h3>
-                  <StatusBadge status={item.status} />
+                  <h3 className="list-row__title">{dailyArtifact.title}</h3>
+                  <StatusBadge status={dailyArtifact.status ?? "needs_review"} />
                 </div>
-                <p>{item.body}</p>
-                <span className="meta-pill">Sources: {summarizeSources(item.sources)}</span>
+                <p>{artifactExcerpt(dailyArtifact)}</p>
               </article>
-            ))}
+            ) : (
+              <EmptyState title="No daily brief yet" description="Generate the first live daily brief after capturing source evidence." />
+            )}
           </div>
         </SectionCard>
 
         <SectionCard
           eyebrow="Weekly Synthesis"
-          title="Synthesis signals"
-          description="Weekly synthesis turns reviewed memories, project edges, and open loops into explainable planning signals."
+          title="Weekly synthesis"
+          description="The weekly synthesis uses source, memory, loop, and artifact evidence and produces a reviewable artifact."
         >
-          <div id="vnext-weekly-synthesis" className="list-rows">
-            {WEEKLY_SIGNALS.map((signal) => (
-              <article key={signal.text} className="list-row">
-                <span className="list-row__eyebrow mono">{signal.label}</span>
-                <p>{signal.text}</p>
-                <span className="meta-pill">Sources: {summarizeSources(signal.sources)}</span>
+          <div id="vnext-weekly-synthesis" className="detail-stack">
+            <button type="button" className="button" onClick={() => void handleGenerateArtifact("weekly")} disabled={Boolean(pendingAction)}>
+              Generate weekly synthesis
+            </button>
+            {weeklyArtifact ? (
+              <article className="list-row">
+                <div className="list-row__topline">
+                  <h3 className="list-row__title">{weeklyArtifact.title}</h3>
+                  <StatusBadge status={weeklyArtifact.status ?? "needs_review"} />
+                </div>
+                <p>{artifactExcerpt(weeklyArtifact)}</p>
               </article>
-            ))}
+            ) : (
+              <EmptyState title="No weekly synthesis yet" description="Generate a weekly synthesis when the workspace has evidence to summarize." />
+            )}
           </div>
         </SectionCard>
       </div>
@@ -1028,48 +1597,100 @@ export function VNextBrainWorkspace() {
         <SectionCard
           eyebrow="Queue"
           title="Work queue"
-          description="Queue state is visible as a first-class operational surface, not hidden behind chat."
+          description="Queue rows are read-only in this sprint; generated output remains separately reviewable."
         >
-          <div id="vnext-queue" className="key-value-grid">
-            <div>
-              <dt>Memory review</dt>
-              <dd>{activeReviewCount} candidates waiting for review.</dd>
-            </div>
-            <div>
-              <dt>Artifact generation</dt>
-              <dd>{artifacts.length} generated artifacts are available for inspection.</dd>
-            </div>
-            <div>
-              <dt>Contradictions</dt>
-              <dd>One ownership contradiction is unresolved.</dd>
-            </div>
-            <div>
-              <dt>Sensitive gates</dt>
-              <dd>One Health / Highly sensitive artifact is withheld from work retrieval.</dd>
-            </div>
+          <div id="vnext-queue" className="list-rows">
+            {workspace.tasks.length ? (
+              workspace.tasks.map((task) => (
+                <article key={task.id} className="list-row">
+                  <div className="list-row__topline">
+                    <h3 className="list-row__title">{task.title}</h3>
+                    <StatusBadge status={task.status ?? "pending"} />
+                  </div>
+                  <div className="list-row__meta">
+                    <span className="meta-pill">Type: {task.task_type}</span>
+                    <span className="meta-pill">Policy: {task.write_policy ?? "proposal_only"}</span>
+                  </div>
+                </article>
+              ))
+            ) : (
+              <EmptyState title="Queue is empty" description="Queue items will appear when vNext task workflows enqueue work." />
+            )}
           </div>
         </SectionCard>
 
         <SectionCard
           eyebrow="Memory Review"
-          title="Review candidates"
-          description="Memory review shows candidate type, review state, source IDs, and labels before anything becomes trusted."
+          title="Selected memory candidate"
+          description="Review actions write to the backend memory row, append a revision, and keep provenance metadata intact."
         >
-          <div id="vnext-memory-review" className="list-rows">
-            {reviewItems.map((item) => (
-              <article key={`memory-${item.id}`} className="list-row">
-                <div className="list-row__topline">
-                  <h3 className="list-row__title">{item.title}</h3>
-                  <StatusBadge status={item.status} />
+          <div id="vnext-memory-review" className="detail-stack">
+            {selectedReview ? (
+              <>
+                <div className="cluster">
+                  <StatusBadge status={selectedReview.status ?? "candidate"} />
+                  <span className="meta-pill">Memory: {selectedReview.id}</span>
                 </div>
-                <p>{item.note}</p>
-                <div className="list-row__meta">
-                  <span className="meta-pill">Domain: {domainLabel(item.domain)}</span>
-                  <span className="meta-pill">Sensitivity: {sensitivityLabel(item.sensitivity)}</span>
-                  <span className="meta-pill">Sources: {summarizeSources(item.sourceIds)}</span>
+                <div className="form-field">
+                  <label htmlFor="vnext-review-title">Edited memory title</label>
+                  <textarea id="vnext-review-title" value={draftTitle} onChange={(event) => setDraftTitle(event.target.value)} />
                 </div>
-              </article>
-            ))}
+                <div className="form-field">
+                  <label htmlFor="vnext-review-text">Edited memory text</label>
+                  <textarea id="vnext-review-text" value={draftText} onChange={(event) => setDraftText(event.target.value)} />
+                </div>
+                <div className="form-field-group form-field-group--two-up">
+                  <div className="form-field">
+                    <label htmlFor="vnext-domain">Domain label</label>
+                    <select id="vnext-domain" value={draftDomain} onChange={(event) => setDraftDomain(event.target.value as Domain)}>
+                      {VNEXT_DOMAIN_OPTIONS.map((domain) => (
+                        <option key={domain.value} value={domain.value}>{domain.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="form-field">
+                    <label htmlFor="vnext-sensitivity">Sensitivity label</label>
+                    <select id="vnext-sensitivity" value={draftSensitivity} onChange={(event) => setDraftSensitivity(event.target.value as Sensitivity)}>
+                      {VNEXT_SENSITIVITY_OPTIONS.map((sensitivity) => (
+                        <option key={sensitivity.value} value={sensitivity.value}>{sensitivity.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div className="form-field">
+                  <label htmlFor="vnext-project">Assigned project</label>
+                  <select id="vnext-project" value={selectedProjectId} onChange={(event) => setSelectedProjectId(event.target.value)}>
+                    <option value="">No project</option>
+                    {workspace.projects.map((project) => (
+                      <option key={project.id} value={project.id}>{project.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="vnext-review-actions">
+                  <button type="button" className="button" onClick={() => void handleMemoryAction("accept")} disabled={Boolean(pendingAction)}>Accept</button>
+                  <button type="button" className="button-secondary" onClick={() => void handleMemoryAction("edit")} disabled={Boolean(pendingAction)}>Save edit</button>
+                  <button type="button" className="button-secondary" onClick={() => void handleMemoryAction("private")} disabled={Boolean(pendingAction)}>Mark private</button>
+                  <button type="button" className="button-secondary" onClick={() => void handleMemoryAction("assign_project")} disabled={Boolean(pendingAction || !selectedProjectId)}>Assign project</button>
+                  <button type="button" className="button-secondary" onClick={() => void handleMemoryAction("promote")} disabled={Boolean(pendingAction)}>Promote</button>
+                  <button type="button" className="button-secondary button-secondary--danger" onClick={() => void handleMemoryAction("reject")} disabled={Boolean(pendingAction)}>Reject</button>
+                </div>
+                <div className="form-field-group">
+                  <div className="form-field">
+                    <label htmlFor="vnext-open-loop">Open-loop title</label>
+                    <input id="vnext-open-loop" value={openLoopTitle} onChange={(event) => setOpenLoopTitle(event.target.value)} />
+                  </div>
+                  <div className="form-field">
+                    <label htmlFor="vnext-open-loop-description">Open-loop description</label>
+                    <textarea id="vnext-open-loop-description" value={openLoopDescription} onChange={(event) => setOpenLoopDescription(event.target.value)} />
+                  </div>
+                  <button type="button" className="button-secondary" onClick={() => void handleCreateOpenLoop()} disabled={Boolean(pendingAction)}>
+                    Create open loop from selected memory
+                  </button>
+                </div>
+              </>
+            ) : (
+              <EmptyState title="No selected memory" description="Capture a note or select a candidate memory from the inbox." />
+            )}
           </div>
         </SectionCard>
       </div>
@@ -1077,43 +1698,70 @@ export function VNextBrainWorkspace() {
       <div id="vnext-projects" className="content-grid content-grid--wide">
         <SectionCard
           eyebrow="Projects"
-          title="Project state"
-          description="Projects expose status, next action, connected loops, and labels."
+          title="Project dashboards"
+          description="Project cards read live dashboard counts and project update candidates."
         >
+          <form className="detail-stack" onSubmit={handleCreateProject}>
+            <div className="form-field-group form-field-group--two-up">
+              <div className="form-field">
+                <label htmlFor="vnext-project-name">Project name</label>
+                <input id="vnext-project-name" value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} />
+              </div>
+              <div className="form-field">
+                <label htmlFor="vnext-project-state">Current state</label>
+                <input id="vnext-project-state" value={newProjectState} onChange={(event) => setNewProjectState(event.target.value)} />
+              </div>
+            </div>
+            <button type="submit" className="button-secondary" disabled={Boolean(pendingAction)}>Create project</button>
+          </form>
+          <button type="button" className="button" onClick={() => void handleGenerateArtifact("project")} disabled={Boolean(pendingAction || !workspace.projects.length)}>
+            Generate project update candidate
+          </button>
           <div className="list-rows">
-            {PROJECTS.map((project) => (
-              <article key={project.name} className="list-row">
-                <div className="list-row__topline">
-                  <h3 className="list-row__title">{project.name}</h3>
-                  <StatusBadge status={project.status} />
-                </div>
-                <p>{project.progress}</p>
-                <div className="list-row__meta">
-                  <span className="meta-pill">Next: {project.next}</span>
-                  <span className="meta-pill">Domain: {domainLabel(project.domain)}</span>
-                  <span className="meta-pill">Sensitivity: {sensitivityLabel(project.sensitivity)}</span>
-                </div>
-              </article>
-            ))}
+            {workspace.projectDashboards.length ? (
+              workspace.projectDashboards.map((dashboard) => (
+                <article key={dashboard.project.id} className="list-row">
+                  <div className="list-row__topline">
+                    <h3 className="list-row__title">{dashboard.project.name}</h3>
+                    <StatusBadge status={dashboard.project.status ?? "active"} />
+                  </div>
+                  <p>{dashboard.state || dashboard.project.current_state || "No current state recorded."}</p>
+                  <div className="list-row__meta">
+                    <span className="meta-pill">Memories: {dashboard.counts.memories}</span>
+                    <span className="meta-pill">Open loops: {dashboard.counts.open_loops}</span>
+                    <span className="meta-pill">Artifacts: {dashboard.counts.artifacts}</span>
+                  </div>
+                </article>
+              ))
+            ) : (
+              <EmptyState title="No projects" description="Create a project to make project dashboard updates visible." />
+            )}
           </div>
+          {projectUpdateArtifacts.length ? (
+            <p className="muted-copy">{projectUpdateArtifacts.length} project update candidate artifact(s) are awaiting review.</p>
+          ) : null}
         </SectionCard>
 
         <SectionCard
           eyebrow="People"
           title="People graph"
-          description="People records show the relationship and evidence path that placed them in the current context."
+          description="People remain read-only for this sprint while live records are displayed when present."
         >
           <div id="vnext-people" className="list-rows">
-            {PEOPLE.map((person) => (
-              <article key={person.name} className="list-row">
-                <div className="list-row__topline">
-                  <h3 className="list-row__title">{person.name}</h3>
-                  <span className="meta-pill">Sensitivity: {sensitivityLabel(person.sensitivity)}</span>
-                </div>
-                <p>{person.relation}</p>
-                <p className="responsive-note">Evidence: {person.evidence}</p>
-              </article>
-            ))}
+            {workspace.people.length ? (
+              workspace.people.map((person) => (
+                <article key={person.id} className="list-row">
+                  <div className="list-row__topline">
+                    <h3 className="list-row__title">{person.name}</h3>
+                    <span className="meta-pill">Sensitivity: {sensitivityLabel(asSensitivity(person.sensitivity))}</span>
+                  </div>
+                  <p>{person.relationship_type || person.organization || "No relationship details recorded."}</p>
+                  <p className="responsive-note">Evidence: {person.notes || "No notes yet."}</p>
+                </article>
+              ))
+            ) : (
+              <EmptyState title="No people records" description="People records are read-only here and will appear when vNext extraction creates them." />
+            )}
           </div>
         </SectionCard>
       </div>
@@ -1122,44 +1770,92 @@ export function VNextBrainWorkspace() {
         <SectionCard
           eyebrow="Beliefs"
           title="Belief review"
-          description="Beliefs keep confidence, review state, and evidence attached so Alice can explain what she thinks she knows."
+          description="Beliefs are visible but read-only in this live-backed sprint."
         >
           <div id="vnext-beliefs" className="list-rows">
-            {BELIEFS.map((belief) => (
-              <article key={belief.title} className="list-row">
-                <div className="list-row__topline">
-                  <h3 className="list-row__title">{belief.title}</h3>
-                  <StatusBadge status={belief.status} />
-                </div>
-                <div className="list-row__meta">
-                  <span className="meta-pill">Confidence: {belief.confidence}</span>
-                  <span className="meta-pill">Evidence: {summarizeSources(belief.evidence)}</span>
-                </div>
-              </article>
-            ))}
+            {workspace.beliefs.length ? (
+              workspace.beliefs.map((belief) => (
+                <article key={belief.id} className="list-row">
+                  <div className="list-row__topline">
+                    <h3 className="list-row__title">{belief.claim}</h3>
+                    <StatusBadge status={belief.status ?? "emerging"} />
+                  </div>
+                  <div className="list-row__meta">
+                    <span className="meta-pill">Confidence: {belief.confidence ?? "unknown"}</span>
+                    <span className="meta-pill">Memory: {belief.memory_id ?? "unlinked"}</span>
+                  </div>
+                </article>
+              ))
+            ) : (
+              <EmptyState title="No beliefs" description="Beliefs will appear after belief or contradiction workflows create review records." />
+            )}
           </div>
         </SectionCard>
 
         <SectionCard
           eyebrow="Open Loops"
           title="Due and waiting items"
-          description="Open loops remain editable and source-backed from review, daily brief, and project views."
+          description="Open loops support live close, snooze, edit, and reopen actions."
         >
-          <div id="vnext-open-loops" className="list-rows">
-            {openLoops.map((loop) => (
-              <article key={loop.id} className="list-row">
-                <div className="list-row__topline">
-                  <h3 className="list-row__title">{loop.title}</h3>
-                  <StatusBadge status={loop.status} />
+          <div id="vnext-open-loops" className="detail-stack">
+            <div className="list-rows">
+              {workspace.openLoops.length ? (
+                workspace.openLoops.map((loop) => (
+                  <button
+                    key={loop.id}
+                    type="button"
+                    className={`list-row vnext-review-button${selectedLoop?.id === loop.id ? " is-selected" : ""}`}
+                    onClick={() => {
+                      setSelectedOpenLoopId(loop.id);
+                      setOpenLoopTitle(loop.title);
+                      setOpenLoopDescription(loop.description ?? "");
+                      setOpenLoopDueAt(loop.due_at ?? "");
+                      setOpenLoopPriority(loop.priority ?? "normal");
+                    }}
+                  >
+                    <span className="list-row__topline">
+                      <span className="list-row__title">{loop.title}</span>
+                      <StatusBadge status={loop.status ?? "open"} />
+                    </span>
+                    <span className="list-row__meta">
+                      <span className="meta-pill">Priority: {loop.priority ?? "normal"}</span>
+                      <span className="meta-pill">Due: {loop.due_at ?? "unscheduled"}</span>
+                    </span>
+                  </button>
+                ))
+              ) : (
+                <EmptyState title="No open loops" description="Create one from memory review or generate a daily brief that extracts candidates." />
+              )}
+            </div>
+            {selectedLoop ? (
+              <div className="detail-stack">
+                <div className="form-field-group form-field-group--two-up">
+                  <div className="form-field">
+                    <label htmlFor="vnext-loop-title-edit">Selected loop title</label>
+                    <input id="vnext-loop-title-edit" value={openLoopTitle} onChange={(event) => setOpenLoopTitle(event.target.value)} />
+                  </div>
+                  <div className="form-field">
+                    <label htmlFor="vnext-loop-due">Due at</label>
+                    <input id="vnext-loop-due" value={openLoopDueAt} onChange={(event) => setOpenLoopDueAt(event.target.value)} placeholder="2026-05-11T17:00:00Z" />
+                  </div>
                 </div>
-                <div className="list-row__meta">
-                  <span className="meta-pill">Due: {loop.due}</span>
-                  <span className="meta-pill">Domain: {domainLabel(loop.domain)}</span>
-                  <span className="meta-pill">Sensitivity: {sensitivityLabel(loop.sensitivity)}</span>
-                  <span className="meta-pill">Sources: {summarizeSources(loop.sourceIds)}</span>
+                <div className="form-field">
+                  <label htmlFor="vnext-loop-priority">Priority</label>
+                  <select id="vnext-loop-priority" value={openLoopPriority} onChange={(event) => setOpenLoopPriority(event.target.value)}>
+                    <option value="low">Low</option>
+                    <option value="normal">Normal</option>
+                    <option value="high">High</option>
+                    <option value="urgent">Urgent</option>
+                  </select>
                 </div>
-              </article>
-            ))}
+                <div className="vnext-review-actions">
+                  <button type="button" className="button-secondary" onClick={() => void handleOpenLoopAction("edit")} disabled={Boolean(pendingAction)}>Save loop edit</button>
+                  <button type="button" className="button-secondary" onClick={() => void handleOpenLoopAction("snooze")} disabled={Boolean(pendingAction || !openLoopDueAt)}>Snooze</button>
+                  <button type="button" className="button-secondary" onClick={() => void handleOpenLoopAction("reopen")} disabled={Boolean(pendingAction)}>Reopen</button>
+                  <button type="button" className="button-secondary button-secondary--danger" onClick={() => void handleOpenLoopAction("close")} disabled={Boolean(pendingAction)}>Close</button>
+                </div>
+              </div>
+            ) : null}
           </div>
         </SectionCard>
       </div>
@@ -1168,43 +1864,45 @@ export function VNextBrainWorkspace() {
         <SectionCard
           eyebrow="Timeline"
           title="Brain timeline"
-          description="Timeline entries make capture, review, synthesis, and contradiction events inspectable in one chronological stream."
+          description="The timeline is a read-only event-log projection for this sprint."
         >
           <div id="vnext-timeline" className="timeline-list">
-            {TIMELINE.map((item) => (
-              <article key={`${item.time}-${item.title}`} className="timeline-item">
-                <div className="timeline-item__topline">
-                  <span className="list-row__eyebrow mono">{item.time}</span>
-                  <h3 className="list-row__title">{item.title}</h3>
-                </div>
-                <p>{item.detail}</p>
-              </article>
-            ))}
+            {workspace.recentEvents.length ? (
+              workspace.recentEvents.map((event) => (
+                <article key={`timeline-${event.id}`} className="timeline-item">
+                  <div className="timeline-item__topline">
+                    <span className="list-row__eyebrow mono">{event.occurred_at}</span>
+                    <h3 className="list-row__title">{event.event_type}</h3>
+                  </div>
+                  <p>{event.target_type ? `${event.target_type}:${event.target_id}` : "workspace event"}</p>
+                </article>
+              ))
+            ) : (
+              <EmptyState title="No timeline events" description="Timeline entries appear after live capture, retrieval, generation, or review actions." />
+            )}
           </div>
         </SectionCard>
 
         <SectionCard
           eyebrow="Graph"
           title="Connection graph"
-          description="The first graph surface exposes nodes, edges, filters, and evidence labels without requiring a 3D visualization."
+          description="Graph visualization remains lightweight and read-only; live graph polish is deferred."
         >
           <div id="vnext-graph" className="vnext-graph-grid">
             <div className="vnext-graph-canvas" aria-label="Graph preview">
-              {GRAPH_NODES.map((node, index) => (
-                <span key={node} className={`vnext-graph-node vnext-graph-node--${index + 1}`}>
-                  {node}
-                </span>
-              ))}
+              {[...workspace.projects.map((project) => project.name), ...workspace.people.map((person) => person.name)]
+                .slice(0, 5)
+                .map((node, index) => (
+                  <span key={`${node}-${index}`} className={`vnext-graph-node vnext-graph-node--${index + 1}`}>
+                    {node}
+                  </span>
+                ))}
             </div>
             <div className="detail-stack">
               <div className="cluster">
-                <span className="meta-pill">Filter: Work</span>
-                <span className="meta-pill">Sensitivity: Private + Internal</span>
-                <span className="meta-pill">Edges: project, person, source</span>
+                <span className="meta-pill">Nodes: {workspace.projects.length + workspace.people.length}</span>
+                <span className="meta-pill">Live graph write actions deferred</span>
               </div>
-              <p className="muted-copy">
-                Selected path: Product launch to Vendor legal review to Priya to weekly synthesis.
-              </p>
             </div>
           </div>
         </SectionCard>
@@ -1214,30 +1912,21 @@ export function VNextBrainWorkspace() {
         <SectionCard
           eyebrow="Connectors"
           title="Connector settings"
-          description="Connector defaults stay explicit before Telegram, browser clips, documents, screenshots, and voice transcripts enter memory."
+          description="Connector settings remain read-only or partially live in this sprint; OAuth and polling are explicitly deferred."
         >
           <div className="list-rows">
-            {connectors.map((connector) => (
-              <button
-                key={connector.id}
-                type="button"
-                className={`list-row vnext-review-button${
-                  connector.id === selectedConnector.id ? " vnext-review-button--active" : ""
-                }`}
-                onClick={() => selectConnector(connector)}
-              >
-                <span className="list-row__topline">
-                  <span className="list-row__title">{connector.name}</span>
+            {INITIAL_CONNECTORS.map((connector) => (
+              <article key={connector.id} className="list-row">
+                <div className="list-row__topline">
+                  <h3 className="list-row__title">{connector.name}</h3>
                   <StatusBadge status={connector.status} />
-                </span>
-                <span className="list-row__meta">
+                </div>
+                <div className="list-row__meta">
                   <span className="meta-pill">{connector.stage}</span>
                   <span className="meta-pill">Default domain: {domainLabel(connector.defaultDomain)}</span>
-                  <span className="meta-pill">
-                    Default sensitivity: {sensitivityLabel(connector.defaultSensitivity)}
-                  </span>
-                </span>
-              </button>
+                  <span className="meta-pill">Default sensitivity: {sensitivityLabel(connector.defaultSensitivity)}</span>
+                </div>
+              </article>
             ))}
           </div>
         </SectionCard>
@@ -1245,64 +1934,76 @@ export function VNextBrainWorkspace() {
         <SectionCard
           eyebrow="Selected Connector"
           title={selectedConnector.name}
-          description="Defaults, cursor posture, and raw evidence handling remain visible before sync runs."
+          description="Cursor posture and evidence handling are visible before live polling is added."
         >
-          <div className="detail-stack">
-            <div className="key-value-grid key-value-grid--compact">
-              <div>
-                <dt>Cursor</dt>
-                <dd>{selectedConnector.cursor}</dd>
-              </div>
-              <div>
-                <dt>Raw evidence</dt>
-                <dd>{selectedConnector.evidence}</dd>
-              </div>
-              <div>
-                <dt>Failure posture</dt>
-                <dd>{selectedConnector.failureMode}</dd>
-              </div>
-              <div>
-                <dt>Sync state</dt>
-                <dd>{selectedConnector.status}</dd>
-              </div>
+          <div className="key-value-grid key-value-grid--compact">
+            <div>
+              <dt>Cursor</dt>
+              <dd>{selectedConnector.cursor}</dd>
             </div>
-
-            <div className="form-field-group form-field-group--two-up">
-              <div className="form-field">
-                <label htmlFor="vnext-connector-domain">Connector domain default</label>
-                <select
-                  id="vnext-connector-domain"
-                  value={connectorDomain}
-                  onChange={(event) => setConnectorDomain(event.target.value as Domain)}
-                >
-                  {VNEXT_DOMAIN_OPTIONS.map((domain) => (
-                    <option key={domain.value} value={domain.value}>
-                      {domain.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="form-field">
-                <label htmlFor="vnext-connector-sensitivity">Connector sensitivity default</label>
-                <select
-                  id="vnext-connector-sensitivity"
-                  value={connectorSensitivity}
-                  onChange={(event) => setConnectorSensitivity(event.target.value as Sensitivity)}
-                >
-                  {VNEXT_SENSITIVITY_OPTIONS.map((sensitivity) => (
-                    <option key={sensitivity.value} value={sensitivity.value}>
-                      {sensitivity.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
+            <div>
+              <dt>Raw evidence</dt>
+              <dd>{selectedConnector.evidence}</dd>
             </div>
-            <button type="button" className="button button--primary" onClick={applyConnectorDefaults}>
-              Save connector defaults
-            </button>
+            <div>
+              <dt>Failure posture</dt>
+              <dd>{selectedConnector.failureMode}</dd>
+            </div>
+            <div>
+              <dt>Deferred</dt>
+              <dd>Live OAuth, polling, OCR execution, and transcription execution.</dd>
+            </div>
           </div>
         </SectionCard>
       </div>
+
+      <SectionCard
+        eyebrow="Settings"
+        title="Brain Charter"
+        description="The Brain Charter is live-readable and live-writable where supported by the vNext settings API."
+      >
+        <form className="detail-stack" onSubmit={handleSaveCharter}>
+          <div className="form-field">
+            <label htmlFor="vnext-brain-charter">Brain Charter Markdown</label>
+            <textarea
+              id="vnext-brain-charter"
+              value={charterText}
+              onChange={(event) => setCharterText(event.target.value)}
+            />
+          </div>
+          <div className="form-field">
+            <label htmlFor="vnext-charter-sensitivity">Charter sensitivity</label>
+            <select
+              id="vnext-charter-sensitivity"
+              value={charterSensitivity}
+              onChange={(event) => setCharterSensitivity(event.target.value as Sensitivity)}
+            >
+              {VNEXT_SENSITIVITY_OPTIONS.map((sensitivity) => (
+                <option key={sensitivity.value} value={sensitivity.value}>
+                  {sensitivity.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <button type="submit" className="button" disabled={Boolean(pendingAction)}>
+            Save Brain Charter
+          </button>
+        </form>
+      </SectionCard>
+
+      <SectionCard
+        eyebrow="Action Log"
+        title="Latest UI actions"
+        description="Recent live or demo actions remain visible for review while the event log records backend writes."
+      >
+        <div className="list-rows">
+          {actionLog.map((entry, index) => (
+            <div key={`${entry}-${index}`} className="list-row">
+              {entry}
+            </div>
+          ))}
+        </div>
+      </SectionCard>
     </div>
   );
 }

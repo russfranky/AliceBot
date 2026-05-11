@@ -538,6 +538,41 @@ def test_append_and_list_event_log_records_use_integrity_payload() -> None:
     assert "%s::text IS NULL OR target_id = %s" in event_list_query
 
 
+def test_workspace_list_methods_apply_bounded_filters() -> None:
+    cursor = RecordingCursor(
+        fetchone_results=[],
+        fetchall_result=[
+            {"id": "workspace-row-1", "status": "active", "sensitivity": "private"},
+        ],
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    sources = store.list_sources(domains=["project"], sensitivity_allowed=["private"], limit=7)
+    people = store.list_people(sensitivity_allowed=["private"], limit=5)
+    tasks = store.list_tasks(status=None, limit=4)
+    events = store.list_events(limit=3)
+
+    assert sources[0]["id"] == "workspace-row-1"
+    assert people[0]["id"] == "workspace-row-1"
+    assert tasks[0]["id"] == "workspace-row-1"
+    assert events[0]["id"] == "workspace-row-1"
+
+    source_query, source_params = cursor.executed[0]
+    people_query, people_params = cursor.executed[1]
+    task_query, task_params = cursor.executed[2]
+    event_query, event_params = cursor.executed[3]
+    assert "FROM sources" in source_query
+    assert "deleted_at IS NULL" in source_query
+    assert source_params == (["project"], ["project"], ["private"], ["private"], 7)
+    assert "FROM people" in people_query
+    assert people_params == (["private"], ["private"], 5)
+    assert "FROM task_queue" in task_query
+    assert task_params == (None, None, 4)
+    assert "FROM event_log" in event_query
+    assert "LIMIT %s" in event_query
+    assert event_params == (3,)
+
+
 def test_jsonb_and_event_hash_normalize_postgres_scalar_values() -> None:
     project_id = uuid4()
     captured_at = datetime(2026, 5, 10, 12, 30, tzinfo=UTC)

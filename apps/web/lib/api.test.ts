@@ -9,8 +9,15 @@ import {
   createThread,
   createContinuityCapture,
   applyContinuityCorrection,
+  createVNextContextPack,
+  createVNextOpenLoop,
+  createVNextProject,
+  createVNextSource,
   deriveThreadWorkflowState,
   createOpenLoop,
+  generateVNextDailyBrief,
+  generateVNextProjectUpdate,
+  generateVNextWeeklySynthesis,
   getCalendarAccountDetail,
   getGmailAccountDetail,
   getOpenLoopDetail,
@@ -27,6 +34,8 @@ import {
   getMemoryTrustDashboard,
   getMemoryRevisions,
   getTaskSteps,
+  getVNextBrainCharter,
+  getVNextWorkspace,
   getThreadDetail,
   getThreadEvents,
   getThreadResumptionBrief,
@@ -67,6 +76,9 @@ import {
   isLocalApiBaseUrl,
   pageModeLabel,
   resolveApproval,
+  reviewVNextArtifact,
+  reviewVNextMemory,
+  reviewVNextOpenLoop,
   shouldExpectThreadExecutionReview,
   submitAssistantResponse,
   submitApprovalRequest,
@@ -75,6 +87,7 @@ import {
   applyContinuityOpenLoopReviewAction,
   submitMemoryLabel,
   updateOpenLoopStatus,
+  upsertVNextBrainCharter,
 } from "./api";
 
 describe("api helpers", () => {
@@ -3588,6 +3601,114 @@ describe("api helpers", () => {
       user_id: "user-1",
       action: "done",
       note: "done in standup",
+    });
+  });
+
+  it("uses the live vNext workspace endpoints and write payloads", async () => {
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+
+    await getVNextWorkspace("https://api.example.com", "user-1");
+    await createVNextSource("https://api.example.com", {
+      user_id: "user-1",
+      raw_text: "Decision: live workspace uses Postgres.",
+      title: "Live workspace note",
+      domain: "project",
+      sensitivity: "private",
+    });
+    await createVNextContextPack("https://api.example.com", {
+      user_id: "user-1",
+      query: "live workspace",
+      scope: { domains: ["project"] },
+      options: { sensitivity_allowed: ["public", "private"] },
+    });
+    await generateVNextDailyBrief("https://api.example.com", {
+      user_id: "user-1",
+      scope: { domains: ["project"] },
+      options: { generated_for: "2026-05-11" },
+    });
+    await generateVNextWeeklySynthesis("https://api.example.com", {
+      user_id: "user-1",
+      scope: { domains: ["project"] },
+      options: { generated_for: "2026-W20" },
+    });
+    await reviewVNextArtifact("https://api.example.com", "artifact-1", {
+      user_id: "user-1",
+      action: "archive",
+    });
+    await reviewVNextMemory("https://api.example.com", "memory-1", {
+      user_id: "user-1",
+      action: "assign_project",
+      project_id: "project-1",
+      reason: "Project review",
+    });
+    await createVNextProject("https://api.example.com", {
+      user_id: "user-1",
+      name: "Launch",
+      domain: "project",
+      sensitivity: "private",
+    });
+    await generateVNextProjectUpdate("https://api.example.com", {
+      user_id: "user-1",
+      scope: { domains: ["project"] },
+      options: { project_id: "project-1" },
+    });
+    await createVNextOpenLoop("https://api.example.com", {
+      user_id: "user-1",
+      title: "Confirm launch owner",
+      project_id: "project-1",
+      priority: "high",
+      domain: "project",
+      sensitivity: "private",
+    });
+    await reviewVNextOpenLoop("https://api.example.com", "loop-1", {
+      user_id: "user-1",
+      action: "snooze",
+      due_at: "2026-05-12T09:00:00Z",
+    });
+    await getVNextBrainCharter("https://api.example.com", "user-1");
+    await upsertVNextBrainCharter("https://api.example.com", {
+      user_id: "user-1",
+      content_markdown: "# ALICE.md",
+      sensitivity: "private",
+    });
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "https://api.example.com/v0/vnext/workspace?user_id=user-1",
+      "https://api.example.com/v0/vnext/sources",
+      "https://api.example.com/v0/vnext/context-packs",
+      "https://api.example.com/v0/vnext/artifacts/generate/daily-brief",
+      "https://api.example.com/v0/vnext/artifacts/generate/weekly-synthesis",
+      "https://api.example.com/v0/vnext/artifacts/artifact-1/review",
+      "https://api.example.com/v0/vnext/memories/memory-1/review",
+      "https://api.example.com/v0/vnext/projects",
+      "https://api.example.com/v0/vnext/projects/update-candidates",
+      "https://api.example.com/v0/vnext/open-loops",
+      "https://api.example.com/v0/vnext/open-loops/loop-1/review",
+      "https://api.example.com/v0/vnext/settings/brain-charter?user_id=user-1",
+      "https://api.example.com/v0/vnext/settings/brain-charter",
+    ]);
+    expect(fetchMock.mock.calls[1]?.[1]).toEqual(
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(fetchMock.mock.calls[12]?.[1]).toEqual(
+      expect.objectContaining({ method: "PUT" }),
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[6]?.[1]?.body))).toEqual({
+      user_id: "user-1",
+      action: "assign_project",
+      project_id: "project-1",
+      reason: "Project review",
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[10]?.[1]?.body))).toEqual({
+      user_id: "user-1",
+      action: "snooze",
+      due_at: "2026-05-12T09:00:00Z",
     });
   });
 });

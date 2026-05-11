@@ -71,23 +71,29 @@ describe("VNextPage", () => {
     cleanup();
   });
 
-  it("renders the full fixture-backed vNext brain workspace", () => {
-    render(<VNextPage />);
+  async function renderVNextPage() {
+    render(await VNextPage({}));
+  }
+
+  it("renders the full fixture-backed vNext brain workspace", async () => {
+    await renderVNextPage();
 
     expect(screen.getByRole("heading", { name: "True second-brain workspace" })).toBeInTheDocument();
-    expect(screen.getByText("Sprint 11 connector seed")).toBeInTheDocument();
+    expect(screen.getByText("Demo fallback")).toBeInTheDocument();
 
     for (const surface of EXPECTED_SURFACES) {
       expect(screen.getByRole("link", { name: surface })).toBeInTheDocument();
     }
 
-    expect(screen.getByText("Today at a glance")).toBeInTheDocument();
-    expect(screen.getByText("Review queue")).toBeInTheDocument();
+    expect(screen.getByText("Recent activity")).toBeInTheDocument();
+    expect(screen.getByText("Source capture")).toBeInTheDocument();
+    expect(screen.getByText("Candidate memories")).toBeInTheDocument();
     expect(screen.getByText("Evidence-first answer")).toBeInTheDocument();
-    expect(screen.getByText("Artifacts with provenance")).toBeInTheDocument();
+    expect(screen.getByText("Artifacts with review actions")).toBeInTheDocument();
     expect(screen.getByText("Belief review")).toBeInTheDocument();
     expect(screen.getByText("Connection graph")).toBeInTheDocument();
     expect(screen.getByText("Connector settings")).toBeInTheDocument();
+    expect(screen.getByText("Brain Charter")).toBeInTheDocument();
     expect(screen.getAllByText("Telegram capture").length).toBeGreaterThan(0);
     expect(screen.getByText("Browser clipper")).toBeInTheDocument();
     expect(screen.getByText("DOCX processing")).toBeInTheDocument();
@@ -117,15 +123,18 @@ describe("VNextPage", () => {
     ).toBe(true);
   });
 
-  it("updates review state, labels, project assignment, and open loops from Inbox actions", () => {
-    render(<VNextPage />);
+  it("updates review state, labels, project assignment, and open loops from Inbox actions", async () => {
+    await renderVNextPage();
 
     fireEvent.change(screen.getByLabelText("Edited memory title"), {
       target: { value: "Confirmed launch owner needs explicit review." },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Save selected edit" }));
+    fireEvent.change(screen.getByLabelText("Edited memory text"), {
+      target: { value: "Confirmed launch owner needs explicit review." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save edit" }));
     expect(screen.getAllByText("Confirmed launch owner needs explicit review.").length).toBeGreaterThan(0);
-    expect(screen.getByText("Saved edited memory text with review provenance intact.")).toBeInTheDocument();
+    expect(screen.getAllByText("Demo memory review action applied: edit.").length).toBeGreaterThan(0);
 
     fireEvent.change(screen.getByLabelText("Domain label"), {
       target: { value: "financial" },
@@ -133,35 +142,30 @@ describe("VNextPage", () => {
     fireEvent.change(screen.getByLabelText("Sensitivity label"), {
       target: { value: "confidential" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Apply domain and sensitivity labels" }));
-    expect(screen.getByText("Applied labels: Financial / Confidential.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save edit" }));
+    expect(screen.getAllByText("Demo memory review action applied: edit.").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Domain: Financial").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Sensitivity: Confidential").length).toBeGreaterThan(0);
 
-    fireEvent.change(screen.getByLabelText("Assigned project"), {
-      target: { value: "Launch command center" },
-    });
     fireEvent.click(screen.getByRole("button", { name: "Assign project" }));
-    expect(screen.getByText("Assigned selected memory to Launch command center.")).toBeInTheDocument();
-    expect(screen.getAllByText("Project: Launch command center").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Demo memory review action applied: assign_project.").length).toBeGreaterThan(0);
 
-    fireEvent.click(screen.getByRole("button", { name: "Accept selected memory" }));
-    expect(screen.getByText("Accepted candidate from Inbox review.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
+    expect(screen.getAllByText("Demo memory review action applied: accept.").length).toBeGreaterThan(0);
 
-    fireEvent.click(screen.getByRole("button", { name: "Promote to belief" }));
-    expect(screen.getByText("Promoted selected memory candidate to belief review.")).toBeInTheDocument();
-    expect(screen.getAllByText("Promoted").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "Promote" }));
+    expect(screen.getAllByText("Demo memory review action applied: promote.").length).toBeGreaterThan(0);
 
     fireEvent.change(screen.getByLabelText("Open-loop title"), {
       target: { value: "Follow up with Sam about launch owner" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Create open loop from selected memory" }));
-    expect(screen.getByText("Created open loop from selected memory candidate.")).toBeInTheDocument();
+    expect(screen.getAllByText("Demo open loop created.").length).toBeGreaterThan(0);
     expect(screen.getByText("Follow up with Sam about launch owner")).toBeInTheDocument();
   });
 
-  it("refreshes Ask Alice output and saves the answer as a generated artifact with provenance", () => {
-    render(<VNextPage />);
+  it("refreshes Ask Alice output and generates reviewable artifacts", async () => {
+    await renderVNextPage();
 
     fireEvent.change(screen.getByLabelText("Ask Alice question"), {
       target: { value: "Where is the launch risk concentrated?" },
@@ -170,31 +174,30 @@ describe("VNextPage", () => {
 
     expect(
       screen.getByText(
-        /For "Where is the launch risk concentrated\?", Alice would focus on the launch owner/i,
+        /For "Where is the launch risk concentrated\?", Alice would focus on launch ownership/i,
       ),
     ).toBeInTheDocument();
-    expect(screen.getAllByText(/open_loop\.loop-1/).length).toBeGreaterThan(0);
 
-    fireEvent.click(screen.getByRole("button", { name: "Save answer as artifact" }));
-    expect(screen.getByText("ask-alice-answer-3.md")).toBeInTheDocument();
-    expect(screen.getByText("Saved ask-alice-answer-3.md with provenance.")).toBeInTheDocument();
-    expect(screen.getAllByText(/Provenance:/).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "Generate daily brief" }));
+    expect(screen.getAllByText("Demo daily artifact generated.").length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Generate weekly synthesis" }));
+    expect(screen.getAllByText("Demo weekly artifact generated.").length).toBeGreaterThan(0);
   });
 
-  it("updates connector defaults from the settings surface", () => {
-    render(<VNextPage />);
+  it("saves Brain Charter settings and keeps connector settings visible", async () => {
+    await renderVNextPage();
 
-    fireEvent.click(screen.getByRole("button", { name: /Browser clipper/i }));
-    fireEvent.change(screen.getByLabelText("Connector domain default"), {
-      target: { value: "project" },
-    });
-    fireEvent.change(screen.getByLabelText("Connector sensitivity default"), {
+    fireEvent.change(screen.getByLabelText("Charter sensitivity"), {
       target: { value: "confidential" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Save connector defaults" }));
+    fireEvent.change(screen.getByLabelText("Brain Charter Markdown"), {
+      target: { value: "# ALICE.md\n\nUse provenance-first review." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save Brain Charter" }));
 
-    expect(screen.getByText("Saved Browser clipper defaults: Project / Confidential.")).toBeInTheDocument();
-    expect(screen.getAllByText("Default domain: Project").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Default sensitivity: Confidential").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Demo Brain Charter settings saved.").length).toBeGreaterThan(0);
+    expect(screen.getByText("Browser clipper")).toBeInTheDocument();
+    expect(screen.getAllByText("Default sensitivity: Private").length).toBeGreaterThan(0);
   });
 });

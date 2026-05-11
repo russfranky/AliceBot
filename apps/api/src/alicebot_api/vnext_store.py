@@ -411,14 +411,42 @@ class PostgresVNextStore:
             ),
         )
 
-    def list_events(self, *, target_type: str | None = None, target_id: str | None = None) -> list[VNextRow]:
+    def list_events(
+        self,
+        *,
+        target_type: str | None = None,
+        target_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[VNextRow]:
         if target_type is None and target_id is None:
+            if limit is not None:
+                return self._fetch_all(
+                    f"""
+                    SELECT {EVENT_LOG_COLUMNS}
+                    FROM event_log
+                    ORDER BY occurred_at DESC, id DESC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
             return self._fetch_all(
                 f"""
                 SELECT {EVENT_LOG_COLUMNS}
                 FROM event_log
                 ORDER BY occurred_at DESC, id DESC
                 """
+            )
+        if limit is not None:
+            return self._fetch_all(
+                f"""
+                SELECT {EVENT_LOG_COLUMNS}
+                FROM event_log
+                WHERE (%s::text IS NULL OR target_type = %s)
+                  AND (%s::text IS NULL OR target_id = %s)
+                ORDER BY occurred_at DESC, id DESC
+                LIMIT %s
+                """,
+                (target_type, target_type, target_id, target_id, limit),
             )
         return self._fetch_all(
             f"""
@@ -427,8 +455,28 @@ class PostgresVNextStore:
                 WHERE (%s::text IS NULL OR target_type = %s)
                   AND (%s::text IS NULL OR target_id = %s)
                 ORDER BY occurred_at DESC, id DESC
-                """,
+            """,
             (target_type, target_type, target_id, target_id),
+        )
+
+    def list_sources(
+        self,
+        *,
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+        limit: int = 20,
+    ) -> list[VNextRow]:
+        return self._fetch_all(
+            f"""
+                SELECT {SOURCE_COLUMNS}
+                FROM sources
+                WHERE deleted_at IS NULL
+                  AND (%s::text[] IS NULL OR domain = ANY(%s::text[]) OR domain = 'unknown')
+                  AND (%s::text[] IS NULL OR sensitivity = ANY(%s::text[]))
+                ORDER BY captured_at DESC, id DESC
+                LIMIT %s
+                """,
+            (domains, domains, sensitivity_allowed, sensitivity_allowed, limit),
         )
 
     def create_source(self, source: JsonObject, *, actor_type: str = "system") -> VNextRow:
@@ -1399,8 +1447,25 @@ class PostgresVNextStore:
                 SELECT {PERSON_COLUMNS}
                 FROM people
                 WHERE id = %s::uuid
-                """,
+            """,
             (person_id,),
+        )
+
+    def list_people(
+        self,
+        *,
+        sensitivity_allowed: list[str] | None = None,
+        limit: int = 8,
+    ) -> list[VNextRow]:
+        return self._fetch_all(
+            f"""
+                SELECT {PERSON_COLUMNS}
+                FROM people
+                WHERE (%s::text[] IS NULL OR sensitivity = ANY(%s::text[]))
+                ORDER BY updated_at DESC, created_at DESC, id DESC
+                LIMIT %s
+                """,
+            (sensitivity_allowed, sensitivity_allowed, limit),
         )
 
     def update_person(self, *, person_id: str, patch: JsonObject, actor_type: str = "system") -> VNextRow:
@@ -2073,6 +2138,18 @@ class PostgresVNextStore:
             payload={"operation": "update_status", "status": status, "details": details},
         )
         return row
+
+    def list_tasks(self, *, status: str | None = None, limit: int = 8) -> list[VNextRow]:
+        return self._fetch_all(
+            f"""
+                SELECT {TASK_COLUMNS}
+                FROM task_queue
+                WHERE (%s::text IS NULL OR status = %s)
+                ORDER BY updated_at DESC, created_at DESC, id DESC
+                LIMIT %s
+                """,
+            (status, status, limit),
+        )
 
     def upsert_brain_charter(self, charter: JsonObject, *, actor_type: str = "system") -> VNextRow:
         row = self._fetch_one(

@@ -232,7 +232,8 @@ class FakeVNextStore:
         project.update(patch)
         return project
 
-    def create_edge(self, edge: dict[str, object]) -> dict[str, object]:
+    def create_edge(self, edge: dict[str, object], *, actor_type: str = "system") -> dict[str, object]:
+        del actor_type
         row = {**edge, "id": f"edge-{len(self.edges) + 1}"}
         self.edges[str(row["id"])] = row
         return row
