@@ -5,7 +5,7 @@ Audience: CTO / technical leadership
 Phase artifact: vNext agentic control plane and governed local scheduler
 Branch: `codex/agentic-control-plane-scheduler`
 PR: https://github.com/samrusani/AliceBot/pull/199
-Merge commit: pending until squash merge
+Merge commit: `67bcd1fe6accb5f663188b7907e3df75d181e815`
 
 ## Executive Summary
 
