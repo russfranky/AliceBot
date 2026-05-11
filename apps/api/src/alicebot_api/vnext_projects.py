@@ -332,6 +332,7 @@ class VNextProjectService:
                     "candidate_memory_id": candidate_memory.get("id"),
                     "suggested_current_state": suggested_current_state,
                     "source_ids": _source_ids(sources),
+                    "source_refs": [f"source:{source_id}" for source_id in _source_ids(sources)],
                     "memory_ids": _source_ids(memories),
                     "generated_by": request.generated_by,
                     "agent_identity": request.agent_identity,

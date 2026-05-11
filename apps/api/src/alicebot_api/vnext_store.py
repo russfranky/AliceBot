@@ -2598,6 +2598,16 @@ class PostgresVNextStore:
             (workflow_type, workflow_type, limit),
         )
 
+    def try_scheduler_workflow_lock(self, workflow_type: str) -> bool:
+        row = self._fetch_one(
+            "try_scheduler_workflow_lock",
+            """
+                SELECT pg_try_advisory_xact_lock(hashtextextended(%s::text, 17)) AS acquired
+                """,
+            (f"vnext_scheduler:{workflow_type}",),
+        )
+        return bool(row.get("acquired"))
+
 
 __all__ = [
     "PostgresVNextStore",

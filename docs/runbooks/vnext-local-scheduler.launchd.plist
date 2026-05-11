@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.alicebot.vnext-scheduler</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/YOUR_USER/path/to/AliceBot</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>ALICE_DATABASE_URL</key>
+    <string>postgresql://alice:alice@localhost:5432/alicebot</string>
+    <key>ALICE_USER_ID</key>
+    <string>00000000-0000-0000-0000-000000000000</string>
+  </dict>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/YOUR_USER/path/to/AliceBot/.venv/bin/python</string>
+    <string>-m</string>
+    <string>alicebot_api</string>
+    <string>--database-url</string>
+    <string>postgresql://alice:alice@localhost:5432/alicebot</string>
+    <string>--user-id</string>
+    <string>00000000-0000-0000-0000-000000000000</string>
+    <string>vnext</string>
+    <string>scheduler</string>
+    <string>daemon</string>
+    <string>start</string>
+    <string>--foreground</string>
+    <string>--interval-seconds</string>
+    <string>60</string>
+    <string>--limit</string>
+    <string>10</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/YOUR_USER/.alicebot/vnext-scheduler/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/YOUR_USER/.alicebot/vnext-scheduler/launchd.err.log</string>
+</dict>
+</plist>

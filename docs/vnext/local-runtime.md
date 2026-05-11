@@ -1,0 +1,89 @@
+# Alice vNext Local Runtime
+
+Alice vNext now includes a local scheduler runtime for running governed Alice Brain workflows in the background. This is a local alpha runtime, not a hosted scheduler service.
+
+## What It Runs
+
+The daemon wraps:
+
+```bash
+alicebot vnext scheduler daemon start
+```
+
+In foreground mode, it polls `alicebot vnext scheduler run-due` behavior on an interval and persists status to `~/.alicebot/vnext-scheduler/scheduler-status.json`. In background mode, it spawns the same foreground worker as a local process and records a pid file, status file, and log file.
+
+## Commands
+
+```bash
+alicebot vnext scheduler daemon start
+alicebot vnext scheduler daemon start --foreground
+alicebot vnext scheduler daemon start --foreground --once
+alicebot vnext scheduler daemon status
+alicebot vnext scheduler daemon stop
+alicebot vnext scheduler runs
+alicebot vnext scheduler failures
+alicebot vnext agents policy-telemetry
+alicebot vnext smoke local-runtime
+```
+
+Useful options:
+
+- `--interval-seconds`: due-scan polling interval. Default: `60`.
+- `--limit`: maximum due workflows per scan. Default: `10`.
+- `--pid-file`: daemon pid path. Default: `~/.alicebot/vnext-scheduler/scheduler.pid`.
+- `--status-file`: daemon status JSON path. Default: `~/.alicebot/vnext-scheduler/scheduler-status.json`.
+- `--log-file`: daemon log path. Default: `~/.alicebot/vnext-scheduler/scheduler.log`.
+
+## Scheduler Guarantees
+
+- Workflows remain disabled by default.
+- Disabled workflows are not run.
+- Paused workflows are not run.
+- Due scans use a per-workflow Postgres advisory lock to avoid duplicate concurrent runs for the same workflow.
+- Daily Brief and Weekly Synthesis scheduled runs still produce reviewable generated artifacts.
+- Connection Report, Contradiction Report, Open Loop Review, and Project Update Scan now produce deterministic reviewable artifacts from scheduled runs.
+- Scheduled artifacts include scheduler trace metadata: `generated_by`, `workflow_type`, `scheduler_run_id`, `trace_id`, `source_refs`, `domain`, `sensitivity`, and `review_status`.
+- Generated artifacts and agent proposals are not auto-promoted into trusted memory.
+
+## Operator Visibility
+
+The `/vnext` Schedules surface shows daemon posture, last due scan, next due workflow, currently running workflow, recent failures, last successful run per workflow, and run history. The Timeline surface remains backed by the append-only event log. Agent Activity includes policy blocks, filters, review-gated decisions, workflow triggers, memory proposals, and artifact generation telemetry.
+
+The API exposes the same local runtime posture through:
+
+- `GET /v0/vnext/scheduler/status`
+- `GET /v0/vnext/scheduler/runs`
+- `GET /v0/vnext/scheduler/failures`
+- `POST /v0/vnext/scheduler/run-due`
+- `GET /v0/vnext/agents/policy-telemetry`
+
+## macOS launchd
+
+Use [docs/runbooks/vnext-local-scheduler.launchd.plist](../runbooks/vnext-local-scheduler.launchd.plist) as the template. Replace the paths, `ALICE_DATABASE_URL`, and `ALICE_USER_ID` values before loading it.
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.alicebot.vnext-scheduler.plist
+launchctl kickstart -k gui/$(id -u)/com.alicebot.vnext-scheduler
+launchctl bootout gui/$(id -u)/com.alicebot.vnext-scheduler
+```
+
+## Linux systemd
+
+Use [docs/runbooks/vnext-local-scheduler.service](../runbooks/vnext-local-scheduler.service) as the template. Replace the working directory, environment variables, user, and venv path before enabling it.
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now alicebot-vnext-scheduler.service
+systemctl --user status alicebot-vnext-scheduler.service
+systemctl --user stop alicebot-vnext-scheduler.service
+```
+
+## Validation
+
+The local runtime smoke is Postgres-backed:
+
+```bash
+alicebot vnext smoke local-runtime
+```
+
+It seeds a small local-runtime fixture, marks all six scheduler workflows due, runs the foreground daemon once, and checks that each workflow produces a reviewable artifact with scheduler metadata.

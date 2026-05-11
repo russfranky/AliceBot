@@ -349,6 +349,21 @@ export type VNextSchedulerRunRecord = VNextRow & {
   metadata_json?: JsonObject;
 };
 
+export type VNextSchedulerDaemonStatus = {
+  configured?: boolean;
+  running?: boolean;
+  pid?: number | null;
+  pid_file?: string;
+  status_file?: string;
+  started_at?: string;
+  stopped_at?: string;
+  last_heartbeat_at?: string;
+  last_due_scan_at?: string;
+  last_due_count?: number;
+  last_error?: string | null;
+  mode?: string;
+};
+
 export type VNextSchedulerStatus = {
   mode: string;
   disabled_by_default: boolean;
@@ -357,6 +372,12 @@ export type VNextSchedulerStatus = {
   enabled_count: number;
   paused_count: number;
   last_failure: VNextSchedulerRunRecord | null;
+  recent_failures?: VNextSchedulerRunRecord[];
+  last_due_scan?: VNextEventRecord | null;
+  next_due_workflow?: VNextSchedulerWorkflowRecord | null;
+  currently_running_workflow?: VNextSchedulerRunRecord | null;
+  last_success_by_workflow?: Record<string, VNextSchedulerRunRecord | null>;
+  daemon?: VNextSchedulerDaemonStatus;
 };
 
 export type VNextAgentActivity = {
@@ -365,6 +386,23 @@ export type VNextAgentActivity = {
   policy_blocks: VNextEventRecord[];
   generated_artifacts: VNextArtifactRecord[];
   pending_review_items: VNextMemoryRecord[];
+};
+
+export type VNextTelemetryCounter = {
+  count: number;
+  [key: string]: unknown;
+};
+
+export type VNextPolicyTelemetrySummary = {
+  total_agent_events: number;
+  total_policy_decisions: number;
+  policy_blocks_by_agent: VNextTelemetryCounter[];
+  policy_filters_by_agent: VNextTelemetryCounter[];
+  requires_review_by_agent: VNextTelemetryCounter[];
+  restricted_domains_requested: VNextTelemetryCounter[];
+  workflows_triggered_by_agents: VNextTelemetryCounter[];
+  memory_proposals_by_agent: VNextTelemetryCounter[];
+  artifact_generation_by_agent: VNextTelemetryCounter[];
 };
 
 export type VNextWorkspacePayload = {
@@ -394,6 +432,7 @@ export type VNextWorkspacePayload = {
   tasks: VNextTaskRecord[];
   recent_events: VNextEventRecord[];
   agent_activity?: VNextAgentActivity;
+  policy_telemetry?: VNextPolicyTelemetrySummary;
   scheduler?: VNextSchedulerStatus;
   brain_charter: VNextBrainCharterRecord | null;
 };
@@ -4052,6 +4091,24 @@ export function getVNextSchedulerStatus(apiBaseUrl: string, userId: string) {
   );
 }
 
+export function getVNextSchedulerFailures(apiBaseUrl: string, userId: string, limit = 20) {
+  return requestJson<{ items: VNextSchedulerRunRecord[]; count: number }>(
+    apiBaseUrl,
+    "/v0/vnext/scheduler/failures",
+    undefined,
+    { user_id: userId, limit: String(limit) },
+  );
+}
+
+export function getVNextPolicyTelemetry(apiBaseUrl: string, userId: string) {
+  return requestJson<{ summary: VNextPolicyTelemetrySummary }>(
+    apiBaseUrl,
+    "/v0/vnext/agents/policy-telemetry",
+    undefined,
+    { user_id: userId },
+  );
+}
+
 export function patchVNextSchedulerWorkflow(
   apiBaseUrl: string,
   workflowType: string,
@@ -4083,6 +4140,21 @@ export function runVNextSchedulerWorkflowNow(
     artifact: VNextArtifactRecord | null;
     policy_decision: VNextPolicyDecisionRecord;
   }>(apiBaseUrl, `/v0/vnext/scheduler/workflows/${workflowType}/run-now`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function runVNextSchedulerDue(
+  apiBaseUrl: string,
+  payload: { user_id: string; limit?: number },
+) {
+  return requestJson<{
+    checked_at: string;
+    due_count: number;
+    runs: { workflow_type: string; scheduled_for: string; run: VNextSchedulerRunRecord; artifact: VNextArtifactRecord | null }[];
+    policy_decision: VNextPolicyDecisionRecord;
+  }>(apiBaseUrl, "/v0/vnext/scheduler/run-due", {
     method: "POST",
     body: JSON.stringify(payload),
   });

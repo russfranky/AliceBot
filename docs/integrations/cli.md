@@ -39,11 +39,18 @@ alice brief --brief-type general --query local-first
 alicebot context-pack "Alice sprint context" --domain project
 alicebot vnext agents propose-memory --agent-id openclaw --permission-profile project_scoped_agent --project-scope Alice --title "Candidate memory" --canonical-text "Alice should keep agent proposals review-only." --domain project --sensitivity private
 alicebot vnext scheduler status
+alicebot vnext scheduler daemon start --foreground
+alicebot vnext scheduler daemon status
+alicebot vnext scheduler daemon stop
 alicebot vnext scheduler run-now daily_brief --agent-id hermes --permission-profile trusted_local_agent --project-scope Alice --domain project
 alicebot vnext scheduler run-due --agent-id hermes --permission-profile trusted_local_agent
+alicebot vnext scheduler runs
+alicebot vnext scheduler failures
 alicebot vnext scheduler pause --agent-id hermes --permission-profile trusted_local_agent
 alicebot vnext scheduler resume --agent-id hermes --permission-profile trusted_local_agent
+alicebot vnext agents policy-telemetry
 alicebot vnext smoke agentic-scheduler
+alicebot vnext smoke local-runtime
 ```
 
 The vNext agent arguments are `--agent-id`, `--agent-type`, `--agent-run-id`, `--agent-task-id`, `--project-scope`, and `--permission-profile`. Agent-originated scheduler and memory-proposal commands are policy checked, logged, and kept review-only where they create memory or generated artifacts.
@@ -67,7 +74,7 @@ The vNext agent arguments are `--agent-id`, `--agent-type`, `--agent-run-id`, `-
 - output format is deterministic for stable automated validation
 - provenance snippets remain visible in recall/resume responses
 - correction flow updates future recall/resume results
-- vNext scheduler smoke output is JSON and fails nonzero if any agent/scheduler gate fails
+- vNext scheduler smoke output is JSON and fails nonzero if any agent/scheduler/local-runtime gate fails
 
 See tests:
 

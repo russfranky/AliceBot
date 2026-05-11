@@ -35,6 +35,8 @@ import {
   getMemoryRevisions,
   getTaskSteps,
   getVNextBrainCharter,
+  getVNextPolicyTelemetry,
+  getVNextSchedulerFailures,
   getVNextWorkspace,
   getThreadDetail,
   getThreadEvents,
@@ -79,6 +81,8 @@ import {
   reviewVNextArtifact,
   reviewVNextMemory,
   reviewVNextOpenLoop,
+  runVNextSchedulerDue,
+  runVNextSchedulerWorkflowNow,
   shouldExpectThreadExecutionReview,
   submitAssistantResponse,
   submitApprovalRequest,
@@ -3677,6 +3681,14 @@ describe("api helpers", () => {
       content_markdown: "# ALICE.md",
       sensitivity: "private",
     });
+    await getVNextSchedulerFailures("https://api.example.com", "user-1", 5);
+    await runVNextSchedulerWorkflowNow("https://api.example.com", "daily_brief", {
+      user_id: "user-1",
+      scope: { domains: ["project"] },
+      options: { sensitivity_allowed: ["public", "private"] },
+    });
+    await runVNextSchedulerDue("https://api.example.com", { user_id: "user-1", limit: 10 });
+    await getVNextPolicyTelemetry("https://api.example.com", "user-1");
 
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
       "https://api.example.com/v0/vnext/workspace?user_id=user-1",
@@ -3692,12 +3704,22 @@ describe("api helpers", () => {
       "https://api.example.com/v0/vnext/open-loops/loop-1/review",
       "https://api.example.com/v0/vnext/settings/brain-charter?user_id=user-1",
       "https://api.example.com/v0/vnext/settings/brain-charter",
+      "https://api.example.com/v0/vnext/scheduler/failures?user_id=user-1&limit=5",
+      "https://api.example.com/v0/vnext/scheduler/workflows/daily_brief/run-now",
+      "https://api.example.com/v0/vnext/scheduler/run-due",
+      "https://api.example.com/v0/vnext/agents/policy-telemetry?user_id=user-1",
     ]);
     expect(fetchMock.mock.calls[1]?.[1]).toEqual(
       expect.objectContaining({ method: "POST" }),
     );
     expect(fetchMock.mock.calls[12]?.[1]).toEqual(
       expect.objectContaining({ method: "PUT" }),
+    );
+    expect(fetchMock.mock.calls[14]?.[1]).toEqual(
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(fetchMock.mock.calls[15]?.[1]).toEqual(
+      expect.objectContaining({ method: "POST" }),
     );
     expect(JSON.parse(String(fetchMock.mock.calls[6]?.[1]?.body))).toEqual({
       user_id: "user-1",

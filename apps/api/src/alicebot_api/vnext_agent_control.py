@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections import Counter, defaultdict
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Iterable, Mapping
 from uuid import uuid4
 
 from alicebot_api.vnext_event_log import append_event
@@ -134,10 +135,13 @@ class PolicyDecision:
     action: str
     permission_profile: str
     reasons: tuple[str, ...] = ()
+    requested_domains: tuple[str, ...] = ()
     effective_domains: tuple[str, ...] = ()
+    requested_sensitivity_allowed: tuple[str, ...] = DEFAULT_AGENT_SENSITIVITY
     effective_sensitivity_allowed: tuple[str, ...] = DEFAULT_AGENT_SENSITIVITY
     review_required: bool = False
     trace_id: str = ""
+    workflow_type: str | None = None
 
     def to_record(self) -> JsonObject:
         return {
@@ -145,10 +149,13 @@ class PolicyDecision:
             "action": self.action,
             "permission_profile": self.permission_profile,
             "reasons": list(self.reasons),
+            "requested_domains": list(self.requested_domains),
             "effective_domains": list(self.effective_domains),
+            "requested_sensitivity_allowed": list(self.requested_sensitivity_allowed),
             "effective_sensitivity_allowed": list(self.effective_sensitivity_allowed),
             "review_required": self.review_required,
             "trace_id": self.trace_id,
+            "workflow_type": self.workflow_type,
         }
 
 
@@ -232,9 +239,12 @@ def evaluate_agent_policy(
             decision="allowed",
             action=action,
             permission_profile="user_or_system",
+            requested_domains=domains,
             effective_domains=domains,
+            requested_sensitivity_allowed=sensitivity_allowed,
             effective_sensitivity_allowed=sensitivity_allowed,
             trace_id=trace_id,
+            workflow_type=workflow_type,
         )
 
     profile = identity.permission_profile
@@ -308,11 +318,170 @@ def evaluate_agent_policy(
         action=action,
         permission_profile=profile,
         reasons=tuple(dict.fromkeys(reasons)),
+        requested_domains=domains,
         effective_domains=effective_domains,
+        requested_sensitivity_allowed=sensitivity_allowed,
         effective_sensitivity_allowed=effective_sensitivity,
         review_required=review_required or decision == "requires_review",
         trace_id=trace_id,
+        workflow_type=workflow_type,
     )
+
+
+def _event_payload(event: Mapping[str, object]) -> Mapping[str, object]:
+    payload = event.get("payload_json")
+    if isinstance(payload, Mapping):
+        return payload
+    payload = event.get("payload")
+    if isinstance(payload, Mapping):
+        return payload
+    return {}
+
+
+def _policy_decision_from_event(event: Mapping[str, object]) -> Mapping[str, object] | None:
+    payload = _event_payload(event)
+    decision = payload.get("policy_decision")
+    return decision if isinstance(decision, Mapping) else None
+
+
+def _agent_id_for_event(event: Mapping[str, object]) -> str:
+    actor_id = event.get("actor_id")
+    if isinstance(actor_id, str) and actor_id:
+        return actor_id
+    payload = _event_payload(event)
+    identity = payload.get("agent_identity")
+    if isinstance(identity, Mapping) and isinstance(identity.get("agent_id"), str):
+        return str(identity["agent_id"])
+    return "unknown"
+
+
+def _counter_rows(counter: Counter[str], *, key_name: str) -> list[JsonObject]:
+    return [
+        {key_name: key, "count": count}
+        for key, count in counter.most_common()
+    ]
+
+
+def _nested_counter_rows(counter: Mapping[str, Counter[str]], *, key_name: str, nested_key: str) -> list[JsonObject]:
+    rows: list[JsonObject] = []
+    for key in sorted(counter):
+        nested = counter[key]
+        rows.append(
+            {
+                key_name: key,
+                "count": sum(nested.values()),
+                nested_key: dict(nested.most_common()),
+            }
+        )
+    return sorted(rows, key=lambda row: (-int(row["count"]), str(row[key_name])))
+
+
+def summarize_agent_policy_telemetry(
+    *,
+    agent_events: Iterable[Mapping[str, object]],
+    artifacts: Iterable[Mapping[str, object]] = (),
+    memories: Iterable[Mapping[str, object]] = (),
+) -> JsonObject:
+    """Build a compact operator summary from append-only agent events."""
+
+    blocks_by_agent: defaultdict[str, Counter[str]] = defaultdict(Counter)
+    filters_by_agent: defaultdict[str, Counter[str]] = defaultdict(Counter)
+    review_by_agent: defaultdict[str, Counter[str]] = defaultdict(Counter)
+    restricted_domains = Counter()
+    workflows = Counter()
+    workflow_agents: defaultdict[str, Counter[str]] = defaultdict(Counter)
+    memory_proposals = Counter()
+    artifact_generation = Counter()
+    total_policy_decisions = 0
+    total_agent_events = 0
+    seen_policy_traces: set[str] = set()
+    memory_proposal_ids: set[str] = set()
+    artifact_generation_ids: set[str] = set()
+
+    for event in agent_events:
+        total_agent_events += 1
+        agent_id = _agent_id_for_event(event)
+        event_type = str(event.get("event_type") or "")
+        payload = _event_payload(event)
+        decision = _policy_decision_from_event(event)
+        if decision is not None:
+            trace_id = str(decision.get("trace_id") or event.get("trace_id") or "")
+            if trace_id and trace_id in seen_policy_traces:
+                decision = None
+            elif trace_id:
+                seen_policy_traces.add(trace_id)
+        if decision is not None:
+            total_policy_decisions += 1
+            action = str(decision.get("action") or "unknown")
+            decision_value = str(decision.get("decision") or "")
+            if decision_value == "blocked":
+                blocks_by_agent[agent_id][action] += 1
+            if decision_value == "allowed_with_filtering":
+                filters_by_agent[agent_id][action] += 1
+            if decision.get("review_required") is True or decision_value == "requires_review":
+                review_by_agent[agent_id][action] += 1
+            requested_domains = decision.get("requested_domains")
+            effective_domains = set(decision.get("effective_domains") or []) if isinstance(decision.get("effective_domains"), list) else set()
+            if isinstance(requested_domains, list):
+                for domain in requested_domains:
+                    if isinstance(domain, str) and domain not in effective_domains:
+                        restricted_domains[domain] += 1
+            elif "restricted_domain_filtered" in set(decision.get("reasons") or []):
+                restricted_domains["restricted_domain_filtered"] += 1
+            workflow_type = decision.get("workflow_type")
+            if action == "scheduler.run_now" and isinstance(workflow_type, str) and workflow_type:
+                workflows[workflow_type] += 1
+                workflow_agents[workflow_type][agent_id] += 1
+
+        if event_type == "agent.memory_proposed":
+            if isinstance(event.get("target_id"), str):
+                memory_proposal_ids.add(str(event["target_id"]))
+            memory_proposals[agent_id] += 1
+        if event_type in {"agent.artifact_generated", "artifact.generated"}:
+            if isinstance(event.get("target_id"), str):
+                artifact_generation_ids.add(str(event["target_id"]))
+            artifact_generation[agent_id] += 1
+        if event_type.startswith("scheduler.") and agent_id != "unknown":
+            workflow_type = payload.get("workflow_type")
+            if isinstance(workflow_type, str) and workflow_type:
+                workflows[workflow_type] += 1
+                workflow_agents[workflow_type][agent_id] += 1
+
+    for memory in memories:
+        metadata = memory.get("metadata_json")
+        memory_id = str(memory.get("id")) if memory.get("id") is not None else ""
+        if (
+            isinstance(metadata, Mapping)
+            and isinstance(metadata.get("agent_id"), str)
+            and memory_id not in memory_proposal_ids
+        ):
+            memory_proposals[str(metadata["agent_id"])] += 1
+
+    for artifact in artifacts:
+        metadata = artifact.get("metadata_json")
+        artifact_id = str(artifact.get("id")) if artifact.get("id") is not None else ""
+        if isinstance(metadata, Mapping) and metadata.get("generated_by") == "agent" and artifact_id not in artifact_generation_ids:
+            agent_id = metadata.get("agent_id")
+            artifact_generation[str(agent_id) if isinstance(agent_id, str) and agent_id else "unknown"] += 1
+
+    return {
+        "total_agent_events": total_agent_events,
+        "total_policy_decisions": total_policy_decisions,
+        "policy_blocks_by_agent": _nested_counter_rows(blocks_by_agent, key_name="agent_id", nested_key="actions"),
+        "policy_filters_by_agent": _nested_counter_rows(filters_by_agent, key_name="agent_id", nested_key="actions"),
+        "requires_review_by_agent": _nested_counter_rows(review_by_agent, key_name="agent_id", nested_key="actions"),
+        "restricted_domains_requested": _counter_rows(restricted_domains, key_name="domain"),
+        "workflows_triggered_by_agents": [
+            {
+                "workflow_type": workflow_type,
+                "count": count,
+                "agents": dict(workflow_agents[workflow_type].most_common()),
+            }
+            for workflow_type, count in workflows.most_common()
+        ],
+        "memory_proposals_by_agent": _counter_rows(memory_proposals, key_name="agent_id"),
+        "artifact_generation_by_agent": _counter_rows(artifact_generation, key_name="agent_id"),
+    }
 
 
 def ensure_policy_allowed(decision: PolicyDecision) -> None:
@@ -396,4 +565,5 @@ __all__ = [
     "append_policy_events",
     "ensure_policy_allowed",
     "evaluate_agent_policy",
+    "summarize_agent_policy_telemetry",
 ]

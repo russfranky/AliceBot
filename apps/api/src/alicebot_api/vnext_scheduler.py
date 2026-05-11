@@ -8,7 +8,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from alicebot_api.vnext_agent_control import AgentIdentity, PolicyDecision
 from alicebot_api.vnext_brain import BrainArtifactRequest, VNextBrainService
+from alicebot_api.vnext_connections import ConnectionFinderRequest, VNextConnectionService
+from alicebot_api.vnext_contradictions import ContradictionFinderRequest, VNextContradictionService
 from alicebot_api.vnext_event_log import append_event
+from alicebot_api.vnext_projects import ProjectAutomationRequest, VNextProjectService, VNextProjectValidationError
 from alicebot_api.vnext_repositories import JsonObject
 
 
@@ -51,6 +54,8 @@ class VNextSchedulerStore(Protocol):
 
     def list_scheduler_runs(self, *, workflow_type: str | None = None, limit: int = 20) -> list[JsonObject]: ...
 
+    def try_scheduler_workflow_lock(self, workflow_type: str) -> bool: ...
+
     def create_artifact(self, artifact: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
 
     def search_sources(self, **kwargs) -> list[JsonObject]: ...
@@ -60,6 +65,10 @@ class VNextSchedulerStore(Protocol):
     def list_open_loops(self, **kwargs) -> list[JsonObject]: ...
 
     def list_artifacts(self, **kwargs) -> list[JsonObject]: ...
+
+    def list_projects(self, **kwargs) -> list[JsonObject]: ...
+
+    def list_events(self, **kwargs) -> list[JsonObject]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,15 +217,39 @@ class VNextSchedulerService:
 
     def status(self) -> JsonObject:
         workflows = self.ensure_default_workflows()
-        runs = self.store.list_scheduler_runs(limit=20)
+        runs = self.store.list_scheduler_runs(limit=100)
+        recent_events = self.store.list_events(limit=100)
+        due_scan_events = [event for event in recent_events if event.get("event_type") == "scheduler.due_scan"]
+        failures = [run for run in runs if run.get("status") == "failed"]
+        successes = [run for run in runs if run.get("status") == "succeeded"]
+        running = next((run for run in runs if run.get("status") == "started"), None)
+        next_due_workflow = min(
+            (
+                workflow
+                for workflow in workflows
+                if workflow.get("enabled") is True
+                and workflow.get("paused") is not True
+                and workflow.get("next_run_at") is not None
+            ),
+            key=lambda workflow: str(workflow.get("next_run_at")),
+            default=None,
+        )
         return {
             "mode": "local_governed",
             "disabled_by_default": True,
             "workflows": workflows,
-            "recent_runs": runs,
+            "recent_runs": runs[:20],
             "enabled_count": sum(1 for row in workflows if row.get("enabled") is True),
             "paused_count": sum(1 for row in workflows if row.get("paused") is True),
-            "last_failure": next((run for run in runs if run.get("status") == "failed"), None),
+            "last_failure": failures[0] if failures else None,
+            "recent_failures": failures[:10],
+            "last_due_scan": due_scan_events[0] if due_scan_events else None,
+            "next_due_workflow": next_due_workflow,
+            "currently_running_workflow": running,
+            "last_success_by_workflow": {
+                workflow_type: next((run for run in successes if run.get("workflow_type") == workflow_type), None)
+                for workflow_type in WORKFLOW_TYPES
+            },
         }
 
     def configure_workflow(
@@ -298,6 +331,16 @@ class VNextSchedulerService:
             if next_run_at is None or next_run_at > checked_at:
                 continue
             workflow_type = str(workflow["workflow_type"])
+            if not self.store.try_scheduler_workflow_lock(workflow_type):
+                append_event(
+                    self.store,
+                    event_type="scheduler.workflow_lock_skipped",
+                    actor_type=triggered_by,
+                    target_type="scheduler_workflow",
+                    target_id=str(workflow.get("id")) if workflow.get("id") is not None else None,
+                    payload={"workflow_type": workflow_type, "scheduled_for": next_run_at.isoformat()},
+                )
+                continue
             result = self.run_now(
                 SchedulerRunRequest(
                     workflow_type=workflow_type,
@@ -418,10 +461,12 @@ class VNextSchedulerService:
         metadata = {
             "generated_by": "scheduler",
             "workflow": request.workflow_type,
+            "workflow_type": request.workflow_type,
             "scheduler_run_id": scheduler_run_id,
             "trace_id": trace_id,
             "policy_decision": request.policy_decision.to_record() if request.policy_decision else None,
             "agent_identity": request.agent_identity.to_record() if request.agent_identity else None,
+            "review_status": "needs_review",
         }
         brain_request = BrainArtifactRequest(
             domains=request.domains,
@@ -439,12 +484,37 @@ class VNextSchedulerService:
             return brain.generate_daily_brief(brain_request)
         if request.workflow_type == "weekly_synthesis":
             return brain.generate_weekly_synthesis(brain_request)
-        artifact_type = {
-            "connection_report": "connection_report",
-            "contradiction_report": "contradiction_report",
-            "open_loop_review": "open_loop_report",
-            "project_update_scan": "project_update",
-        }.get(request.workflow_type, "system_report")
+        if request.workflow_type == "connection_report":
+            return VNextConnectionService(self.store).generate_connection_report(
+                ConnectionFinderRequest(
+                    domains=request.domains,
+                    sensitivity_allowed=request.sensitivity_allowed,
+                    generated_by="scheduler",
+                    trace_id=trace_id,
+                    run_id=scheduler_run_id,
+                    agent_identity=request.agent_identity.to_record() if request.agent_identity else None,
+                    policy_decision=request.policy_decision.to_record() if request.policy_decision else None,
+                    metadata_json=metadata,
+                )
+            )
+        if request.workflow_type == "contradiction_report":
+            return VNextContradictionService(self.store).generate_contradiction_report(
+                ContradictionFinderRequest(
+                    domains=request.domains,
+                    sensitivity_allowed=request.sensitivity_allowed,
+                    generated_by="scheduler",
+                    trace_id=trace_id,
+                    run_id=scheduler_run_id,
+                    agent_identity=request.agent_identity.to_record() if request.agent_identity else None,
+                    policy_decision=request.policy_decision.to_record() if request.policy_decision else None,
+                    metadata_json=metadata,
+                )
+            )
+        if request.workflow_type == "open_loop_review":
+            return self._generate_open_loop_review_artifact(request, metadata=metadata)
+        if request.workflow_type == "project_update_scan":
+            return self._generate_project_update_scan_artifact(request, metadata=metadata)
+        artifact_type = "system_report"
         return self.store.create_artifact(
             {
                 "artifact_type": artifact_type,
@@ -465,6 +535,114 @@ class VNextSchedulerService:
             actor_type="scheduler",
         )
 
+    def _generate_open_loop_review_artifact(self, request: SchedulerRunRequest, *, metadata: JsonObject) -> JsonObject:
+        domains = list(request.domains) if request.domains else None
+        loops = self.store.list_open_loops(
+            status="open",
+            domains=domains,
+            sensitivity_allowed=list(request.sensitivity_allowed),
+            limit=20,
+        )
+        source_refs = [
+            f"source:{loop.get('source_id')}"
+            for loop in loops
+            if loop.get("source_id") is not None
+        ]
+        loop_lines = [
+            "\n".join(
+                [
+                    f"### {index}. {loop.get('title', 'Open loop')}",
+                    f"- Open loop: open_loop:{loop.get('id')}",
+                    f"- Priority: {loop.get('priority', 'normal')}",
+                    f"- Due: {loop.get('due_at') or 'not set'}",
+                    f"- Source: source:{loop.get('source_id')}" if loop.get("source_id") is not None else "- Source: not linked",
+                    f"- Description: {loop.get('description') or 'No description recorded.'}",
+                ]
+            )
+            for index, loop in enumerate(loops, start=1)
+        ] or ["- No open loops matched this scheduler scope."]
+        content = "\n\n".join(
+            [
+                f"# Open Loop Review - {request.generated_for or datetime.now(UTC).date().isoformat()}",
+                "## Open Items",
+                *loop_lines,
+                "## Review Policy",
+                "- This artifact is review-only and does not close, snooze, or promote any open loop automatically.",
+            ]
+        )
+        enriched_metadata = {
+            **metadata,
+            "workflow": "open_loop_review",
+            "open_loop_ids": [str(loop.get("id")) for loop in loops if loop.get("id") is not None],
+            "source_refs": source_refs,
+            "input_counts": {"open_loops": len(loops)},
+        }
+        return self.store.create_artifact(
+            {
+                "artifact_type": "open_loop_report",
+                "title": f"Open Loop Review - {request.generated_for or datetime.now(UTC).date().isoformat()}",
+                "content_markdown": content,
+                "status": "needs_review",
+                "domain": request.domains[0] if len(request.domains) == 1 else "unknown",
+                "sensitivity": self._highest_sensitivity(loops),
+                "generated_by": "scheduler",
+                "metadata_json": enriched_metadata,
+            },
+            actor_type="scheduler",
+        )
+
+    def _generate_project_update_scan_artifact(self, request: SchedulerRunRequest, *, metadata: JsonObject) -> JsonObject:
+        projects = self.store.list_projects(
+            status="active",
+            domains=list(request.domains) if request.domains else None,
+            sensitivity_allowed=list(request.sensitivity_allowed),
+            limit=1,
+        )
+        if projects:
+            try:
+                return VNextProjectService(self.store).generate_project_update_candidate(
+                    ProjectAutomationRequest(
+                        domains=request.domains,
+                        sensitivity_allowed=request.sensitivity_allowed,
+                        project_id=str(projects[0]["id"]),
+                        generated_by="scheduler",
+                        trace_id=str(metadata.get("trace_id")) if metadata.get("trace_id") is not None else None,
+                        run_id=str(metadata.get("scheduler_run_id")) if metadata.get("scheduler_run_id") is not None else None,
+                        policy_decision=metadata.get("policy_decision") if isinstance(metadata.get("policy_decision"), dict) else None,
+                        metadata_json={**metadata, "workflow_type": "project_update_scan", "review_status": "needs_review"},
+                    )
+                )
+            except VNextProjectValidationError:
+                pass
+        content = "\n".join(
+            [
+                f"# Project Update Scan - {request.generated_for or datetime.now(UTC).date().isoformat()}",
+                "",
+                "No active project matched this scheduler scope.",
+                "",
+                "This review artifact records the scan without creating or promoting trusted memory.",
+            ]
+        )
+        return self.store.create_artifact(
+            {
+                "artifact_type": "project_update",
+                "title": f"Project Update Scan - {request.generated_for or datetime.now(UTC).date().isoformat()}",
+                "content_markdown": content,
+                "status": "needs_review",
+                "domain": request.domains[0] if len(request.domains) == 1 else "project",
+                "sensitivity": "unknown",
+                "generated_by": "scheduler",
+                "metadata_json": {
+                    **metadata,
+                    "workflow": "project_update_scan",
+                    "source_refs": [],
+                    "project_ids": [],
+                    "input_counts": {"projects": 0},
+                },
+            },
+            actor_type="scheduler",
+        )
+
     def _next_run_after(self, workflow: JsonObject) -> str | None:
         workflow_type = str(workflow["workflow_type"])
         return compute_next_run_at(
@@ -481,6 +659,23 @@ class VNextSchedulerService:
         except ZoneInfoNotFoundError:
             zone = UTC
         return checked_at.astimezone(zone).date().isoformat()
+
+    @staticmethod
+    def _highest_sensitivity(rows: list[JsonObject]) -> str:
+        rank = {
+            "public": 1,
+            "internal": 2,
+            "unknown": 2,
+            "private": 3,
+            "confidential": 4,
+            "highly_sensitive": 5,
+            "sacred": 6,
+            "regulated": 6,
+        }
+        sensitivities = [str(row.get("sensitivity", "unknown")) for row in rows]
+        if not sensitivities:
+            return "unknown"
+        return max(sensitivities, key=lambda value: rank.get(value, rank["unknown"]))
 
 
 __all__ = [

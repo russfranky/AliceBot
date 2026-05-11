@@ -218,6 +218,11 @@ def _input_summary(
     }
 
 
+def _source_refs(rows: list[JsonObject]) -> list[str]:
+    refs = [f"source:{row.get('id')}" for row in rows if row.get("id") is not None]
+    return list(dict.fromkeys(refs))
+
+
 def _candidate_open_loop_titles(sources: list[JsonObject]) -> list[tuple[str, JsonObject]]:
     candidates: list[tuple[str, JsonObject]] = []
     pattern = re.compile(r"^\s*(?:todo|follow up|waiting on|question|ask)\s*:?\s*(.+)$", re.IGNORECASE)
@@ -269,6 +274,7 @@ class VNextBrainService:
                     "trace_id": request.trace_id,
                     "policy_decision": request.policy_decision,
                     "generated_for": day.isoformat(),
+                    "source_refs": _source_refs(sources),
                     "input_summary": _input_summary(
                         sources=sources,
                         memories=memories,
@@ -349,6 +355,7 @@ class VNextBrainService:
                     "policy_decision": request.policy_decision,
                     "generated_for": day.isoformat(),
                     "week": week_label,
+                    "source_refs": _source_refs(sources),
                     "input_summary": _input_summary(
                         sources=sources,
                         memories=memories,

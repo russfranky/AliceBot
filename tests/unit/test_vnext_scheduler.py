@@ -42,6 +42,8 @@ class InMemorySchedulerStore:
             }
         ]
         self.open_loops: list[dict[str, object]] = []
+        self.projects: list[dict[str, object]] = []
+        self.locked_workflows: set[str] = set()
 
     def append_event(self, event: dict[str, object]) -> dict[str, object]:
         self.events.append(event)
@@ -141,6 +143,9 @@ class InMemorySchedulerStore:
         ]
         return rows[:limit]
 
+    def try_scheduler_workflow_lock(self, workflow_type: str) -> bool:
+        return workflow_type not in self.locked_workflows
+
     def create_artifact(self, artifact: dict[str, object], *, actor_type: str = "system") -> dict[str, object]:
         if self.fail_artifact_create:
             raise RuntimeError("artifact store unavailable")
@@ -160,6 +165,17 @@ class InMemorySchedulerStore:
 
     def list_artifacts(self, **kwargs) -> list[dict[str, object]]:
         return list(self.artifacts.values())[: kwargs.get("limit", 8)]
+
+    def list_projects(self, **kwargs) -> list[dict[str, object]]:
+        return self.projects[: kwargs.get("limit", 8)]
+
+    def list_beliefs(self, **kwargs) -> list[dict[str, object]]:
+        return [] if kwargs else []
+
+    def list_events(self, **kwargs) -> list[dict[str, object]]:
+        limit = kwargs.get("limit")
+        rows = list(reversed(self.events))
+        return rows[:limit] if isinstance(limit, int) else rows
 
 
 def test_schedule_validation_and_next_run_are_deterministic() -> None:
@@ -234,6 +250,71 @@ def test_scheduler_run_due_executes_due_enabled_workflows_and_advances_next_run(
     assert result["runs"][0]["artifact"]["status"] == "needs_review"
     assert store.workflows["daily_brief"]["next_run_at"] != "2026-05-11T08:00:00+00:00"
     assert "scheduler.due_scan" in [event["event_type"] for event in store.events]
+
+
+def test_scheduler_run_due_skips_workflow_when_lock_is_not_acquired() -> None:
+    store = InMemorySchedulerStore()
+    store.locked_workflows.add("daily_brief")
+    service = VNextSchedulerService(store)
+    service.configure_workflow(
+        workflow_type="daily_brief",
+        enabled=True,
+        schedule_json={"kind": "daily", "time_of_day": "08:00", "days_of_week": ["monday"]},
+        timezone="UTC",
+    )
+    store.workflows["daily_brief"]["next_run_at"] = "2026-05-11T08:00:00+00:00"
+
+    result = service.run_due_workflows(now=datetime(2026, 5, 11, 8, 5, tzinfo=UTC))
+
+    assert result["due_count"] == 0
+    assert not store.runs
+    assert "scheduler.workflow_lock_skipped" in [event["event_type"] for event in store.events]
+
+
+@pytest.mark.parametrize(
+    ("workflow_type", "artifact_type"),
+    [
+        ("connection_report", "connection_report"),
+        ("contradiction_report", "contradiction_report"),
+        ("open_loop_review", "open_loop_report"),
+        ("project_update_scan", "project_update"),
+    ],
+)
+def test_remaining_scheduler_workflows_create_reviewable_artifacts(workflow_type: str, artifact_type: str) -> None:
+    store = InMemorySchedulerStore()
+    store.open_loops.append(
+        {
+            "id": "loop-1",
+            "title": "Review scheduler output",
+            "status": "open",
+            "description": "Confirm non-primary workflows produce reviewable artifacts.",
+            "source_id": "source-1",
+            "domain": "project",
+            "sensitivity": "private",
+        }
+    )
+    service = VNextSchedulerService(store)
+
+    result = service.run_now(
+        SchedulerRunRequest(
+            workflow_type=workflow_type,
+            domains=("project",),
+            sensitivity_allowed=("public", "private"),
+            generated_for="2026-05-11",
+        )
+    )
+
+    artifact = result["artifact"]
+    metadata = artifact["metadata_json"]
+    assert result["run"]["status"] == "succeeded"
+    assert artifact["artifact_type"] == artifact_type
+    assert artifact["status"] == "needs_review"
+    assert artifact["generated_by"] == "scheduler"
+    assert metadata["workflow_type"] == workflow_type
+    assert metadata["scheduler_run_id"] == result["run"]["id"]
+    assert metadata["trace_id"] == result["run"]["trace_id"]
+    assert "source_refs" in metadata
+    assert metadata["review_status"] == "needs_review"
 
 
 def test_scheduler_pause_clears_stale_next_run() -> None:

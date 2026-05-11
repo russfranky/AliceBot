@@ -470,6 +470,7 @@ from alicebot_api.vnext_agent_control import (
     agent_metadata,
     append_policy_events,
     evaluate_agent_policy,
+    summarize_agent_policy_telemetry,
 )
 from alicebot_api.vnext_brain import BrainArtifactRequest, VNextBrainService, VNextBrainValidationError
 from alicebot_api.vnext_capture import VNextCaptureService, VNextCaptureValidationError
@@ -505,6 +506,7 @@ from alicebot_api.vnext_scheduler import (
     default_schedule,
     validate_schedule,
 )
+from alicebot_api.vnext_scheduler_runtime import daemon_status
 from alicebot_api.vnext_store import PostgresVNextStore
 from alicebot_api.continuity_lifecycle import (
     ContinuityLifecycleNotFoundError,
@@ -1538,6 +1540,12 @@ def _vnext_workspace_payload(store: PostgresVNextStore) -> dict[str, object]:
     agent_identities = store.list_agent_identities(limit=20)
     agent_events = store.list_agent_events(limit=50)
     scheduler_status = VNextSchedulerService(store).status()
+    scheduler_status = {**scheduler_status, "daemon": daemon_status()}
+    policy_telemetry = summarize_agent_policy_telemetry(
+        agent_events=agent_events,
+        artifacts=artifacts,
+        memories=review_memories,
+    )
     project_service = VNextProjectService(store)
     project_dashboards: list[dict[str, object]] = []
     for project in projects[:5]:
@@ -1592,6 +1600,7 @@ def _vnext_workspace_payload(store: PostgresVNextStore) -> dict[str, object]:
                 and memory["metadata_json"].get("agent_id") is not None
             ],
         },
+        "policy_telemetry": policy_telemetry,
         "scheduler": scheduler_status,
         "brain_charter": store.get_brain_charter(),
     }
@@ -6851,6 +6860,7 @@ def get_vnext_scheduler_status(user_id: UUID) -> JSONResponse:
 
     with user_connection(settings.database_url, user_id) as conn:
         payload = VNextSchedulerService(PostgresVNextStore(conn)).status()
+    payload = {**payload, "daemon": daemon_status()}
 
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
@@ -6863,6 +6873,38 @@ def list_vnext_scheduler_runs(user_id: UUID, workflow_type: str | None = None, l
         payload = PostgresVNextStore(conn).list_scheduler_runs(workflow_type=workflow_type, limit=limit)
 
     return JSONResponse(status_code=200, content=jsonable_encoder({"items": payload, "count": len(payload)}))
+
+
+@app.get("/v0/vnext/scheduler/failures")
+def list_vnext_scheduler_failures(user_id: UUID, workflow_type: str | None = None, limit: int = 20) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        runs = [
+            run
+            for run in PostgresVNextStore(conn).list_scheduler_runs(
+                workflow_type=workflow_type,
+                limit=max(limit * 4, limit),
+            )
+            if run.get("status") == "failed"
+        ][:limit]
+
+    return JSONResponse(status_code=200, content=jsonable_encoder({"items": runs, "count": len(runs)}))
+
+
+@app.get("/v0/vnext/agents/policy-telemetry")
+def get_vnext_agent_policy_telemetry(user_id: UUID, agent_id: str | None = None, limit: int = 200) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        store = PostgresVNextStore(conn)
+        payload = summarize_agent_policy_telemetry(
+            agent_events=store.list_agent_events(agent_id=agent_id, limit=limit),
+            artifacts=store.list_artifacts(limit=min(limit, 200)),
+            memories=store.list_memories(status=None),
+        )
+
+    return JSONResponse(status_code=200, content=jsonable_encoder({"summary": payload}))
 
 
 @app.patch("/v0/vnext/scheduler/workflows/{workflow_type}")

@@ -39,13 +39,14 @@ Alice vNext is the next release candidate for the true second-brain product. It 
 - **Alice Brain**: user-facing second-brain workflows such as daily briefs, weekly syntheses, context packs, contradiction reports, project updates, open loops, and reviewable artifacts.
 - **Alice Agent Memory**: CLI, API, and MCP surfaces that let agents capture, retrieve, resume, explain, generate context, propose memory, and trigger governed workflows without owning the memory store.
 
-The vNext preview currently includes deterministic source capture, retrieval/context packs, queue/artifact workflows, daily and weekly brain artifacts, connection/contradiction/project/open-loop workflows, synthetic evals, deterministic connector payload ingestion, agent identity/policy auditing, a governed local scheduler with due scans, and a live/fixture-backed `/vnext` operator workspace.
+The vNext preview currently includes deterministic source capture, retrieval/context packs, queue/artifact workflows, daily and weekly brain artifacts, connection/contradiction/project/open-loop workflows, synthetic evals, deterministic connector payload ingestion, agent identity/policy auditing, a governed local scheduler with due scans, a local scheduler daemon, policy telemetry, and a live/fixture-backed `/vnext` operator workspace.
 
 Start with:
 
 - [vNext overview](docs/vnext/README.md)
 - [vNext quickstart](docs/vnext/quickstart.md)
 - [vNext architecture](docs/vnext/architecture.md)
+- [vNext local runtime](docs/vnext/local-runtime.md)
 - [vNext security and privacy](docs/vnext/security-privacy.md)
 - [Example ALICE.md](docs/vnext/ALICE.example.md)
 - [vNext demo video script](docs/vnext/demo-video-script.md)
@@ -53,6 +54,7 @@ Start with:
 - [vNext preview release notes](docs/release/v0.5.1-vnext-preview-release-notes.md)
 - [vNext preview tag plan](docs/release/v0.5.1-vnext-preview-tag-plan.md)
 - [Agentic control plane CTO summary](docs/vnext-agentic-control-plane-cto-summary.md)
+- [Local runtime CTO summary](docs/vnext-local-runtime-cto-summary.md)
 
 ## Release Boundary (`v0.5.1`)
 
@@ -392,8 +394,10 @@ Deferred beyond `v0.5.1`:
 - [vNext Preview](docs/vnext/README.md)
 - [vNext Quickstart](docs/vnext/quickstart.md)
 - [vNext Architecture](docs/vnext/architecture.md)
+- [vNext Local Runtime](docs/vnext/local-runtime.md)
 - [vNext Security and Privacy](docs/vnext/security-privacy.md)
 - [Agentic Control Plane CTO Summary](docs/vnext-agentic-control-plane-cto-summary.md)
+- [Local Runtime CTO Summary](docs/vnext-local-runtime-cto-summary.md)
 - [Quickstart](docs/quickstart/local-setup-and-first-result.md)
 - [Architecture](ARCHITECTURE.md)
 - [MCP](docs/integrations/mcp.md)

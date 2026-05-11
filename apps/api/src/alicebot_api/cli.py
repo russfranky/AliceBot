@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import tempfile
 from uuid import UUID, uuid4
 
 import psycopg
@@ -193,6 +194,7 @@ from alicebot_api.vnext_agent_control import (
     append_policy_events,
     ensure_policy_allowed,
     evaluate_agent_policy,
+    summarize_agent_policy_telemetry,
 )
 from alicebot_api.vnext_capture import VNextCaptureService, VNextCaptureValidationError
 from alicebot_api.vnext_brain import BrainArtifactRequest, VNextBrainService, VNextBrainValidationError
@@ -220,7 +222,17 @@ from alicebot_api.vnext_evals import (
 from alicebot_api.vnext_projects import ProjectAutomationRequest, VNextProjectService, VNextProjectValidationError
 from alicebot_api.vnext_queue import QueueTaskRequest, VNextQueueService, VNextQueueValidationError
 from alicebot_api.vnext_retrieval import VNextRetrievalRequest, VNextRetrievalService, VNextRetrievalValidationError
-from alicebot_api.vnext_scheduler import SchedulerRunRequest, VNextSchedulerService, VNextSchedulerValidationError
+from alicebot_api.vnext_scheduler import SchedulerRunRequest, VNextSchedulerService, VNextSchedulerValidationError, WORKFLOW_TYPES, default_schedule
+from alicebot_api.vnext_scheduler_runtime import (
+    DEFAULT_LOG_FILE,
+    DEFAULT_PID_FILE,
+    DEFAULT_STATUS_FILE,
+    SchedulerRuntimeConfig,
+    daemon_status,
+    run_foreground_daemon,
+    start_background_daemon,
+    stop_daemon,
+)
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_json import json_safe
 from alicebot_api.vnext_store import PostgresVNextStore
@@ -731,10 +743,42 @@ def _run_vnext_agent_propose_memory(ctx: CLIContext, args: argparse.Namespace) -
     return _json_dumps({"proposal": memory, "policy_decision": decision.to_record(), "review_required": True})
 
 
+def _run_vnext_agent_policy_telemetry(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        events = store.list_agent_events(agent_id=args.agent_id, limit=args.limit)
+        artifacts = store.list_artifacts(limit=args.limit)
+        memories = store.list_memories(status=None)
+    return _json_dumps(
+        {
+            "summary": summarize_agent_policy_telemetry(
+                agent_events=events,
+                artifacts=artifacts,
+                memories=memories,
+            )
+        }
+    )
+
+
 def _run_vnext_scheduler_status(ctx: CLIContext, _args: argparse.Namespace) -> str:
     with _vnext_store_context(ctx) as store:
         payload = VNextSchedulerService(store).status()
     return _json_dumps(payload)
+
+
+def _run_vnext_scheduler_runs(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        runs = store.list_scheduler_runs(workflow_type=args.workflow_type, limit=args.limit)
+    return _json_dumps({"items": runs, "count": len(runs)})
+
+
+def _run_vnext_scheduler_failures(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        runs = [
+            run
+            for run in store.list_scheduler_runs(workflow_type=args.workflow_type, limit=max(args.limit * 4, args.limit))
+            if run.get("status") == "failed"
+        ][: args.limit]
+    return _json_dumps({"items": runs, "count": len(runs)})
 
 
 def _run_vnext_scheduler_run_now(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -794,6 +838,34 @@ def _run_vnext_scheduler_run_due(ctx: CLIContext, args: argparse.Namespace) -> s
     if payload is None or decision is None:
         raise RuntimeError("scheduler run-due did not complete")
     return _json_dumps({**payload, "policy_decision": decision.to_record()})
+
+
+def _scheduler_runtime_config(ctx: CLIContext, args: argparse.Namespace) -> SchedulerRuntimeConfig:
+    return SchedulerRuntimeConfig(
+        database_url=ctx.database_url,
+        user_id=ctx.user_id,
+        interval_seconds=args.interval_seconds,
+        limit=args.limit,
+        pid_file=Path(args.pid_file),
+        status_file=Path(args.status_file),
+        log_file=Path(args.log_file),
+        once=getattr(args, "once", False),
+    )
+
+
+def _run_vnext_scheduler_daemon_start(ctx: CLIContext, args: argparse.Namespace) -> str:
+    config = _scheduler_runtime_config(ctx, args)
+    if args.foreground:
+        return _json_dumps(run_foreground_daemon(config))
+    return _json_dumps(start_background_daemon(config))
+
+
+def _run_vnext_scheduler_daemon_status(_ctx: CLIContext, args: argparse.Namespace) -> str:
+    return _json_dumps(daemon_status(pid_file=Path(args.pid_file), status_file=Path(args.status_file)))
+
+
+def _run_vnext_scheduler_daemon_stop(_ctx: CLIContext, args: argparse.Namespace) -> str:
+    return _json_dumps(stop_daemon(pid_file=Path(args.pid_file), status_file=Path(args.status_file)))
 
 
 def _run_vnext_scheduler_pause(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -1021,6 +1093,173 @@ def _run_vnext_smoke_agentic_scheduler(ctx: CLIContext, _args: argparse.Namespac
             "due_run": due_decision.to_record(),
             "blocked": blocked_decision.to_record(),
         },
+    }
+    if payload["status"] != "passed":
+        raise RuntimeError(_json_dumps(payload))
+    return _json_dumps(payload)
+
+
+def _seed_local_runtime_smoke_inputs(store, smoke_id: str) -> None:
+    source = store.create_source(
+        {
+            "source_type": "manual_text",
+            "title": f"Local runtime smoke source {smoke_id}",
+            "content_hash": f"sha256:local-runtime-smoke-{smoke_id}",
+            "domain": "project",
+            "sensitivity": "private",
+            "metadata_json": {
+                "raw_text": (
+                    "Decision: Local runtime smoke should keep scheduled artifacts reviewable. "
+                    "TODO: inspect scheduler failures and policy telemetry after daemon scans."
+                ),
+                "smoke": "local-runtime",
+            },
+        },
+        actor_type="system",
+    )
+    memory = store.create_memory(
+        {
+            "memory_type": "project_state",
+            "memory_key": f"local_runtime_smoke.{smoke_id}",
+            "value": {"text": "The local runtime daemon runs governed scheduler workflows into reviewable artifacts."},
+            "status": "active",
+            "confidence": 0.8,
+            "title": "Local runtime smoke state",
+            "canonical_text": "The local runtime daemon runs governed scheduler workflows into reviewable artifacts.",
+            "summary": "Local runtime daemon smoke state.",
+            "domain": "project",
+            "sensitivity": "private",
+            "metadata_json": {"source_id": str(source["id"]), "smoke": "local-runtime"},
+        },
+        actor_type="system",
+    )
+    project = store.create_project(
+        {
+            "name": f"Local Runtime Smoke {smoke_id[:8]}",
+            "slug": f"local-runtime-smoke-{smoke_id[:8]}",
+            "status": "active",
+            "description": "Project used by the vNext local runtime smoke.",
+            "current_state": "Needs scheduled project update scan validation.",
+            "domain": "project",
+            "sensitivity": "private",
+            "metadata_json": {"smoke": "local-runtime"},
+        },
+        actor_type="system",
+    )
+    store.create_open_loop(
+        {
+            "memory_id": str(memory["id"]),
+            "title": "Inspect local runtime smoke output",
+            "status": "open",
+            "description": "Confirm daemon due scans appear in scheduler history and event logs.",
+            "priority": "normal",
+            "project_id": str(project["id"]),
+            "source_id": str(source["id"]),
+            "domain": "project",
+            "sensitivity": "private",
+            "metadata_json": {"smoke": "local-runtime"},
+        },
+        actor_type="system",
+    )
+
+
+def _run_vnext_smoke_local_runtime(ctx: CLIContext, _args: argparse.Namespace) -> str:
+    smoke_id = str(uuid4())
+    due_at = "2000-01-01T00:00:00+00:00"
+    with tempfile.TemporaryDirectory(prefix="alicebot-vnext-scheduler-") as tmpdir:
+        runtime_dir = Path(tmpdir)
+        with _vnext_store_context(ctx) as store:
+            service = VNextSchedulerService(store)
+            service.ensure_default_workflows()
+            _seed_local_runtime_smoke_inputs(store, smoke_id)
+            for workflow_type in WORKFLOW_TYPES:
+                store.update_scheduler_workflow(
+                    workflow_type=workflow_type,
+                    patch={
+                        "enabled": True,
+                        "paused": False,
+                        "schedule_json": default_schedule(workflow_type),
+                        "timezone": "UTC",
+                        "next_run_at": due_at,
+                        "last_error": None,
+                    },
+                    actor_type="system",
+                )
+
+        daemon_payload = run_foreground_daemon(
+            SchedulerRuntimeConfig(
+                database_url=ctx.database_url,
+                user_id=ctx.user_id,
+                interval_seconds=0.1,
+                limit=len(WORKFLOW_TYPES),
+                pid_file=runtime_dir / "scheduler.pid",
+                status_file=runtime_dir / "scheduler-status.json",
+                log_file=runtime_dir / "scheduler.log",
+                once=True,
+            )
+        )
+
+    last_due_scan = daemon_payload.get("last_due_scan") if isinstance(daemon_payload.get("last_due_scan"), dict) else {}
+    due_runs = last_due_scan.get("runs") if isinstance(last_due_scan, dict) and isinstance(last_due_scan.get("runs"), list) else []
+    artifacts = [run.get("artifact") for run in due_runs if isinstance(run, dict) and isinstance(run.get("artifact"), dict)]
+    required_metadata = {"workflow_type", "scheduler_run_id", "trace_id", "source_refs", "generated_by", "review_status"}
+    observed_workflows = {str(run.get("workflow_type")) for run in due_runs if isinstance(run, dict)}
+    metadata_complete = all(
+        artifact.get("generated_by") == "scheduler"
+        and artifact.get("status") == "needs_review"
+        and artifact.get("domain") is not None
+        and artifact.get("sensitivity") is not None
+        and required_metadata.issubset(set((artifact.get("metadata_json") or {}).keys()))
+        for artifact in artifacts
+        if isinstance(artifact, dict)
+    )
+    gates = {
+        "daemon_once_completed": daemon_payload.get("running") is False and daemon_payload.get("last_error") is None,
+        "due_scan_executed_all_workflows": observed_workflows == set(WORKFLOW_TYPES),
+        "daily_brief_scheduled": "daily_brief" in observed_workflows,
+        "weekly_synthesis_scheduled": "weekly_synthesis" in observed_workflows,
+        "connection_report_scheduled": "connection_report" in observed_workflows,
+        "contradiction_report_scheduled": "contradiction_report" in observed_workflows,
+        "open_loop_review_scheduled": "open_loop_review" in observed_workflows,
+        "project_update_scan_scheduled": "project_update_scan" in observed_workflows,
+        "scheduled_artifacts_reviewable": len(artifacts) == len(WORKFLOW_TYPES)
+        and all(isinstance(artifact, dict) and artifact.get("status") == "needs_review" for artifact in artifacts),
+        "scheduled_artifact_metadata_complete": metadata_complete,
+    }
+    daemon_summary = {
+        key: daemon_payload.get(key)
+        for key in (
+            "configured",
+            "running",
+            "mode",
+            "pid",
+            "started_at",
+            "stopped_at",
+            "last_heartbeat_at",
+            "last_due_scan_at",
+            "last_due_count",
+            "last_error",
+            "last_error_type",
+        )
+        if key in daemon_payload
+    }
+    run_summaries = [
+        {
+            "workflow_type": run.get("workflow_type"),
+            "run_id": ((run.get("run") or {}).get("id") if isinstance(run.get("run"), dict) else None),
+            "status": ((run.get("run") or {}).get("status") if isinstance(run.get("run"), dict) else None),
+            "artifact_id": ((run.get("artifact") or {}).get("id") if isinstance(run.get("artifact"), dict) else None),
+            "artifact_type": ((run.get("artifact") or {}).get("artifact_type") if isinstance(run.get("artifact"), dict) else None),
+        }
+        for run in due_runs
+        if isinstance(run, dict)
+    ]
+    payload = {
+        "status": "passed" if all(gates.values()) else "failed",
+        "smoke": "local-runtime",
+        "gates": gates,
+        "daemon": daemon_summary,
+        "runs": run_summaries,
     }
     if payload["status"] != "passed":
         raise RuntimeError(_json_dumps(payload))
@@ -2327,11 +2566,26 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_agent_propose_parser.add_argument("--confidence", type=float, default=0.5, help="Proposal confidence.")
     vnext_agent_propose_parser.add_argument("--rationale", default=None, help="Proposal rationale.")
     vnext_agent_propose_parser.set_defaults(handler=_run_vnext_agent_propose_memory)
+    vnext_agent_telemetry_parser = vnext_agents_subparsers.add_parser(
+        "policy-telemetry",
+        help="Summarize vNext agent policy blocks, filters, reviews, workflows, and proposals.",
+    )
+    vnext_agent_telemetry_parser.add_argument("--agent-id", default=None, help="Optional agent id filter.")
+    vnext_agent_telemetry_parser.add_argument("--limit", type=int, default=200, help="Maximum agent events to summarize.")
+    vnext_agent_telemetry_parser.set_defaults(handler=_run_vnext_agent_policy_telemetry)
 
     vnext_scheduler_parser = vnext_subparsers.add_parser("scheduler", help="Governed local vNext scheduler controls.")
     vnext_scheduler_subparsers = vnext_scheduler_parser.add_subparsers(dest="vnext_scheduler_command", required=True)
     vnext_scheduler_status_parser = vnext_scheduler_subparsers.add_parser("status", help="Show scheduler status.")
     vnext_scheduler_status_parser.set_defaults(handler=_run_vnext_scheduler_status)
+    vnext_scheduler_runs_parser = vnext_scheduler_subparsers.add_parser("runs", help="List scheduler run history.")
+    vnext_scheduler_runs_parser.add_argument("--workflow-type", default=None, help="Optional workflow type filter.")
+    vnext_scheduler_runs_parser.add_argument("--limit", type=int, default=20, help="Maximum runs to return.")
+    vnext_scheduler_runs_parser.set_defaults(handler=_run_vnext_scheduler_runs)
+    vnext_scheduler_failures_parser = vnext_scheduler_subparsers.add_parser("failures", help="List failed scheduler runs.")
+    vnext_scheduler_failures_parser.add_argument("--workflow-type", default=None, help="Optional workflow type filter.")
+    vnext_scheduler_failures_parser.add_argument("--limit", type=int, default=20, help="Maximum failed runs to return.")
+    vnext_scheduler_failures_parser.set_defaults(handler=_run_vnext_scheduler_failures)
     vnext_scheduler_run_parser = vnext_scheduler_subparsers.add_parser("run-now", help="Run a workflow now.")
     _add_vnext_agent_arguments(vnext_scheduler_run_parser)
     vnext_scheduler_run_parser.add_argument("workflow_type", help="Workflow type, such as daily_brief.")
@@ -2354,6 +2608,25 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_scheduler_resume_parser = vnext_scheduler_subparsers.add_parser("resume", help="Resume all scheduler workflows.")
     _add_vnext_agent_arguments(vnext_scheduler_resume_parser)
     vnext_scheduler_resume_parser.set_defaults(handler=_run_vnext_scheduler_resume)
+    vnext_scheduler_daemon_parser = vnext_scheduler_subparsers.add_parser("daemon", help="Run or inspect the local scheduler daemon.")
+    vnext_scheduler_daemon_subparsers = vnext_scheduler_daemon_parser.add_subparsers(dest="vnext_scheduler_daemon_command", required=True)
+    vnext_scheduler_daemon_start_parser = vnext_scheduler_daemon_subparsers.add_parser("start", help="Start the local scheduler daemon.")
+    vnext_scheduler_daemon_start_parser.add_argument("--foreground", action="store_true", help="Run in the foreground instead of spawning a background process.")
+    vnext_scheduler_daemon_start_parser.add_argument("--once", action="store_true", help="Run one due scan, then exit. Useful for local smoke tests.")
+    vnext_scheduler_daemon_start_parser.add_argument("--interval-seconds", type=float, default=60.0, help="Due-scan polling interval.")
+    vnext_scheduler_daemon_start_parser.add_argument("--limit", type=int, default=10, help="Maximum due workflows per scan.")
+    vnext_scheduler_daemon_start_parser.add_argument("--pid-file", default=str(DEFAULT_PID_FILE), help="Daemon pid file.")
+    vnext_scheduler_daemon_start_parser.add_argument("--status-file", default=str(DEFAULT_STATUS_FILE), help="Daemon status JSON file.")
+    vnext_scheduler_daemon_start_parser.add_argument("--log-file", default=str(DEFAULT_LOG_FILE), help="Daemon log file.")
+    vnext_scheduler_daemon_start_parser.set_defaults(handler=_run_vnext_scheduler_daemon_start)
+    vnext_scheduler_daemon_status_parser = vnext_scheduler_daemon_subparsers.add_parser("status", help="Show local scheduler daemon process status.")
+    vnext_scheduler_daemon_status_parser.add_argument("--pid-file", default=str(DEFAULT_PID_FILE), help="Daemon pid file.")
+    vnext_scheduler_daemon_status_parser.add_argument("--status-file", default=str(DEFAULT_STATUS_FILE), help="Daemon status JSON file.")
+    vnext_scheduler_daemon_status_parser.set_defaults(handler=_run_vnext_scheduler_daemon_status)
+    vnext_scheduler_daemon_stop_parser = vnext_scheduler_daemon_subparsers.add_parser("stop", help="Stop the local scheduler daemon process.")
+    vnext_scheduler_daemon_stop_parser.add_argument("--pid-file", default=str(DEFAULT_PID_FILE), help="Daemon pid file.")
+    vnext_scheduler_daemon_stop_parser.add_argument("--status-file", default=str(DEFAULT_STATUS_FILE), help="Daemon status JSON file.")
+    vnext_scheduler_daemon_stop_parser.set_defaults(handler=_run_vnext_scheduler_daemon_stop)
 
     vnext_smoke_parser = vnext_subparsers.add_parser("smoke", help="Run vNext smoke checks.")
     vnext_smoke_subparsers = vnext_smoke_parser.add_subparsers(dest="vnext_smoke_command", required=True)
@@ -2362,6 +2635,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run the agentic control-plane and governed scheduler smoke.",
     )
     vnext_smoke_agentic_scheduler_parser.set_defaults(handler=_run_vnext_smoke_agentic_scheduler)
+    vnext_smoke_local_runtime_parser = vnext_smoke_subparsers.add_parser(
+        "local-runtime",
+        help="Run the local scheduler daemon and due-workflow smoke.",
+    )
+    vnext_smoke_local_runtime_parser.set_defaults(handler=_run_vnext_smoke_local_runtime)
 
     mutations_parser = subparsers.add_parser("mutations", help="Generate, inspect, and apply memory operations.")
     mutations_subparsers = mutations_parser.add_subparsers(dest="mutations_command", required=True)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
 from typing import Protocol
 
@@ -92,6 +92,13 @@ class ConnectionFinderRequest:
     sensitivity_allowed: tuple[str, ...] = DEFAULT_SENSITIVITY_ALLOWED
     max_connections: int = DEFAULT_CONNECTION_LIMIT
     auto_accept_threshold: float | None = None
+    generated_by: str = "system"
+    actor_id: str | None = None
+    trace_id: str | None = None
+    run_id: str | None = None
+    agent_identity: JsonObject | None = None
+    policy_decision: JsonObject | None = None
+    metadata_json: JsonObject = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -323,6 +330,10 @@ class VNextConnectionService:
                         "status": status,
                         "connection": candidate.to_record(),
                         "candidate": status == "candidate",
+                        "generated_by": request.generated_by,
+                        "scheduler_run_id": request.run_id if request.generated_by == "scheduler" else None,
+                        "trace_id": request.trace_id,
+                        "policy_decision": request.policy_decision,
                     },
                 }
             )
@@ -332,17 +343,23 @@ class VNextConnectionService:
             append_event(
                 self.store,
                 event_type="connection.candidate_edge_logged",
-                actor_type="system",
+                actor_type=request.generated_by,
+                actor_id=request.actor_id,
                 target_type="graph_edge",
                 target_id=edge_id,
+                trace_id=request.trace_id,
+                run_id=request.run_id,
                 payload={
                     "connection_type": candidate.connection_type,
                     "edge_type": CONNECTION_TO_EDGE_TYPE[candidate.connection_type],
                     "confidence": candidate.confidence,
                     "status": status,
+                    "policy_decision": request.policy_decision,
                 },
             )
 
+        source_ids = [str(source.get("id")) for source in sources if source.get("id") is not None]
+        memory_ids = [str(memory.get("id")) for memory in memories if memory.get("id") is not None]
         artifact = self.store.create_artifact(
             {
                 "artifact_type": "connection_report",
@@ -351,25 +368,43 @@ class VNextConnectionService:
                 "status": "needs_review",
                 "domain": request.domains[0] if len(request.domains) == 1 else "unknown",
                 "sensitivity": self._highest_sensitivity([*sources, *memories]),
-                "generated_by": "vnext_connection_finder",
+                "generated_by": request.generated_by if request.generated_by != "system" else "vnext_connection_finder",
                 "metadata_json": {
                     "workflow": "connection_finder",
+                    "workflow_type": "connection_report",
                     "candidate_edge_ids": edge_ids,
                     "connections": connection_records,
+                    "source_ids": source_ids,
+                    "memory_ids": memory_ids,
+                    "source_refs": [f"source:{source_id}" for source_id in source_ids],
                     "input_counts": {"sources": len(sources), "memories": len(memories)},
+                    "generated_by": request.generated_by,
+                    "agent_identity": request.agent_identity,
+                    "agent_id": request.actor_id if request.generated_by == "agent" else None,
+                    "agent_run_id": request.run_id if request.generated_by == "agent" else None,
+                    "scheduler_run_id": request.run_id if request.generated_by == "scheduler" else None,
+                    "trace_id": request.trace_id,
+                    "policy_decision": request.policy_decision,
+                    "review_status": "needs_review",
+                    **request.metadata_json,
                 },
             }
         )
         append_event(
             self.store,
             event_type="artifact.generated",
-            actor_type="system",
+            actor_type=request.generated_by,
+            actor_id=request.actor_id,
             target_type="artifact",
             target_id=str(artifact["id"]),
+            trace_id=request.trace_id,
+            run_id=request.run_id,
             payload={
                 "workflow": "connection_finder",
+                "workflow_type": "connection_report",
                 "artifact_type": "connection_report",
                 "candidate_edge_count": len(edge_ids),
+                "policy_decision": request.policy_decision,
             },
         )
         return artifact

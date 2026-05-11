@@ -331,13 +331,32 @@ class FakeVNextCliStore:
         )
         return belief
 
-    def list_events(self, *, target_type: str | None = None, target_id: str | None = None) -> list[dict[str, object]]:
-        return [
+    def list_events(
+        self,
+        *,
+        target_type: str | None = None,
+        target_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, object]]:
+        rows = [
             event
             for event in self.events
             if (target_type is None or event.get("target_type") == target_type)
             and (target_id is None or event.get("target_id") == target_id)
         ]
+        rows = list(reversed(rows))
+        return rows[:limit] if limit is not None else rows
+
+    def list_agent_events(self, *, agent_id: str | None = None, limit: int = 50) -> list[dict[str, object]]:
+        rows = [
+            event
+            for event in reversed(self.events)
+            if event.get("actor_type") == "agent" and (agent_id is None or event.get("actor_id") == agent_id)
+        ]
+        return rows[:limit]
+
+    def list_memories(self, *, status: str | None = None) -> list[dict[str, object]]:
+        return [memory for memory in self.memories if status is None or memory.get("status") == status]
 
     def create_task(self, task: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**task, "id": f"task-{len(self.tasks) + 1}", "status": "pending"}
@@ -502,6 +521,10 @@ class FakeVNextCliStore:
             if workflow_type is None or run.get("workflow_type") == workflow_type
         ]
         return rows[:limit]
+
+    def try_scheduler_workflow_lock(self, workflow_type: str) -> bool:
+        del workflow_type
+        return True
 
 
 def test_vnext_capture_text_cli_uses_vnext_capture_service(monkeypatch) -> None:

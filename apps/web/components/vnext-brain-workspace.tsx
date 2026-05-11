@@ -13,6 +13,7 @@ import type {
   VNextMemoryRecord,
   VNextOpenLoopRecord,
   VNextPersonRecord,
+  VNextPolicyTelemetrySummary,
   VNextProjectDashboard,
   VNextProjectRecord,
   VNextSchedulerStatus,
@@ -33,6 +34,7 @@ import {
   reviewVNextArtifact,
   reviewVNextMemory,
   reviewVNextOpenLoop,
+  runVNextSchedulerDue,
   runVNextSchedulerWorkflowNow,
   upsertVNextBrainCharter,
 } from "../lib/api";
@@ -118,6 +120,7 @@ type WorkspaceView = {
   tasks: VNextTaskRecord[];
   recentEvents: VNextEventRecord[];
   agentActivity: NonNullable<VNextWorkspacePayload["agent_activity"]>;
+  policyTelemetry: VNextPolicyTelemetrySummary;
   scheduler: VNextSchedulerStatus;
   brainCharter: VNextBrainCharterRecord | null;
 };
@@ -252,6 +255,18 @@ const EMPTY_AGENT_ACTIVITY: NonNullable<VNextWorkspacePayload["agent_activity"]>
   pending_review_items: [],
 };
 
+const EMPTY_POLICY_TELEMETRY: VNextPolicyTelemetrySummary = {
+  total_agent_events: 0,
+  total_policy_decisions: 0,
+  policy_blocks_by_agent: [],
+  policy_filters_by_agent: [],
+  requires_review_by_agent: [],
+  restricted_domains_requested: [],
+  workflows_triggered_by_agents: [],
+  memory_proposals_by_agent: [],
+  artifact_generation_by_agent: [],
+};
+
 const EMPTY_SCHEDULER: VNextSchedulerStatus = {
   mode: "local_governed",
   disabled_by_default: true,
@@ -260,6 +275,12 @@ const EMPTY_SCHEDULER: VNextSchedulerStatus = {
   enabled_count: 0,
   paused_count: 0,
   last_failure: null,
+  recent_failures: [],
+  last_due_scan: null,
+  next_due_workflow: null,
+  currently_running_workflow: null,
+  last_success_by_workflow: {},
+  daemon: { configured: false, running: false },
 };
 
 const FIXTURE_SOURCES: VNextSourceRecord[] = [
@@ -484,12 +505,36 @@ const FIXTURE_AGENT_ACTIVITY: NonNullable<VNextWorkspacePayload["agent_activity"
   pending_review_items: FIXTURE_REVIEW_ITEMS,
 };
 
+const FIXTURE_POLICY_TELEMETRY: VNextPolicyTelemetrySummary = {
+  total_agent_events: 2,
+  total_policy_decisions: 2,
+  policy_blocks_by_agent: [],
+  policy_filters_by_agent: [{ agent_id: "openclaw", count: 1, actions: { "context_pack.request": 1 } }],
+  requires_review_by_agent: [{ agent_id: "hermes", count: 1, actions: { "memory.propose": 1 } }],
+  restricted_domains_requested: [{ domain: "financial", count: 1 }],
+  workflows_triggered_by_agents: [{ workflow_type: "project_update_scan", count: 1, agents: { hermes: 1 } }],
+  memory_proposals_by_agent: [{ agent_id: "hermes", count: 1 }],
+  artifact_generation_by_agent: [{ agent_id: "hermes", count: 1 }],
+};
+
 const FIXTURE_SCHEDULER: VNextSchedulerStatus = {
   mode: "local_governed",
   disabled_by_default: true,
   enabled_count: 0,
   paused_count: 0,
   last_failure: null,
+  recent_failures: [],
+  last_due_scan: null,
+  next_due_workflow: null,
+  currently_running_workflow: null,
+  last_success_by_workflow: {},
+  daemon: {
+    configured: true,
+    running: false,
+    pid: null,
+    mode: "background",
+    last_due_count: 0,
+  },
   workflows: [
     {
       id: "schedule-daily",
@@ -627,6 +672,7 @@ function fixtureWorkspace(): WorkspaceView {
     tasks: [],
     recentEvents: FIXTURE_EVENTS,
     agentActivity: FIXTURE_AGENT_ACTIVITY,
+    policyTelemetry: FIXTURE_POLICY_TELEMETRY,
     scheduler: FIXTURE_SCHEDULER,
     brainCharter: {
       id: "brain-charter-fixture",
@@ -650,6 +696,7 @@ function emptyWorkspace(): WorkspaceView {
     tasks: [],
     recentEvents: [],
     agentActivity: EMPTY_AGENT_ACTIVITY,
+    policyTelemetry: EMPTY_POLICY_TELEMETRY,
     scheduler: EMPTY_SCHEDULER,
     brainCharter: null,
   };
@@ -670,6 +717,7 @@ function workspaceFromPayload(payload: VNextWorkspacePayload): WorkspaceView {
     tasks: payload.tasks,
     recentEvents: payload.recent_events,
     agentActivity: payload.agent_activity ?? EMPTY_AGENT_ACTIVITY,
+    policyTelemetry: payload.policy_telemetry ?? EMPTY_POLICY_TELEMETRY,
     scheduler: payload.scheduler ?? EMPTY_SCHEDULER,
     brainCharter: payload.brain_charter,
   };
@@ -1295,9 +1343,12 @@ export function VNextBrainWorkspace({
                   generated_by: "scheduler",
                   metadata_json: {
                     workflow: workflow.workflow_type,
+                    workflow_type: workflow.workflow_type,
                     scheduler_run_id: runId,
                     trace_id: `trace-${runId}`,
                     generated_by: "scheduler",
+                    source_refs: [],
+                    review_status: "needs_review",
                   },
                 }
               : null;
@@ -1379,6 +1430,62 @@ export function VNextBrainWorkspace({
         });
       },
       `Scheduler action applied: ${action}.`,
+    );
+  }
+
+  async function handleSchedulerRunDue() {
+    if (!liveModeReady || !apiBaseUrl || !userId) {
+      updateFixtureWorkspace(
+        (previous) => {
+          const now = new Date().toISOString();
+          const dueWorkflows = previous.scheduler.workflows.filter((workflow) => workflow.enabled && !workflow.paused);
+          const runs = dueWorkflows.map((workflow, index) => ({
+            id: `scheduler-due-demo-${previous.scheduler.recent_runs.length + index + 1}`,
+            workflow_type: workflow.workflow_type,
+            status: "succeeded",
+            triggered_by: "scheduler",
+            trace_id: `trace-due-demo-${index + 1}`,
+            started_at: now,
+            finished_at: now,
+            artifact_id: `artifact-due-demo-${index + 1}`,
+            metadata_json: { demo: true },
+          }));
+          const workflows = previous.scheduler.workflows.map((workflow) =>
+            runs.some((run) => run.workflow_type === workflow.workflow_type)
+              ? { ...workflow, last_run_at: now, last_result: "succeeded", next_run_at: null }
+              : workflow,
+          );
+          const event: VNextEventRecord = {
+            id: `scheduler-due-event-demo-${previous.recentEvents.length + 1}`,
+            event_type: "scheduler.due_scan",
+            actor_type: "scheduler",
+            occurred_at: now,
+            payload_json: { checked_at: now, due_count: runs.length },
+          };
+          const view = {
+            ...previous,
+            scheduler: {
+              ...previous.scheduler,
+              workflows,
+              recent_runs: [...runs, ...previous.scheduler.recent_runs],
+              last_due_scan: event,
+              daemon: { ...previous.scheduler.daemon, configured: true, running: false, last_due_scan_at: now, last_due_count: runs.length },
+            },
+            recentEvents: [event, ...previous.recentEvents],
+          };
+          return { ...view, summary: createSummary(view) };
+        },
+        "Demo due scan applied.",
+      );
+      return;
+    }
+
+    await runLiveAction(
+      "Running due scheduler workflows...",
+      async () => {
+        await runVNextSchedulerDue(apiBaseUrl, { user_id: userId, limit: 10 });
+      },
+      "Due scheduler workflows completed.",
     );
   }
 
@@ -2221,6 +2328,49 @@ export function VNextBrainWorkspace({
 
         <SectionCard
           eyebrow="Agent Activity"
+          title="Policy telemetry"
+          description="Aggregated agent policy outcomes show blocks, filters, review gates, workflow triggers, proposals, and artifact generation."
+        >
+          <div className="key-value-grid key-value-grid--compact">
+            <div>
+              <dt>Agent events</dt>
+              <dd>{workspace.policyTelemetry.total_agent_events}</dd>
+            </div>
+            <div>
+              <dt>Policy decisions</dt>
+              <dd>{workspace.policyTelemetry.total_policy_decisions}</dd>
+            </div>
+            <div>
+              <dt>Filtered agents</dt>
+              <dd>{workspace.policyTelemetry.policy_filters_by_agent.length}</dd>
+            </div>
+            <div>
+              <dt>Review-gated agents</dt>
+              <dd>{workspace.policyTelemetry.requires_review_by_agent.length}</dd>
+            </div>
+          </div>
+          <div className="list-rows">
+            {workspace.policyTelemetry.restricted_domains_requested.slice(0, 3).map((row) => (
+              <article key={`restricted-${textValue(row.domain)}`} className="list-row">
+                <div className="list-row__topline">
+                  <h3 className="list-row__title">{textValue(row.domain) || "restricted domain"}</h3>
+                  <StatusBadge status={`${row.count} requests`} />
+                </div>
+              </article>
+            ))}
+            {workspace.policyTelemetry.workflows_triggered_by_agents.slice(0, 3).map((row) => (
+              <article key={`workflow-telemetry-${textValue(row.workflow_type)}`} className="list-row">
+                <div className="list-row__topline">
+                  <h3 className="list-row__title">{textValue(row.workflow_type) || "workflow"}</h3>
+                  <StatusBadge status={`${row.count} agent runs`} />
+                </div>
+              </article>
+            ))}
+          </div>
+        </SectionCard>
+
+        <SectionCard
+          eyebrow="Agent Activity"
           title="Generated and proposed work"
           description="Agent-generated artifacts and pending review items stay in human review lanes."
         >
@@ -2262,6 +2412,30 @@ export function VNextBrainWorkspace({
             <span className="meta-pill">Mode: {workspace.scheduler.mode}</span>
             <span className="meta-pill">Enabled: {workspace.scheduler.enabled_count}</span>
             <span className="meta-pill">Paused: {workspace.scheduler.paused_count}</span>
+            <span className="meta-pill">Daemon: {workspace.scheduler.daemon?.running ? "running" : workspace.scheduler.daemon?.configured ? "stopped" : "not configured"}</span>
+          </div>
+          <div className="key-value-grid key-value-grid--compact">
+            <div>
+              <dt>Last due scan</dt>
+              <dd>{workspace.scheduler.daemon?.last_due_scan_at ?? workspace.scheduler.last_due_scan?.occurred_at ?? "never"}</dd>
+            </div>
+            <div>
+              <dt>Last due count</dt>
+              <dd>{workspace.scheduler.daemon?.last_due_count ?? (textValue(asRecord(workspace.scheduler.last_due_scan?.payload_json).due_count) || "0")}</dd>
+            </div>
+            <div>
+              <dt>Next due workflow</dt>
+              <dd>{workspace.scheduler.next_due_workflow?.workflow_type ?? "none"}</dd>
+            </div>
+            <div>
+              <dt>Running workflow</dt>
+              <dd>{workspace.scheduler.currently_running_workflow?.workflow_type ?? "none"}</dd>
+            </div>
+          </div>
+          <div className="vnext-review-actions">
+            <button type="button" className="button" onClick={() => void handleSchedulerRunDue()} disabled={Boolean(pendingAction)}>
+              Run due
+            </button>
           </div>
           {workspace.scheduler.last_failure ? (
             <article className="list-row">
@@ -2271,6 +2445,19 @@ export function VNextBrainWorkspace({
               </div>
               <p>{workspace.scheduler.last_failure.error_message ?? "No error message recorded."}</p>
             </article>
+          ) : null}
+          {workspace.scheduler.recent_failures?.length ? (
+            <div className="list-rows">
+              {workspace.scheduler.recent_failures.slice(0, 3).map((run) => (
+                <article key={`scheduler-failure-${run.id}`} className="list-row">
+                  <div className="list-row__topline">
+                    <h3 className="list-row__title">{run.workflow_type}</h3>
+                    <StatusBadge status="failed" />
+                  </div>
+                  <p>{run.error_message ?? "No error message recorded."}</p>
+                </article>
+              ))}
+            </div>
           ) : null}
           <div className="list-rows">
             {workspace.scheduler.workflows.length ? (
@@ -2293,6 +2480,7 @@ export function VNextBrainWorkspace({
                     <div className="list-row__meta">
                       <span className="meta-pill">Next: {workflow.next_run_at ?? "manual or disabled"}</span>
                       <span className="meta-pill">Last: {workflow.last_run_at ?? "never"}</span>
+                      <span className="meta-pill">Last success: {workspace.scheduler.last_success_by_workflow?.[workflow.workflow_type]?.finished_at ?? "never"}</span>
                       <span className="meta-pill">Result: {workflow.last_result ?? "none"}</span>
                       {workflow.last_error ? <span className="meta-pill">Error: {workflow.last_error}</span> : null}
                     </div>

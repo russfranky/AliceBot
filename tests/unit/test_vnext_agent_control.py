@@ -8,6 +8,7 @@ from alicebot_api.vnext_agent_control import (
     append_policy_events,
     ensure_policy_allowed,
     evaluate_agent_policy,
+    summarize_agent_policy_telemetry,
 )
 
 
@@ -156,3 +157,49 @@ def test_policy_events_log_decision_and_filtered_or_blocked_outcomes() -> None:
     assert event_types == ["policy.decision", "agent.policy_filtered"]
     assert store.events[0]["actor_id"] == "openclaw"
     assert store.events[0]["trace_id"] == decision.trace_id
+    assert store.events[0]["payload_json"]["policy_decision"]["requested_domains"] == ["project", "family"]
+
+
+def test_policy_telemetry_summarizes_agent_outcomes() -> None:
+    store = EventStore()
+    openclaw = AgentIdentity.from_payload({"agent_id": "openclaw", "project_scope": ["Alice"]})
+    memory_bot = AgentIdentity.from_payload({"agent_id": "memory-bot", "permission_profile": "memory_proposal_agent"})
+    assert openclaw is not None and memory_bot is not None
+    filtered = evaluate_agent_policy(
+        identity=openclaw,
+        action="context_pack.request",
+        domains=("project", "family"),
+        project_scope=("Alice",),
+    )
+    proposal = evaluate_agent_policy(
+        identity=memory_bot,
+        action="memory.propose",
+        domains=("project",),
+        sensitivity_allowed=("private",),
+    )
+    append_policy_events(store, identity=openclaw, decision=filtered)
+    append_policy_events(store, identity=memory_bot, decision=proposal)
+    store.append_event(
+        {
+            "event_type": "agent.memory_proposed",
+            "actor_type": "agent",
+            "actor_id": "memory-bot",
+            "payload_json": {},
+        }
+    )
+    store.append_event(
+        {
+            "event_type": "scheduler.run_started",
+            "actor_type": "agent",
+            "actor_id": "openclaw",
+            "payload_json": {"workflow_type": "project_update_scan"},
+        }
+    )
+
+    summary = summarize_agent_policy_telemetry(agent_events=store.events)
+
+    assert summary["policy_filters_by_agent"][0]["agent_id"] == "openclaw"
+    assert summary["requires_review_by_agent"][0]["agent_id"] == "memory-bot"
+    assert summary["restricted_domains_requested"] == [{"domain": "family", "count": 1}]
+    assert summary["workflows_triggered_by_agents"][0]["workflow_type"] == "project_update_scan"
+    assert summary["memory_proposals_by_agent"] == [{"agent_id": "memory-bot", "count": 1}]

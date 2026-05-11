@@ -1,0 +1,15 @@
+[Unit]
+Description=Alice vNext local scheduler daemon
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/YOUR_USER/path/to/AliceBot
+Environment=ALICE_DATABASE_URL=postgresql://alice:alice@localhost:5432/alicebot
+Environment=ALICE_USER_ID=00000000-0000-0000-0000-000000000000
+ExecStart=/home/YOUR_USER/path/to/AliceBot/.venv/bin/python -m alicebot_api --database-url ${ALICE_DATABASE_URL} --user-id ${ALICE_USER_ID} vnext scheduler daemon start --foreground --interval-seconds 60 --limit 10
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
