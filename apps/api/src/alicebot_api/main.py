@@ -461,6 +461,32 @@ from alicebot_api.trusted_fact_promotions import (
     list_trusted_fact_patterns,
     list_trusted_fact_playbooks,
 )
+from alicebot_api.vnext_brain import BrainArtifactRequest, VNextBrainService, VNextBrainValidationError
+from alicebot_api.vnext_capture import VNextCaptureService, VNextCaptureValidationError
+from alicebot_api.vnext_connections import (
+    ConnectionFinderRequest,
+    VNextConnectionService,
+    VNextConnectionValidationError,
+)
+from alicebot_api.vnext_connectors import (
+    VNextConnectorService,
+    VNextConnectorValidationError,
+    list_connector_definitions,
+)
+from alicebot_api.vnext_contradictions import (
+    ContradictionFinderRequest,
+    VNextContradictionService,
+    VNextContradictionValidationError,
+)
+from alicebot_api.vnext_projects import ProjectAutomationRequest, VNextProjectService, VNextProjectValidationError
+from alicebot_api.vnext_queue import (
+    QueueTaskRequest,
+    VNextQueueNotFoundError,
+    VNextQueueService,
+    VNextQueueValidationError,
+)
+from alicebot_api.vnext_retrieval import VNextRetrievalRequest, VNextRetrievalService, VNextRetrievalValidationError
+from alicebot_api.vnext_store import PostgresVNextStore
 from alicebot_api.continuity_lifecycle import (
     ContinuityLifecycleNotFoundError,
     ContinuityLifecycleValidationError,
@@ -1144,6 +1170,204 @@ class ContinuityCaptureRequest(BaseModel):
     user_id: UUID
     raw_content: str = Field(min_length=1, max_length=4000)
     explicit_signal: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class VNextSourceCaptureRequest(BaseModel):
+    user_id: UUID
+    raw_text: str = Field(min_length=1, max_length=200_000)
+    title: str | None = Field(default=None, min_length=1, max_length=280)
+    domain: str = Field(default="unknown", min_length=1, max_length=80)
+    sensitivity: str = Field(default="unknown", min_length=1, max_length=80)
+
+
+class VNextConnectorSyncRequest(BaseModel):
+    user_id: UUID
+    items: list[dict[str, object]] = Field(default_factory=list)
+    default_domain: str | None = Field(default=None, min_length=1, max_length=80)
+    default_sensitivity: str | None = Field(default=None, min_length=1, max_length=80)
+
+
+class VNextContextPackRequest(BaseModel):
+    user_id: UUID
+    query: str = Field(min_length=1, max_length=4000)
+    scope: dict[str, object] = Field(default_factory=dict)
+    options: dict[str, object] = Field(default_factory=dict)
+
+
+class VNextBrainArtifactGenerateRequest(BaseModel):
+    user_id: UUID
+    scope: dict[str, object] = Field(default_factory=dict)
+    options: dict[str, object] = Field(default_factory=dict)
+
+
+class VNextConnectionReportGenerateRequest(BaseModel):
+    user_id: UUID
+    query: str = Field(default="", max_length=4000)
+    scope: dict[str, object] = Field(default_factory=dict)
+    options: dict[str, object] = Field(default_factory=dict)
+
+
+class VNextContradictionReportGenerateRequest(BaseModel):
+    user_id: UUID
+    query: str = Field(default="", max_length=4000)
+    scope: dict[str, object] = Field(default_factory=dict)
+    options: dict[str, object] = Field(default_factory=dict)
+
+
+class VNextProjectAutomationRequest(BaseModel):
+    user_id: UUID
+    scope: dict[str, object] = Field(default_factory=dict)
+    options: dict[str, object] = Field(default_factory=dict)
+
+
+class VNextProjectUpdateReviewRequest(BaseModel):
+    user_id: UUID
+    action: str = Field(min_length=1, max_length=40)
+    edited_current_state: str | None = Field(default=None, min_length=1, max_length=4000)
+
+
+class VNextOpenLoopReviewRequest(BaseModel):
+    user_id: UUID
+    action: str = Field(min_length=1, max_length=40)
+    title: str | None = Field(default=None, min_length=1, max_length=280)
+    description: str | None = Field(default=None, min_length=1, max_length=4000)
+    due_at: str | None = Field(default=None, min_length=1, max_length=120)
+    priority: str | None = Field(default=None, min_length=1, max_length=80)
+    resolution_note: str | None = Field(default=None, min_length=1, max_length=4000)
+
+
+class VNextQueueTaskCreateRequest(BaseModel):
+    user_id: UUID
+    title: str = Field(min_length=1, max_length=280)
+    task_type: str = Field(min_length=1, max_length=80)
+    instructions: str = Field(min_length=1, max_length=20_000)
+    domain: str = Field(default="unknown", min_length=1, max_length=80)
+    sensitivity: str = Field(default="unknown", min_length=1, max_length=80)
+    write_policy: str = Field(default="proposal_only", min_length=1, max_length=80)
+    scope_json: dict[str, object] = Field(default_factory=dict)
+    allowed_sources_json: list[object] = Field(default_factory=list)
+
+
+class VNextQueueProcessNextRequest(BaseModel):
+    user_id: UUID
+
+
+class VNextArtifactReviewRequest(BaseModel):
+    user_id: UUID
+    action: str = Field(min_length=1, max_length=40)
+
+
+class VNextGraphEdgeReviewRequest(BaseModel):
+    user_id: UUID
+    action: str = Field(min_length=1, max_length=40)
+
+
+class VNextBeliefReviewRequest(BaseModel):
+    user_id: UUID
+    action: str = Field(min_length=1, max_length=40)
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    superseded_by: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+class VNextArtifactExportRequest(BaseModel):
+    user_id: UUID
+    output_dir: str = Field(min_length=1, max_length=1000)
+
+
+def _vnext_public_error_response(*, status_code: int, detail: str) -> JSONResponse:
+    return JSONResponse(status_code=status_code, content={"detail": detail})
+
+
+def _vnext_string_list(mapping: dict[str, object], key: str) -> tuple[str, ...]:
+    value = mapping.get(key)
+    if isinstance(value, str):
+        stripped = value.strip()
+        return (stripped,) if stripped else ()
+    if not isinstance(value, list):
+        return ()
+    output: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        stripped = item.strip()
+        if stripped:
+            output.append(stripped)
+    return tuple(output)
+
+
+def _vnext_bool(mapping: dict[str, object], key: str, default: bool) -> bool:
+    value = mapping.get(key)
+    return value if isinstance(value, bool) else default
+
+
+def _vnext_int(mapping: dict[str, object], key: str, default: int) -> int:
+    value = mapping.get(key)
+    return value if isinstance(value, int) else default
+
+
+def _vnext_float(mapping: dict[str, object], key: str) -> float | None:
+    value = mapping.get(key)
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def _vnext_brain_artifact_request(request: VNextBrainArtifactGenerateRequest) -> BrainArtifactRequest:
+    scope = request.scope
+    options = request.options
+    generated_for = options.get("generated_for") or scope.get("generated_for")
+    return BrainArtifactRequest(
+        domains=_vnext_string_list(scope, "domains"),
+        sensitivity_allowed=_vnext_string_list(options, "sensitivity_allowed")
+        or ("public", "internal", "private", "unknown"),
+        generated_for=str(generated_for) if isinstance(generated_for, str) else None,
+        source_limit=_vnext_int(options, "source_limit", 8),
+        memory_limit=_vnext_int(options, "memory_limit", 8),
+        open_loop_limit=_vnext_int(options, "open_loop_limit", 8),
+        artifact_limit=_vnext_int(options, "artifact_limit", 4),
+        discover_open_loops=_vnext_bool(options, "discover_open_loops", True),
+        create_candidate_memories=_vnext_bool(options, "create_candidate_memories", True),
+    )
+
+
+def _vnext_connection_request(request: VNextConnectionReportGenerateRequest) -> ConnectionFinderRequest:
+    options = request.options
+    return ConnectionFinderRequest(
+        query=request.query,
+        domains=_vnext_string_list(request.scope, "domains"),
+        sensitivity_allowed=_vnext_string_list(options, "sensitivity_allowed")
+        or ("public", "internal", "private", "unknown"),
+        max_connections=_vnext_int(options, "max_connections", 8),
+        auto_accept_threshold=_vnext_float(options, "auto_accept_threshold"),
+    )
+
+
+def _vnext_contradiction_request(request: VNextContradictionReportGenerateRequest) -> ContradictionFinderRequest:
+    options = request.options
+    return ContradictionFinderRequest(
+        query=request.query,
+        domains=_vnext_string_list(request.scope, "domains"),
+        sensitivity_allowed=_vnext_string_list(options, "sensitivity_allowed")
+        or ("public", "internal", "private", "unknown"),
+        max_contradictions=_vnext_int(options, "max_contradictions", 8),
+    )
+
+
+def _vnext_project_automation_request(request: VNextProjectAutomationRequest) -> ProjectAutomationRequest:
+    options = request.options
+    scope = request.scope
+    project_id = options.get("project_id") or scope.get("project_id")
+    person_id = options.get("person_id") or scope.get("person_id")
+    return ProjectAutomationRequest(
+        domains=_vnext_string_list(scope, "domains"),
+        sensitivity_allowed=_vnext_string_list(options, "sensitivity_allowed")
+        or ("public", "internal", "private", "unknown"),
+        project_id=str(project_id) if isinstance(project_id, str) else None,
+        person_id=str(person_id) if isinstance(person_id, str) else None,
+        max_items=_vnext_int(options, "max_items", 8),
+    )
 
 
 class ContinuityCaptureCandidatesRequest(BaseModel):
@@ -5343,6 +5567,447 @@ def create_continuity_capture(request: ContinuityCaptureRequest) -> JSONResponse
         status_code=201,
         content=jsonable_encoder(payload),
     )
+
+
+@app.post("/v0/vnext/sources")
+def create_vnext_source(request: VNextSourceCaptureRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = VNextCaptureService(PostgresVNextStore(conn)).capture_text(
+                request.raw_text,
+                title=request.title,
+                domain=request.domain,
+                sensitivity=request.sensitivity,
+            ).to_record()
+    except VNextCaptureValidationError:
+        return _vnext_public_error_response(status_code=400, detail="vNext source capture request is invalid")
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/vnext/connectors")
+def list_vnext_connectors(user_id: UUID) -> JSONResponse:
+    del user_id
+    definitions = list_connector_definitions()
+    payload = {
+        "items": [definition.to_record() for definition in definitions],
+        "count": len(definitions),
+        "order": [definition.name for definition in definitions],
+    }
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.post("/v0/vnext/connectors/{connector_name}/sync")
+def sync_vnext_connector(connector_name: str, request: VNextConnectorSyncRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = VNextConnectorService(PostgresVNextStore(conn)).sync_items(
+                connector_name,
+                request.items,
+                default_domain=request.default_domain,
+                default_sensitivity=request.default_sensitivity,
+            ).to_record()
+    except VNextConnectorValidationError:
+        return _vnext_public_error_response(status_code=400, detail="vNext connector sync request is invalid")
+
+    status_code = 201
+    if payload["status"] == "partial":
+        status_code = 207
+    elif payload["status"] == "failed":
+        status_code = 400
+    return JSONResponse(status_code=status_code, content=jsonable_encoder(payload))
+
+
+@app.get("/v0/vnext/sources/{source_id}")
+def get_vnext_source(source_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = PostgresVNextStore(conn).get_source(str(source_id))
+
+    if payload is None:
+        return JSONResponse(status_code=404, content={"detail": f"vNext source {source_id} was not found"})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.delete("/v0/vnext/sources/{source_id}")
+def delete_vnext_source(source_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        store = PostgresVNextStore(conn)
+        existing = store.get_source(str(source_id))
+        if existing is None:
+            return JSONResponse(status_code=404, content={"detail": f"vNext source {source_id} was not found"})
+        payload = store.delete_source(source_id=str(source_id))
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/vnext/context-packs")
+def create_vnext_context_pack(request: VNextContextPackRequest) -> JSONResponse:
+    settings = get_settings()
+    scope = request.scope
+    options = request.options
+
+    try:
+        retrieval_request = VNextRetrievalRequest(
+            query=request.query,
+            domains=_vnext_string_list(scope, "domains"),
+            projects=_vnext_string_list(scope, "projects"),
+            people=_vnext_string_list(scope, "people"),
+            time_window=str(scope.get("time_window", "all")),
+            sensitivity_allowed=_vnext_string_list(options, "sensitivity_allowed")
+            or ("public", "internal", "private", "unknown"),
+            include_sources=_vnext_bool(options, "include_sources", True),
+            include_contradictions=_vnext_bool(options, "include_contradictions", True),
+            max_items=_vnext_int(options, "max_items", 8),
+            max_tokens=_vnext_int(options, "max_tokens", 8000),
+        )
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = VNextRetrievalService(PostgresVNextStore(conn)).compile_context_pack(retrieval_request)
+    except VNextRetrievalValidationError:
+        return _vnext_public_error_response(status_code=400, detail="vNext context-pack request is invalid")
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/vnext/artifacts/generate/daily-brief")
+def generate_vnext_daily_brief(request: VNextBrainArtifactGenerateRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = VNextBrainService(PostgresVNextStore(conn)).generate_daily_brief(
+                _vnext_brain_artifact_request(request)
+            )
+    except VNextBrainValidationError:
+        return _vnext_public_error_response(status_code=400, detail="vNext daily brief request is invalid")
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/vnext/artifacts/generate/weekly-synthesis")
+def generate_vnext_weekly_synthesis(request: VNextBrainArtifactGenerateRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = VNextBrainService(PostgresVNextStore(conn)).generate_weekly_synthesis(
+                _vnext_brain_artifact_request(request)
+            )
+    except VNextBrainValidationError:
+        return _vnext_public_error_response(status_code=400, detail="vNext weekly synthesis request is invalid")
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/vnext/artifacts/generate/connections")
+def generate_vnext_connection_report(request: VNextConnectionReportGenerateRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = VNextConnectionService(PostgresVNextStore(conn)).generate_connection_report(
+                _vnext_connection_request(request)
+            )
+    except VNextConnectionValidationError:
+        return _vnext_public_error_response(status_code=400, detail="vNext connection report request is invalid")
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/vnext/artifacts/generate/contradictions")
+def generate_vnext_contradiction_report(request: VNextContradictionReportGenerateRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = VNextContradictionService(PostgresVNextStore(conn)).generate_contradiction_report(
+                _vnext_contradiction_request(request)
+            )
+    except VNextContradictionValidationError:
+        return _vnext_public_error_response(status_code=400, detail="vNext contradiction report request is invalid")
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/vnext/queue/tasks")
+def create_vnext_queue_task(request: VNextQueueTaskCreateRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = VNextQueueService(PostgresVNextStore(conn)).enqueue_task(
+                QueueTaskRequest(
+                    title=request.title,
+                    task_type=request.task_type,
+                    instructions=request.instructions,
+                    requested_by="api",
+                    scope_json=request.scope_json,
+                    allowed_sources_json=request.allowed_sources_json,
+                    domain=request.domain,
+                    sensitivity=request.sensitivity,
+                    write_policy=request.write_policy,
+                )
+            )
+    except VNextQueueValidationError:
+        return _vnext_public_error_response(status_code=400, detail="vNext queue task request is invalid")
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/vnext/queue/process-next")
+def process_next_vnext_queue_task(request: VNextQueueProcessNextRequest) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, request.user_id) as conn:
+        payload = VNextQueueService(PostgresVNextStore(conn)).process_next_task().to_record()
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/vnext/artifacts/{artifact_id}")
+def get_vnext_artifact(artifact_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = PostgresVNextStore(conn).get_artifact(str(artifact_id))
+
+    if payload is None:
+        return JSONResponse(status_code=404, content={"detail": f"vNext artifact {artifact_id} was not found"})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/vnext/artifacts/{artifact_id}/review")
+def review_vnext_artifact(artifact_id: UUID, request: VNextArtifactReviewRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = VNextQueueService(PostgresVNextStore(conn)).review_artifact(
+                artifact_id=str(artifact_id),
+                action=request.action,
+            )
+    except VNextQueueNotFoundError:
+        return _vnext_public_error_response(status_code=404, detail="vNext artifact was not found")
+    except VNextQueueValidationError:
+        return _vnext_public_error_response(status_code=400, detail="vNext artifact review request is invalid")
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/vnext/artifacts/{artifact_id}/export")
+def export_vnext_artifact(artifact_id: UUID, request: VNextArtifactExportRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            output_path = VNextQueueService(PostgresVNextStore(conn)).export_artifact_markdown(
+                artifact_id=str(artifact_id),
+                output_dir=request.output_dir,
+            )
+    except VNextQueueNotFoundError:
+        return _vnext_public_error_response(status_code=404, detail="vNext artifact was not found")
+    except VNextQueueValidationError:
+        return _vnext_public_error_response(status_code=400, detail="vNext artifact export request is invalid")
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder({"artifact_id": str(artifact_id), "output_path": str(output_path)}),
+    )
+
+
+@app.post("/v0/vnext/graph/edges/{edge_id}/review")
+def review_vnext_graph_edge(edge_id: str, request: VNextGraphEdgeReviewRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = VNextConnectionService(PostgresVNextStore(conn)).review_edge(
+                edge_id=edge_id,
+                action=request.action,
+            )
+    except VNextConnectionValidationError:
+        return _vnext_public_error_response(status_code=400, detail="vNext graph edge review request is invalid")
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/vnext/graph/neighborhood/{target_id}")
+def get_vnext_graph_neighborhood(target_id: str, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = VNextConnectionService(PostgresVNextStore(conn)).graph_neighborhood(target_id=target_id)
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/vnext/beliefs/{belief_id}/review")
+def review_vnext_belief(belief_id: str, request: VNextBeliefReviewRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = VNextContradictionService(PostgresVNextStore(conn)).review_belief(
+                belief_id=belief_id,
+                action=request.action,
+                confidence=request.confidence,
+                superseded_by=request.superseded_by,
+            )
+    except VNextContradictionValidationError:
+        return _vnext_public_error_response(status_code=400, detail="vNext belief review request is invalid")
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/vnext/beliefs/{belief_id}/state")
+def get_vnext_belief_state(belief_id: str, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = VNextContradictionService(PostgresVNextStore(conn)).belief_state(belief_id=belief_id)
+    except VNextContradictionValidationError:
+        return _vnext_public_error_response(status_code=404, detail="vNext belief was not found")
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/vnext/projects/update-candidates")
+def generate_vnext_project_update_candidate(request: VNextProjectAutomationRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = VNextProjectService(PostgresVNextStore(conn)).generate_project_update_candidate(
+                _vnext_project_automation_request(request)
+            )
+    except VNextProjectValidationError:
+        return _vnext_public_error_response(status_code=400, detail="vNext project update request is invalid")
+
+    return JSONResponse(status_code=201, content=jsonable_encoder(payload))
+
+
+@app.post("/v0/vnext/projects/update-candidates/{artifact_id}/review")
+def review_vnext_project_update_candidate(artifact_id: str, request: VNextProjectUpdateReviewRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = VNextProjectService(PostgresVNextStore(conn)).review_project_update(
+                artifact_id=artifact_id,
+                action=request.action,
+                edited_current_state=request.edited_current_state,
+            )
+    except VNextProjectValidationError:
+        return _vnext_public_error_response(status_code=400, detail="vNext project update review request is invalid")
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.get("/v0/vnext/projects/{project_id}/dashboard")
+def get_vnext_project_dashboard(project_id: str, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = VNextProjectService(PostgresVNextStore(conn)).project_dashboard(project_id=project_id)
+    except VNextProjectValidationError:
+        return _vnext_public_error_response(status_code=404, detail="vNext project was not found")
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.post("/v0/vnext/open-loops/extract")
+def extract_vnext_open_loops(request: VNextProjectAutomationRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            loops = VNextProjectService(PostgresVNextStore(conn)).extract_open_loops(
+                _vnext_project_automation_request(request)
+            )
+    except VNextProjectValidationError:
+        return _vnext_public_error_response(status_code=400, detail="vNext open-loop extraction request is invalid")
+
+    return JSONResponse(status_code=201, content=jsonable_encoder({"open_loops": loops, "created_count": len(loops)}))
+
+
+@app.post("/v0/vnext/open-loops/{loop_id}/review")
+def review_vnext_open_loop(loop_id: str, request: VNextOpenLoopReviewRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = VNextProjectService(PostgresVNextStore(conn)).review_open_loop(
+                loop_id=loop_id,
+                action=request.action,
+                title=request.title,
+                description=request.description,
+                due_at=request.due_at,
+                priority=request.priority,
+                resolution_note=request.resolution_note,
+            )
+    except VNextProjectValidationError:
+        return _vnext_public_error_response(status_code=400, detail="vNext open-loop review request is invalid")
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
 
 @app.post("/v0/continuity/captures/candidates")

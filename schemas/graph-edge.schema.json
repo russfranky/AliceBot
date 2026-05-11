@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://alicebot.local/schemas/graph-edge.schema.json",
+  "title": "Alice vNext Graph Edge",
+  "type": "object",
+  "required": ["id", "from_type", "from_id", "to_type", "to_id", "edge_type", "confidence", "created_by"],
+  "properties": {
+    "id": { "type": "string" },
+    "from_type": { "type": "string" },
+    "from_id": { "type": "string" },
+    "to_type": { "type": "string" },
+    "to_id": { "type": "string" },
+    "edge_type": {
+      "enum": [
+        "supports",
+        "contradicts",
+        "caused_by",
+        "influenced_by",
+        "similar_to",
+        "supersedes",
+        "depends_on",
+        "mentions",
+        "asks",
+        "answers",
+        "reframes",
+        "predicts",
+        "invalidates",
+        "reopens",
+        "same_problem",
+        "same_principle",
+        "cross_domain_pattern",
+        "old_idea_now_relevant",
+        "belief_reinforcement",
+        "belief_challenge",
+        "owned_by",
+        "belongs_to_project",
+        "related_to_person"
+      ]
+    },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "explanation": { "type": ["string", "null"] },
+    "created_by": { "type": "string" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "valid_from": { "type": ["string", "null"], "format": "date-time" },
+    "valid_to": { "type": ["string", "null"], "format": "date-time" },
+    "metadata_json": { "type": "object" }
+  },
+  "additionalProperties": true
+}

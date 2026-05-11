@@ -187,6 +187,33 @@ from alicebot_api.trusted_fact_promotions import (
     list_trusted_fact_patterns,
     list_trusted_fact_playbooks,
 )
+from alicebot_api.vnext_capture import VNextCaptureService, VNextCaptureValidationError
+from alicebot_api.vnext_brain import BrainArtifactRequest, VNextBrainService, VNextBrainValidationError
+from alicebot_api.vnext_connections import (
+    ConnectionFinderRequest,
+    VNextConnectionService,
+    VNextConnectionValidationError,
+)
+from alicebot_api.vnext_connectors import (
+    VNextConnectorService,
+    VNextConnectorValidationError,
+    list_connector_definitions,
+    load_connector_items_from_file,
+)
+from alicebot_api.vnext_contradictions import (
+    ContradictionFinderRequest,
+    VNextContradictionService,
+    VNextContradictionValidationError,
+)
+from alicebot_api.vnext_evals import (
+    run_vnext_evals,
+    write_vnext_benchmark_corpus,
+    write_vnext_eval_report,
+)
+from alicebot_api.vnext_projects import ProjectAutomationRequest, VNextProjectService, VNextProjectValidationError
+from alicebot_api.vnext_queue import QueueTaskRequest, VNextQueueService, VNextQueueValidationError
+from alicebot_api.vnext_retrieval import VNextRetrievalRequest, VNextRetrievalService, VNextRetrievalValidationError
+from alicebot_api.vnext_store import PostgresVNextStore
 
 DEFAULT_CLI_USER_ID = "00000000-0000-0000-0000-000000000001"
 MAINTENANCE_REPORT_PATH_ENV = "ALICEBOT_MAINTENANCE_REPORT_PATH"
@@ -357,6 +384,12 @@ def _store_context(ctx: CLIContext) -> Iterator[ContinuityStore]:
         yield ContinuityStore(conn)
 
 
+@contextmanager
+def _vnext_store_context(ctx: CLIContext) -> Iterator[PostgresVNextStore]:
+    with user_connection(ctx.database_url, ctx.user_id) as conn:
+        yield PostgresVNextStore(conn)
+
+
 def _parse_maintenance_status_payload(payload: object) -> dict[str, object]:
     default_snapshot: dict[str, object] = {
         "maintenance_status": "unknown",
@@ -453,6 +486,273 @@ def _run_capture(ctx: CLIContext, args: argparse.Namespace) -> str:
             ),
         )
     return format_capture_output(payload)
+
+
+def _run_vnext_sources_capture_text(ctx: CLIContext, args: argparse.Namespace) -> str:
+    raw_text = " ".join(args.raw_text).strip()
+    with _vnext_store_context(ctx) as store:
+        result = VNextCaptureService(store).capture_text(
+            raw_text,
+            title=args.title,
+            domain=args.domain,
+            sensitivity=args.sensitivity,
+        )
+    return json.dumps(result.to_record(), indent=2, sort_keys=True)
+
+
+def _run_vnext_sources_capture_file(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        result = VNextCaptureService(store).capture_file(
+            args.path,
+            domain=args.domain,
+            sensitivity=args.sensitivity,
+        )
+    return json.dumps(result.to_record(), indent=2, sort_keys=True)
+
+
+def _run_vnext_sources_import_markdown(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        result = VNextCaptureService(store).import_markdown_folder(
+            args.folder,
+            domain=args.domain,
+            sensitivity=args.sensitivity,
+        )
+    return json.dumps(result.to_record(), indent=2, sort_keys=True)
+
+
+def _run_vnext_sources_import_chatgpt(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        result = VNextCaptureService(store).import_chatgpt_export_file(
+            args.path,
+            domain=args.domain,
+            sensitivity=args.sensitivity,
+        )
+    return json.dumps(result.to_record(), indent=2, sort_keys=True)
+
+
+def _run_vnext_connectors_list(_ctx: CLIContext, _args: argparse.Namespace) -> str:
+    payload = {
+        "items": [definition.to_record() for definition in list_connector_definitions()],
+        "count": len(list_connector_definitions()),
+        "order": [definition.name for definition in list_connector_definitions()],
+    }
+    return json.dumps(payload, indent=2, sort_keys=True)
+
+
+def _run_vnext_connectors_ingest(ctx: CLIContext, args: argparse.Namespace) -> str:
+    items = load_connector_items_from_file(args.payload_path)
+    with _vnext_store_context(ctx) as store:
+        result = VNextConnectorService(store).sync_items(
+            args.connector_name,
+            items,
+            default_domain=args.domain,
+            default_sensitivity=args.sensitivity,
+        )
+    return json.dumps(result.to_record(), indent=2, sort_keys=True)
+
+
+def _run_context_pack(ctx: CLIContext, args: argparse.Namespace) -> str:
+    query = " ".join(args.query).strip()
+    with _vnext_store_context(ctx) as store:
+        payload = VNextRetrievalService(store).compile_context_pack(
+            VNextRetrievalRequest(
+                query=query,
+                domains=tuple(args.domain),
+                projects=tuple(args.project),
+                people=tuple(args.person),
+                sensitivity_allowed=tuple(args.sensitivity_allowed),
+                include_sources=not args.no_sources,
+                include_contradictions=not args.no_contradictions,
+                max_items=args.max_items,
+                max_tokens=args.max_tokens,
+            )
+        )
+    return json.dumps(payload, indent=2, sort_keys=True)
+
+
+def _brain_artifact_request_from_args(args: argparse.Namespace) -> BrainArtifactRequest:
+    return BrainArtifactRequest(
+        domains=tuple(args.domain),
+        sensitivity_allowed=tuple(args.sensitivity_allowed),
+        generated_for=args.generated_for,
+        source_limit=args.source_limit,
+        memory_limit=args.memory_limit,
+        open_loop_limit=args.open_loop_limit,
+        artifact_limit=args.artifact_limit,
+        discover_open_loops=not args.no_discover_open_loops,
+        create_candidate_memories=not args.no_candidate_memories,
+    )
+
+
+def _run_daily_brief(ctx: CLIContext, args: argparse.Namespace) -> str:
+    del args.generate
+    with _vnext_store_context(ctx) as store:
+        artifact = VNextBrainService(store).generate_daily_brief(_brain_artifact_request_from_args(args))
+    return json.dumps(artifact, indent=2, sort_keys=True)
+
+
+def _run_weekly_synthesis(ctx: CLIContext, args: argparse.Namespace) -> str:
+    del args.generate
+    with _vnext_store_context(ctx) as store:
+        artifact = VNextBrainService(store).generate_weekly_synthesis(_brain_artifact_request_from_args(args))
+    return json.dumps(artifact, indent=2, sort_keys=True)
+
+
+def _connection_finder_request_from_args(args: argparse.Namespace) -> ConnectionFinderRequest:
+    return ConnectionFinderRequest(
+        query=getattr(args, "query", "") or "",
+        domains=tuple(args.domain),
+        sensitivity_allowed=tuple(args.sensitivity_allowed),
+        max_connections=args.max_connections,
+        auto_accept_threshold=args.auto_accept_threshold,
+    )
+
+
+def _run_connections_generate(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        artifact = VNextConnectionService(store).generate_connection_report(_connection_finder_request_from_args(args))
+    return json.dumps(artifact, indent=2, sort_keys=True)
+
+
+def _run_vnext_graph_review(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        edge = VNextConnectionService(store).review_edge(edge_id=args.edge_id, action=args.action)
+    return json.dumps(edge, indent=2, sort_keys=True)
+
+
+def _run_vnext_graph_neighborhood(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        payload = VNextConnectionService(store).graph_neighborhood(target_id=args.target_id)
+    return json.dumps(payload, indent=2, sort_keys=True)
+
+
+def _contradiction_finder_request_from_args(args: argparse.Namespace) -> ContradictionFinderRequest:
+    return ContradictionFinderRequest(
+        query=getattr(args, "query", "") or "",
+        domains=tuple(args.domain),
+        sensitivity_allowed=tuple(args.sensitivity_allowed),
+        max_contradictions=args.max_contradictions,
+    )
+
+
+def _run_vnext_contradictions_generate(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        artifact = VNextContradictionService(store).generate_contradiction_report(
+            _contradiction_finder_request_from_args(args)
+        )
+    return json.dumps(artifact, indent=2, sort_keys=True)
+
+
+def _run_vnext_belief_review(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        belief = VNextContradictionService(store).review_belief(
+            belief_id=args.belief_id,
+            action=args.action,
+            confidence=args.confidence,
+            superseded_by=args.superseded_by,
+        )
+    return json.dumps(belief, indent=2, sort_keys=True)
+
+
+def _run_vnext_belief_state(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        payload = VNextContradictionService(store).belief_state(belief_id=args.belief_id)
+    return json.dumps(payload, indent=2, sort_keys=True)
+
+
+def _project_automation_request_from_args(args: argparse.Namespace) -> ProjectAutomationRequest:
+    return ProjectAutomationRequest(
+        domains=tuple(args.domain),
+        sensitivity_allowed=tuple(args.sensitivity_allowed),
+        project_id=getattr(args, "project_id", None),
+        person_id=getattr(args, "person_id", None),
+        max_items=args.max_items,
+    )
+
+
+def _run_vnext_project_update_candidate(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        artifact = VNextProjectService(store).generate_project_update_candidate(_project_automation_request_from_args(args))
+    return json.dumps(artifact, indent=2, sort_keys=True)
+
+
+def _run_vnext_project_update_review(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        artifact = VNextProjectService(store).review_project_update(
+            artifact_id=args.artifact_id,
+            action=args.action,
+            edited_current_state=args.edited_current_state,
+        )
+    return json.dumps(artifact, indent=2, sort_keys=True)
+
+
+def _run_vnext_project_dashboard(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        payload = VNextProjectService(store).project_dashboard(
+            project_id=args.project_id,
+            sensitivity_allowed=tuple(args.sensitivity_allowed),
+        )
+    return json.dumps(payload, indent=2, sort_keys=True)
+
+
+def _run_vnext_open_loops_extract(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        loops = VNextProjectService(store).extract_open_loops(_project_automation_request_from_args(args))
+    return json.dumps({"open_loops": loops, "created_count": len(loops)}, indent=2, sort_keys=True)
+
+
+def _run_vnext_open_loop_review(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        loop = VNextProjectService(store).review_open_loop(
+            loop_id=args.loop_id,
+            action=args.action,
+            title=args.title,
+            description=args.description,
+            due_at=args.due_at,
+            priority=args.priority,
+            resolution_note=args.resolution_note,
+        )
+    return json.dumps(loop, indent=2, sort_keys=True)
+
+
+def _run_vnext_queue_add(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        task = VNextQueueService(store).enqueue_task(
+            QueueTaskRequest(
+                title=args.title,
+                task_type=args.type,
+                instructions=args.instructions,
+                requested_by="cli",
+                domain=args.domain,
+                sensitivity=args.sensitivity,
+                write_policy=args.write_policy,
+            )
+        )
+    return json.dumps(task, indent=2, sort_keys=True)
+
+
+def _run_vnext_queue_process_next(ctx: CLIContext, _args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        result = VNextQueueService(store).process_next_task()
+    return json.dumps(result.to_record(), indent=2, sort_keys=True)
+
+
+def _run_vnext_artifact_review(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        artifact = VNextQueueService(store).review_artifact(
+            artifact_id=args.artifact_id,
+            action=args.action,
+        )
+    return json.dumps(artifact, indent=2, sort_keys=True)
+
+
+def _run_vnext_artifact_export(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        output_path = VNextQueueService(store).export_artifact_markdown(
+            artifact_id=args.artifact_id,
+            output_dir=args.output_dir,
+        )
+    return json.dumps({"artifact_id": args.artifact_id, "output_path": str(output_path)}, indent=2, sort_keys=True)
 
 
 def _run_mutation_generate(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -1140,6 +1440,53 @@ def _run_eval_run(ctx: CLIContext, args: argparse.Namespace) -> str:
     return json.dumps(payload, indent=2, sort_keys=True)
 
 
+def _run_vnext_eval_seed(_ctx: CLIContext, args: argparse.Namespace) -> str:
+    written_path = write_vnext_benchmark_corpus(args.output_path)
+    return json.dumps(
+        {
+            "status": "seeded",
+            "written_corpus_path": str(written_path),
+        },
+        indent=2,
+        sort_keys=True,
+    )
+
+
+def _run_vnext_eval_run(_ctx: CLIContext, args: argparse.Namespace) -> str:
+    report = run_vnext_evals(
+        suite=args.suite,
+        corpus_path=args.corpus_path,
+    )
+    payload: dict[str, object] = {"report": report}
+    if args.report_path is not None:
+        payload["written_report_path"] = str(
+            write_vnext_eval_report(
+                report=report,
+                report_path=args.report_path,
+            )
+        )
+    return json.dumps(payload, indent=2, sort_keys=True)
+
+
+def _run_vnext_eval_report(_ctx: CLIContext, args: argparse.Namespace) -> str:
+    report = run_vnext_evals(
+        suite=args.suite,
+        corpus_path=args.corpus_path,
+    )
+    written_path = write_vnext_eval_report(
+        report=report,
+        report_path=args.report_path,
+    )
+    return json.dumps(
+        {
+            "report": report,
+            "written_report_path": str(written_path),
+        },
+        indent=2,
+        sort_keys=True,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="alicebot",
@@ -1170,6 +1517,364 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional explicit signal for deterministic derivation.",
     )
     capture_parser.set_defaults(handler=_run_capture)
+
+    context_pack_parser = subparsers.add_parser("context-pack", help="Compile an Alice vNext context pack.")
+    context_pack_parser.add_argument("query", nargs="+", help="Query to compile context for.")
+    context_pack_parser.add_argument("--domain", action="append", default=[], help="Allowed domain. Repeatable.")
+    context_pack_parser.add_argument("--project", action="append", default=[], help="Project scope. Repeatable.")
+    context_pack_parser.add_argument("--person", action="append", default=[], help="People scope. Repeatable.")
+    context_pack_parser.add_argument(
+        "--sensitivity-allowed",
+        action="append",
+        default=["public", "internal", "private", "unknown"],
+        help="Allowed sensitivity. Repeatable.",
+    )
+    context_pack_parser.add_argument("--max-items", type=int, default=8, help="Maximum selected memories.")
+    context_pack_parser.add_argument("--max-tokens", type=int, default=8000, help="Approximate context token budget.")
+    context_pack_parser.add_argument("--no-sources", action="store_true", help="Do not require source references.")
+    context_pack_parser.add_argument(
+        "--no-contradictions",
+        action="store_true",
+        help="Do not request contradiction placeholders by default.",
+    )
+    context_pack_parser.set_defaults(handler=_run_context_pack)
+
+    daily_brief_parser = subparsers.add_parser("daily-brief", help="Generate a vNext daily brief artifact.")
+    daily_brief_parser.add_argument("--generate", action="store_true", help="Generate the daily brief now.")
+    daily_brief_parser.add_argument("--generated-for", default=None, help="ISO date for the brief.")
+    daily_brief_parser.add_argument("--domain", action="append", default=[], help="Allowed domain. Repeatable.")
+    daily_brief_parser.add_argument(
+        "--sensitivity-allowed",
+        action="append",
+        default=["public", "internal", "private", "unknown"],
+        help="Allowed sensitivity. Repeatable.",
+    )
+    daily_brief_parser.add_argument("--source-limit", type=int, default=8, help="Maximum source inputs.")
+    daily_brief_parser.add_argument("--memory-limit", type=int, default=8, help="Maximum memory inputs.")
+    daily_brief_parser.add_argument("--open-loop-limit", type=int, default=8, help="Maximum open-loop inputs.")
+    daily_brief_parser.add_argument("--artifact-limit", type=int, default=4, help="Maximum recent artifact inputs.")
+    daily_brief_parser.add_argument(
+        "--no-discover-open-loops",
+        action="store_true",
+        help="Skip candidate open-loop discovery from source text.",
+    )
+    daily_brief_parser.add_argument(
+        "--no-candidate-memories",
+        action="store_true",
+        help="Do not create candidate memories for workflows that support them.",
+    )
+    daily_brief_parser.set_defaults(handler=_run_daily_brief)
+
+    weekly_synthesis_parser = subparsers.add_parser(
+        "weekly-synthesis",
+        help="Generate a vNext weekly synthesis artifact.",
+    )
+    weekly_synthesis_parser.add_argument("--generate", action="store_true", help="Generate the weekly synthesis now.")
+    weekly_synthesis_parser.add_argument("--generated-for", default=None, help="ISO date inside the target week.")
+    weekly_synthesis_parser.add_argument("--domain", action="append", default=[], help="Allowed domain. Repeatable.")
+    weekly_synthesis_parser.add_argument(
+        "--sensitivity-allowed",
+        action="append",
+        default=["public", "internal", "private", "unknown"],
+        help="Allowed sensitivity. Repeatable.",
+    )
+    weekly_synthesis_parser.add_argument("--source-limit", type=int, default=8, help="Maximum source inputs.")
+    weekly_synthesis_parser.add_argument("--memory-limit", type=int, default=8, help="Maximum memory inputs.")
+    weekly_synthesis_parser.add_argument("--open-loop-limit", type=int, default=8, help="Maximum open-loop inputs.")
+    weekly_synthesis_parser.add_argument("--artifact-limit", type=int, default=4, help="Maximum recent artifact inputs.")
+    weekly_synthesis_parser.add_argument(
+        "--no-discover-open-loops",
+        action="store_true",
+        help="Skip candidate open-loop discovery from source text.",
+    )
+    weekly_synthesis_parser.add_argument(
+        "--no-candidate-memories",
+        action="store_true",
+        help="Do not create candidate memories from weekly insights.",
+    )
+    weekly_synthesis_parser.set_defaults(handler=_run_weekly_synthesis)
+
+    connections_parser = subparsers.add_parser("connections", help="Generate vNext connection reports.")
+    connections_subparsers = connections_parser.add_subparsers(dest="connections_command", required=True)
+    connections_generate_parser = connections_subparsers.add_parser(
+        "generate",
+        help="Generate a vNext connection report and candidate graph edges.",
+    )
+    connections_generate_parser.add_argument("--query", default="", help="Optional search query for candidate inputs.")
+    connections_generate_parser.add_argument("--domain", action="append", default=[], help="Allowed domain. Repeatable.")
+    connections_generate_parser.add_argument(
+        "--sensitivity-allowed",
+        action="append",
+        default=["public", "internal", "private", "unknown"],
+        help="Allowed sensitivity. Repeatable.",
+    )
+    connections_generate_parser.add_argument(
+        "--max-connections",
+        type=int,
+        default=8,
+        help="Maximum candidate connections.",
+    )
+    connections_generate_parser.add_argument(
+        "--auto-accept-threshold",
+        type=float,
+        default=None,
+        help="Optional confidence threshold for auto-accepted edges.",
+    )
+    connections_generate_parser.set_defaults(handler=_run_connections_generate)
+
+    vnext_parser = subparsers.add_parser("vnext", help="Alice vNext workflows.")
+    vnext_subparsers = vnext_parser.add_subparsers(dest="vnext_command", required=True)
+
+    vnext_connectors_parser = vnext_subparsers.add_parser("connectors", help="List and ingest vNext connectors.")
+    vnext_connectors_subparsers = vnext_connectors_parser.add_subparsers(
+        dest="vnext_connectors_command",
+        required=True,
+    )
+
+    vnext_connectors_list_parser = vnext_connectors_subparsers.add_parser(
+        "list",
+        help="List deterministic vNext connector definitions and defaults.",
+    )
+    vnext_connectors_list_parser.set_defaults(handler=_run_vnext_connectors_list)
+
+    vnext_connectors_ingest_parser = vnext_connectors_subparsers.add_parser(
+        "ingest",
+        help="Ingest already-exported connector payload items into vNext sources.",
+    )
+    vnext_connectors_ingest_parser.add_argument("connector_name", help="Connector name, such as telegram.")
+    vnext_connectors_ingest_parser.add_argument("payload_path", help="JSON payload file, or CSV for csv_table.")
+    vnext_connectors_ingest_parser.add_argument("--domain", default=None, help="Connector default domain override.")
+    vnext_connectors_ingest_parser.add_argument(
+        "--sensitivity",
+        default=None,
+        help="Connector default sensitivity override.",
+    )
+    vnext_connectors_ingest_parser.set_defaults(handler=_run_vnext_connectors_ingest)
+
+    vnext_sources_parser = vnext_subparsers.add_parser("sources", help="Capture and import vNext sources.")
+    vnext_sources_subparsers = vnext_sources_parser.add_subparsers(dest="vnext_sources_command", required=True)
+
+    vnext_capture_text_parser = vnext_sources_subparsers.add_parser(
+        "capture-text",
+        help="Capture manual text into the vNext source pipeline.",
+    )
+    vnext_capture_text_parser.add_argument("raw_text", nargs="+", help="Raw text to capture.")
+    vnext_capture_text_parser.add_argument("--title", default=None, help="Optional source title.")
+    vnext_capture_text_parser.add_argument("--domain", default="unknown", help="Source domain.")
+    vnext_capture_text_parser.add_argument("--sensitivity", default="unknown", help="Source sensitivity.")
+    vnext_capture_text_parser.set_defaults(handler=_run_vnext_sources_capture_text)
+
+    vnext_capture_file_parser = vnext_sources_subparsers.add_parser(
+        "capture-file",
+        help="Capture a local text or Markdown file into the vNext source pipeline.",
+    )
+    vnext_capture_file_parser.add_argument("path", help="Path to a text or Markdown file.")
+    vnext_capture_file_parser.add_argument("--domain", default="unknown", help="Source domain.")
+    vnext_capture_file_parser.add_argument("--sensitivity", default="unknown", help="Source sensitivity.")
+    vnext_capture_file_parser.set_defaults(handler=_run_vnext_sources_capture_file)
+
+    vnext_import_markdown_parser = vnext_sources_subparsers.add_parser(
+        "import-markdown",
+        help="Import a Markdown/Obsidian folder into the vNext source pipeline.",
+    )
+    vnext_import_markdown_parser.add_argument("folder", help="Folder containing Markdown files.")
+    vnext_import_markdown_parser.add_argument("--domain", default="unknown", help="Source domain.")
+    vnext_import_markdown_parser.add_argument("--sensitivity", default="unknown", help="Source sensitivity.")
+    vnext_import_markdown_parser.set_defaults(handler=_run_vnext_sources_import_markdown)
+
+    vnext_import_chatgpt_parser = vnext_sources_subparsers.add_parser(
+        "import-chatgpt",
+        help="Import a ChatGPT export JSON file into the vNext source pipeline.",
+    )
+    vnext_import_chatgpt_parser.add_argument("path", help="Path to a ChatGPT export JSON file.")
+    vnext_import_chatgpt_parser.add_argument("--domain", default="personal", help="Source domain.")
+    vnext_import_chatgpt_parser.add_argument("--sensitivity", default="private", help="Source sensitivity.")
+    vnext_import_chatgpt_parser.set_defaults(handler=_run_vnext_sources_import_chatgpt)
+
+    vnext_queue_parser = vnext_subparsers.add_parser("queue", help="Manage the vNext task queue.")
+    vnext_queue_subparsers = vnext_queue_parser.add_subparsers(dest="vnext_queue_command", required=True)
+
+    vnext_queue_add_parser = vnext_queue_subparsers.add_parser("add", help="Add a vNext queue task.")
+    vnext_queue_add_parser.add_argument("--type", required=True, help="Task type, such as synthesize or draft.")
+    vnext_queue_add_parser.add_argument("--title", required=True, help="Task title.")
+    vnext_queue_add_parser.add_argument("--instructions", required=True, help="Task instructions.")
+    vnext_queue_add_parser.add_argument("--domain", default="unknown", help="Task domain.")
+    vnext_queue_add_parser.add_argument("--sensitivity", default="unknown", help="Task sensitivity.")
+    vnext_queue_add_parser.add_argument("--write-policy", default="proposal_only", help="Task write policy.")
+    vnext_queue_add_parser.set_defaults(handler=_run_vnext_queue_add)
+
+    vnext_queue_process_parser = vnext_queue_subparsers.add_parser(
+        "process-next",
+        help="Claim and process the next pending vNext queue task.",
+    )
+    vnext_queue_process_parser.set_defaults(handler=_run_vnext_queue_process_next)
+
+    vnext_artifacts_parser = vnext_subparsers.add_parser("artifacts", help="Review and export vNext artifacts.")
+    vnext_artifacts_subparsers = vnext_artifacts_parser.add_subparsers(dest="vnext_artifacts_command", required=True)
+
+    vnext_artifact_review_parser = vnext_artifacts_subparsers.add_parser("review", help="Review a vNext artifact.")
+    vnext_artifact_review_parser.add_argument("artifact_id", help="Artifact id.")
+    vnext_artifact_review_parser.add_argument(
+        "--action",
+        choices=("review", "accept", "reject", "promote", "archive"),
+        required=True,
+        help="Review action.",
+    )
+    vnext_artifact_review_parser.set_defaults(handler=_run_vnext_artifact_review)
+
+    vnext_artifact_export_parser = vnext_artifacts_subparsers.add_parser(
+        "export",
+        help="Export a vNext artifact as Markdown.",
+    )
+    vnext_artifact_export_parser.add_argument("artifact_id", help="Artifact id.")
+    vnext_artifact_export_parser.add_argument("--output-dir", required=True, help="Directory for the Markdown file.")
+    vnext_artifact_export_parser.set_defaults(handler=_run_vnext_artifact_export)
+
+    vnext_graph_parser = vnext_subparsers.add_parser("graph", help="Review and inspect vNext graph edges.")
+    vnext_graph_subparsers = vnext_graph_parser.add_subparsers(dest="vnext_graph_command", required=True)
+
+    vnext_graph_review_parser = vnext_graph_subparsers.add_parser("review", help="Review a candidate graph edge.")
+    vnext_graph_review_parser.add_argument("edge_id", help="Graph edge id.")
+    vnext_graph_review_parser.add_argument(
+        "--action",
+        required=True,
+        choices=("review", "accept", "reject"),
+        help="Review action.",
+    )
+    vnext_graph_review_parser.set_defaults(handler=_run_vnext_graph_review)
+
+    vnext_graph_neighborhood_parser = vnext_graph_subparsers.add_parser(
+        "neighborhood",
+        help="Show active graph edges around a target id.",
+    )
+    vnext_graph_neighborhood_parser.add_argument("target_id", help="Source, memory, artifact, project, or person id.")
+    vnext_graph_neighborhood_parser.set_defaults(handler=_run_vnext_graph_neighborhood)
+
+    vnext_contradictions_parser = vnext_subparsers.add_parser(
+        "contradictions",
+        help="Generate vNext contradiction reports.",
+    )
+    vnext_contradictions_subparsers = vnext_contradictions_parser.add_subparsers(
+        dest="vnext_contradictions_command",
+        required=True,
+    )
+    vnext_contradictions_generate_parser = vnext_contradictions_subparsers.add_parser(
+        "generate",
+        help="Generate a vNext contradiction report and candidate contradiction edges.",
+    )
+    vnext_contradictions_generate_parser.add_argument("--query", default="", help="Optional search query.")
+    vnext_contradictions_generate_parser.add_argument(
+        "--domain",
+        action="append",
+        default=[],
+        help="Allowed domain. Repeatable.",
+    )
+    vnext_contradictions_generate_parser.add_argument(
+        "--sensitivity-allowed",
+        action="append",
+        default=["public", "internal", "private", "unknown"],
+        help="Allowed sensitivity. Repeatable.",
+    )
+    vnext_contradictions_generate_parser.add_argument(
+        "--max-contradictions",
+        type=int,
+        default=8,
+        help="Maximum candidate contradictions.",
+    )
+    vnext_contradictions_generate_parser.set_defaults(handler=_run_vnext_contradictions_generate)
+
+    vnext_beliefs_parser = vnext_subparsers.add_parser("beliefs", help="Review and inspect vNext beliefs.")
+    vnext_beliefs_subparsers = vnext_beliefs_parser.add_subparsers(dest="vnext_beliefs_command", required=True)
+
+    vnext_belief_review_parser = vnext_beliefs_subparsers.add_parser("review", help="Review a vNext belief.")
+    vnext_belief_review_parser.add_argument("belief_id", help="Belief id.")
+    vnext_belief_review_parser.add_argument(
+        "--action",
+        required=True,
+        choices=("reinforce", "challenge", "supersede", "retire"),
+        help="Belief review action.",
+    )
+    vnext_belief_review_parser.add_argument("--confidence", type=float, default=None, help="Optional confidence.")
+    vnext_belief_review_parser.add_argument("--superseded-by", default=None, help="Replacement belief id.")
+    vnext_belief_review_parser.set_defaults(handler=_run_vnext_belief_review)
+
+    vnext_belief_state_parser = vnext_beliefs_subparsers.add_parser(
+        "state",
+        help="Show current and historical state for a vNext belief.",
+    )
+    vnext_belief_state_parser.add_argument("belief_id", help="Belief id.")
+    vnext_belief_state_parser.set_defaults(handler=_run_vnext_belief_state)
+
+    vnext_projects_parser = vnext_subparsers.add_parser("projects", help="Generate and review vNext project updates.")
+    vnext_projects_subparsers = vnext_projects_parser.add_subparsers(dest="vnext_projects_command", required=True)
+
+    vnext_project_update_parser = vnext_projects_subparsers.add_parser(
+        "update-candidate",
+        help="Generate a project update candidate artifact.",
+    )
+    vnext_project_update_parser.add_argument("--project-id", default=None, help="Project id.")
+    vnext_project_update_parser.add_argument("--domain", action="append", default=[], help="Allowed domain. Repeatable.")
+    vnext_project_update_parser.add_argument(
+        "--sensitivity-allowed",
+        action="append",
+        default=["public", "internal", "private", "unknown"],
+        help="Allowed sensitivity. Repeatable.",
+    )
+    vnext_project_update_parser.add_argument("--max-items", type=int, default=8, help="Maximum selected inputs.")
+    vnext_project_update_parser.set_defaults(handler=_run_vnext_project_update_candidate)
+
+    vnext_project_review_parser = vnext_projects_subparsers.add_parser(
+        "review-update",
+        help="Accept, edit, or reject a project update candidate artifact.",
+    )
+    vnext_project_review_parser.add_argument("artifact_id", help="Project update artifact id.")
+    vnext_project_review_parser.add_argument("--action", required=True, choices=("accept", "edit", "reject"))
+    vnext_project_review_parser.add_argument("--edited-current-state", default=None, help="Edited current state.")
+    vnext_project_review_parser.set_defaults(handler=_run_vnext_project_update_review)
+
+    vnext_project_dashboard_parser = vnext_projects_subparsers.add_parser("dashboard", help="Show project dashboard data.")
+    vnext_project_dashboard_parser.add_argument("project_id", help="Project id.")
+    vnext_project_dashboard_parser.add_argument(
+        "--sensitivity-allowed",
+        action="append",
+        default=["public", "internal", "private", "unknown"],
+        help="Allowed sensitivity. Repeatable.",
+    )
+    vnext_project_dashboard_parser.set_defaults(handler=_run_vnext_project_dashboard)
+
+    vnext_open_loops_parser = vnext_subparsers.add_parser("open-loops", help="Extract and review vNext open loops.")
+    vnext_open_loops_subparsers = vnext_open_loops_parser.add_subparsers(
+        dest="vnext_open_loops_command",
+        required=True,
+    )
+    vnext_open_loops_extract_parser = vnext_open_loops_subparsers.add_parser(
+        "extract",
+        help="Extract candidate open loops from selected sources.",
+    )
+    vnext_open_loops_extract_parser.add_argument("--project-id", default=None, help="Project id.")
+    vnext_open_loops_extract_parser.add_argument("--person-id", default=None, help="Person id.")
+    vnext_open_loops_extract_parser.add_argument("--domain", action="append", default=[], help="Allowed domain. Repeatable.")
+    vnext_open_loops_extract_parser.add_argument(
+        "--sensitivity-allowed",
+        action="append",
+        default=["public", "internal", "private", "unknown"],
+        help="Allowed sensitivity. Repeatable.",
+    )
+    vnext_open_loops_extract_parser.add_argument("--max-items", type=int, default=8, help="Maximum selected sources.")
+    vnext_open_loops_extract_parser.set_defaults(handler=_run_vnext_open_loops_extract)
+
+    vnext_open_loop_review_parser = vnext_open_loops_subparsers.add_parser(
+        "review",
+        help="Close, snooze, edit, or reopen a vNext open loop.",
+    )
+    vnext_open_loop_review_parser.add_argument("loop_id", help="Open loop id.")
+    vnext_open_loop_review_parser.add_argument("--action", required=True, choices=("close", "snooze", "edit", "reopen"))
+    vnext_open_loop_review_parser.add_argument("--title", default=None, help="Edited title.")
+    vnext_open_loop_review_parser.add_argument("--description", default=None, help="Edited description.")
+    vnext_open_loop_review_parser.add_argument("--due-at", default=None, help="ISO datetime for snooze/edit.")
+    vnext_open_loop_review_parser.add_argument("--priority", default=None, help="Edited priority.")
+    vnext_open_loop_review_parser.add_argument("--resolution-note", default=None, help="Resolution note for close.")
+    vnext_open_loop_review_parser.set_defaults(handler=_run_vnext_open_loop_review)
 
     mutations_parser = subparsers.add_parser("mutations", help="Generate, inspect, and apply memory operations.")
     mutations_subparsers = mutations_parser.add_subparsers(dest="mutations_command", required=True)
@@ -1643,6 +2348,62 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser = subparsers.add_parser("status", help="Show local continuity runtime status.")
     status_parser.set_defaults(handler=_run_status)
 
+    vnext_eval_parser = subparsers.add_parser("eval", help="Run Alice vNext synthetic evals.")
+    vnext_eval_subparsers = vnext_eval_parser.add_subparsers(dest="eval_command", required=True)
+
+    vnext_eval_seed_parser = vnext_eval_subparsers.add_parser(
+        "seed",
+        help="Write the deterministic vNext synthetic benchmark corpus.",
+    )
+    vnext_eval_seed_parser.add_argument(
+        "--output-path",
+        default=None,
+        help="Optional output path for the benchmark corpus JSON.",
+    )
+    vnext_eval_seed_parser.set_defaults(handler=_run_vnext_eval_seed)
+
+    vnext_eval_run_parser = vnext_eval_subparsers.add_parser(
+        "run",
+        help="Run vNext eval suites against the synthetic corpus.",
+    )
+    vnext_eval_run_parser.add_argument(
+        "--suite",
+        default="all",
+        help="Suite key to run: all, recall, temporal, contradictions, privacy, provenance, open_loops, or prompt_injection.",
+    )
+    vnext_eval_run_parser.add_argument(
+        "--corpus-path",
+        default=None,
+        help="Optional benchmark corpus JSON path. Defaults to generated in-memory corpus when absent.",
+    )
+    vnext_eval_run_parser.add_argument(
+        "--report-path",
+        default=None,
+        help="Optional output path for the vNext eval report JSON.",
+    )
+    vnext_eval_run_parser.set_defaults(handler=_run_vnext_eval_run)
+
+    vnext_eval_report_parser = vnext_eval_subparsers.add_parser(
+        "report",
+        help="Run vNext evals and write a canonical report artifact.",
+    )
+    vnext_eval_report_parser.add_argument(
+        "--suite",
+        default="all",
+        help="Suite key to report: all, recall, temporal, contradictions, privacy, provenance, open_loops, or prompt_injection.",
+    )
+    vnext_eval_report_parser.add_argument(
+        "--corpus-path",
+        default=None,
+        help="Optional benchmark corpus JSON path. Defaults to generated in-memory corpus when absent.",
+    )
+    vnext_eval_report_parser.add_argument(
+        "--report-path",
+        default=None,
+        help="Optional output path for the vNext eval report JSON.",
+    )
+    vnext_eval_report_parser.set_defaults(handler=_run_vnext_eval_report)
+
     evals_parser = subparsers.add_parser("evals", help="Run and inspect public eval suites.")
     evals_subparsers = evals_parser.add_subparsers(dest="evals_command", required=True)
 
@@ -1698,6 +2459,19 @@ def _validate_arguments(args: argparse.Namespace) -> None:
             option_name="--limit",
             minimum=1,
             maximum=MAX_CONTINUITY_RECALL_LIMIT,
+        )
+    elif args.command == "context-pack":
+        _validate_limit(
+            args.max_items,
+            option_name="--max-items",
+            minimum=1,
+            maximum=50,
+        )
+        _validate_limit(
+            args.max_tokens,
+            option_name="--max-tokens",
+            minimum=500,
+            maximum=50_000,
         )
     elif args.command == "contradictions" and args.contradictions_command in {"detect", "list"}:
         _validate_limit(
@@ -1836,6 +2610,14 @@ def main(argv: list[str] | None = None) -> int:
         ValueError,
         psycopg.Error,
         ContinuityCaptureValidationError,
+        VNextCaptureValidationError,
+        VNextBrainValidationError,
+        VNextConnectionValidationError,
+        VNextConnectorValidationError,
+        VNextContradictionValidationError,
+        VNextProjectValidationError,
+        VNextQueueValidationError,
+        VNextRetrievalValidationError,
         ContinuityLifecycleValidationError,
         ContinuityLifecycleNotFoundError,
         ContinuityRecallValidationError,

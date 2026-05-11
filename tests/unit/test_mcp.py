@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from io import BytesIO
 from uuid import UUID
 
 import pytest
 
 import alicebot_api.mcp_server as mcp_server
+import alicebot_api.mcp_tools as mcp_tools_module
 from alicebot_api.mcp_tools import MCPRuntimeContext, MCPToolError, MCPToolNotFoundError, call_mcp_tool, list_mcp_tools
 
 
@@ -46,6 +48,20 @@ def test_mcp_tool_surface_is_adr_aligned_and_deterministic() -> None:
         "alice_explain",
         "alice_artifact_inspect",
         "alice_context_pack",
+        "alice_vnext_context_pack",
+        "alice_generate_daily_brief",
+        "alice_generate_weekly_synthesis",
+        "alice_generate_connections",
+        "alice_graph_edge_review",
+        "alice_graph_neighborhood",
+        "alice_generate_contradictions",
+        "alice_belief_review",
+        "alice_belief_state",
+        "alice_project_update_candidate",
+        "alice_project_update_review",
+        "alice_project_dashboard",
+        "alice_open_loop_extract",
+        "alice_open_loop_review",
     ]
 
     for tool in tools:
@@ -70,6 +86,414 @@ def test_call_mcp_tool_requires_object_arguments() -> None:
     )
     with pytest.raises(MCPToolError, match="tool arguments must be a JSON object"):
         call_mcp_tool(context, name="alice_recall", arguments=["not-a-json-object"])
+
+
+class FakeVNextMCPStore:
+    def __init__(self) -> None:
+        self.events: list[dict[str, object]] = []
+        self.memories: list[dict[str, object]] = []
+        self.artifacts: dict[str, dict[str, object]] = {}
+        self.open_loops: list[dict[str, object]] = []
+        self.edges: dict[str, dict[str, object]] = {}
+        self.projects: dict[str, dict[str, object]] = {
+            "project-1": {
+                "id": "project-1",
+                "name": "Alice vNext",
+                "slug": "alice-vnext",
+                "status": "active",
+                "current_state": "Sprint 7 complete.",
+                "domain": "project",
+                "sensitivity": "private",
+            }
+        }
+        self.revisions: list[dict[str, object]] = []
+        self.beliefs: dict[str, dict[str, object]] = {
+            "belief-1": {
+                "id": "belief-1",
+                "memory_id": "memory-belief-1",
+                "claim": "Alice should auto-promote generated artifacts into memory.",
+                "status": "active",
+                "confidence": 0.8,
+                "domain": "project",
+                "sensitivity": "private",
+                "memory_type": "belief",
+            }
+        }
+
+    def append_event(self, event: dict[str, object]) -> dict[str, object]:
+        self.events.append(event)
+        return event
+
+    def create_artifact(self, artifact: dict[str, object]) -> dict[str, object]:
+        row = {**artifact, "id": f"artifact-{len(self.artifacts) + 1}"}
+        self.artifacts[str(row["id"])] = row
+        return row
+
+    def get_artifact(self, artifact_id: str) -> dict[str, object] | None:
+        return self.artifacts.get(artifact_id)
+
+    def update_artifact_status(self, *, artifact_id: str, status: str) -> dict[str, object]:
+        artifact = self.artifacts[artifact_id]
+        artifact["status"] = status
+        return artifact
+
+    def create_memory(self, memory: dict[str, object]) -> dict[str, object]:
+        row = {**memory, "id": f"memory-{len(self.memories) + 2}"}
+        self.memories.append(row)
+        return row
+
+    def update_memory(self, *, memory_id: str, patch: dict[str, object]) -> dict[str, object]:
+        for memory in self.memories:
+            if memory["id"] == memory_id:
+                memory.update(patch)
+                return memory
+        raise AssertionError(memory_id)
+
+    def append_revision(self, revision: dict[str, object]) -> dict[str, object]:
+        row = {**revision, "id": f"revision-{len(self.revisions) + 1}"}
+        self.revisions.append(row)
+        return row
+
+    def create_open_loop(self, loop: dict[str, object]) -> dict[str, object]:
+        row = {**loop, "id": f"loop-{len(self.open_loops) + 1}", "status": loop.get("status", "open")}
+        self.open_loops.append(row)
+        return row
+
+    def create_edge(self, edge: dict[str, object]) -> dict[str, object]:
+        row = {**edge, "id": f"edge-{len(self.edges) + 1}"}
+        self.edges[str(row["id"])] = row
+        return row
+
+    def update_edge_status(self, *, edge_id: str, status: str) -> dict[str, object]:
+        edge = self.edges[edge_id]
+        metadata = edge.get("metadata_json")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        metadata.update({"status": status, "candidate": status != "accepted"})
+        edge["metadata_json"] = metadata
+        if status == "rejected":
+            edge["valid_to"] = "now"
+        return edge
+
+    def search_memories(self, **_kwargs) -> list[dict[str, object]]:
+        return [
+            {
+                "id": "memory-1",
+                "memory_type": "semantic",
+                "canonical_text": "Alice vNext MCP context packs preserve provenance.",
+                "status": "active",
+                "confidence": 0.9,
+                "domain": "project",
+                "sensitivity": "private",
+                "first_seen_at": "2026-05-10T00:00:00Z",
+                "last_seen_at": "2026-05-10T00:00:00Z",
+            }
+        ][: _kwargs.get("limit", 8)]
+
+    def search_sources(self, **_kwargs) -> list[dict[str, object]]:
+        return [
+            {
+                "id": "source-1",
+                "source_type": "manual_text",
+                "title": "Alice vNext MCP source",
+                "content_hash": "sha256:abc",
+                "captured_at": "2026-05-10T00:00:00Z",
+                "domain": "project",
+                "sensitivity": "private",
+                "metadata_json": {
+                    "raw_text": (
+                        "TODO: validate MCP brief generation Owner: Samir\n"
+                        "Alice should not auto-promote generated artifacts into memory."
+                    )
+                },
+            }
+        ][: _kwargs.get("limit", 8)]
+
+    def list_open_loops(self, **_kwargs) -> list[dict[str, object]]:
+        status = _kwargs.get("status", "open")
+        project_id = _kwargs.get("project_id")
+        return [
+            row
+            for row in self.open_loops
+            if (status is None or row.get("status") == status)
+            and (project_id is None or row.get("project_id") == project_id)
+        ]
+
+    def get_open_loop(self, loop_id: str) -> dict[str, object] | None:
+        for loop in self.open_loops:
+            if loop["id"] == loop_id:
+                return loop
+        return None
+
+    def update_open_loop(self, *, loop_id: str, patch: dict[str, object]) -> dict[str, object]:
+        loop = self.get_open_loop(loop_id)
+        if loop is None:
+            raise AssertionError(loop_id)
+        loop.update(patch)
+        return loop
+
+    def update_open_loop_status(
+        self,
+        *,
+        loop_id: str,
+        status: str,
+        resolution_note: str | None = None,
+    ) -> dict[str, object]:
+        loop = self.update_open_loop(loop_id=loop_id, patch={"status": status})
+        if resolution_note is not None:
+            loop["resolution_note"] = resolution_note
+        return loop
+
+    def list_artifacts(self, **_kwargs) -> list[dict[str, object]]:
+        return list(self.artifacts.values())[: _kwargs.get("limit", 4)]
+
+    def get_project(self, project_id: str) -> dict[str, object] | None:
+        return self.projects.get(project_id)
+
+    def list_projects(self, **kwargs) -> list[dict[str, object]]:
+        status = kwargs.get("status", "active")
+        limit = kwargs.get("limit", 8)
+        return [row for row in self.projects.values() if status is None or row.get("status") == status][:limit]
+
+    def update_project(self, *, project_id: str, patch: dict[str, object]) -> dict[str, object]:
+        project = self.projects[project_id]
+        project.update(patch)
+        return project
+
+    def list_edges(self, **kwargs) -> list[dict[str, object]]:
+        from_id = kwargs.get("from_id")
+        to_id = kwargs.get("to_id")
+        return [
+            edge
+            for edge in self.edges.values()
+            if (from_id is None or edge.get("from_id") == from_id)
+            and (to_id is None or edge.get("to_id") == to_id)
+            and edge.get("valid_to") is None
+        ]
+
+    def list_beliefs(self, **kwargs) -> list[dict[str, object]]:
+        status = kwargs.get("status", "active")
+        return [row for row in self.beliefs.values() if status is None or row.get("status") == status]
+
+    def get_belief(self, belief_id: str) -> dict[str, object] | None:
+        return self.beliefs.get(belief_id)
+
+    def update_belief_status(
+        self,
+        *,
+        belief_id: str,
+        status: str,
+        confidence: float | None = None,
+        superseded_by: str | None = None,
+    ) -> dict[str, object]:
+        belief = self.beliefs[belief_id]
+        belief["status"] = status
+        if confidence is not None:
+            belief["confidence"] = confidence
+        if superseded_by is not None:
+            belief["superseded_by"] = superseded_by
+        self.append_event(
+            {
+                "event_type": "belief.updated",
+                "target_type": "belief",
+                "target_id": belief_id,
+                "payload_json": {"status": status},
+            }
+        )
+        return belief
+
+    def list_events(self, *, target_type: str | None = None, target_id: str | None = None) -> list[dict[str, object]]:
+        return [
+            event
+            for event in self.events
+            if (target_type is None or event.get("target_type") == target_type)
+            and (target_id is None or event.get("target_id") == target_id)
+        ]
+
+    def list_provenance_links(self, **_kwargs) -> list[dict[str, object]]:
+        return []
+
+
+def test_alice_vnext_context_pack_mcp_tool(monkeypatch) -> None:
+    store = FakeVNextMCPStore()
+
+    @contextmanager
+    def fake_vnext_store_context(_context):
+        yield store
+
+    monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fake_vnext_store_context)
+    context = MCPRuntimeContext(
+        database_url="postgresql://localhost/alicebot",
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+
+    payload = call_mcp_tool(
+        context,
+        name="alice_vnext_context_pack",
+        arguments={"query": "Alice vNext MCP provenance", "domains": ["project"]},
+    )
+
+    assert payload["relevant_memories"][0]["id"] == "memory-1"
+    assert payload["sources"][0]["id"] == "source-1"
+    assert payload["trace_id"] == payload["trace"]["trace_id"]
+    assert store.events[-1]["event_type"] == "retrieval.context_pack_compiled"
+
+
+def test_alice_generate_daily_and_weekly_brief_mcp_tools(monkeypatch) -> None:
+    store = FakeVNextMCPStore()
+
+    @contextmanager
+    def fake_vnext_store_context(_context):
+        yield store
+
+    monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fake_vnext_store_context)
+    context = MCPRuntimeContext(
+        database_url="postgresql://localhost/alicebot",
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+
+    daily_payload = call_mcp_tool(
+        context,
+        name="alice_generate_daily_brief",
+        arguments={"generated_for": "2026-05-10", "domains": ["project"]},
+    )
+    weekly_payload = call_mcp_tool(
+        context,
+        name="alice_generate_weekly_synthesis",
+        arguments={"generated_for": "2026-05-10", "domains": ["project"]},
+    )
+
+    assert daily_payload["artifact_type"] == "daily_brief"
+    assert daily_payload["metadata_json"]["candidate_open_loop_ids"] == ["loop-1"]
+    assert weekly_payload["artifact_type"] == "weekly_synthesis"
+    assert weekly_payload["metadata_json"]["candidate_memory_ids"] == ["memory-2"]
+    assert store.events[-1]["event_type"] == "artifact.generated"
+
+
+def test_alice_generate_connections_and_graph_mcp_tools(monkeypatch) -> None:
+    store = FakeVNextMCPStore()
+
+    @contextmanager
+    def fake_vnext_store_context(_context):
+        yield store
+
+    monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fake_vnext_store_context)
+    context = MCPRuntimeContext(
+        database_url="postgresql://localhost/alicebot",
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+
+    connection_payload = call_mcp_tool(
+        context,
+        name="alice_generate_connections",
+        arguments={"domains": ["project"], "max_connections": 1},
+    )
+    review_payload = call_mcp_tool(
+        context,
+        name="alice_graph_edge_review",
+        arguments={"edge_id": "edge-1", "action": "accept"},
+    )
+    neighborhood_payload = call_mcp_tool(
+        context,
+        name="alice_graph_neighborhood",
+        arguments={"target_id": "source-1"},
+    )
+
+    assert connection_payload["artifact_type"] == "connection_report"
+    assert connection_payload["metadata_json"]["candidate_edge_ids"] == ["edge-1"]
+    assert review_payload["metadata_json"]["status"] == "accepted"
+    assert neighborhood_payload["edge_count"] == 1
+    assert neighborhood_payload["from_edges"][0]["id"] == "edge-1"
+
+
+def test_alice_generate_contradictions_and_belief_mcp_tools(monkeypatch) -> None:
+    store = FakeVNextMCPStore()
+
+    @contextmanager
+    def fake_vnext_store_context(_context):
+        yield store
+
+    monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fake_vnext_store_context)
+    context = MCPRuntimeContext(
+        database_url="postgresql://localhost/alicebot",
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+
+    contradiction_payload = call_mcp_tool(
+        context,
+        name="alice_generate_contradictions",
+        arguments={"domains": ["project"], "max_contradictions": 1},
+    )
+    review_payload = call_mcp_tool(
+        context,
+        name="alice_belief_review",
+        arguments={"belief_id": "belief-1", "action": "challenge", "confidence": 0.2},
+    )
+    state_payload = call_mcp_tool(
+        context,
+        name="alice_belief_state",
+        arguments={"belief_id": "belief-1"},
+    )
+
+    assert contradiction_payload["artifact_type"] == "contradiction_report"
+    assert contradiction_payload["metadata_json"]["candidate_edge_ids"] == ["edge-1"]
+    assert review_payload["status"] == "challenged"
+    assert review_payload["confidence"] == 0.2
+    assert state_payload["current"]["status"] == "challenged"
+    assert "challenged" in state_payload["previous_statuses"]
+
+
+def test_alice_project_and_open_loop_mcp_tools(monkeypatch) -> None:
+    store = FakeVNextMCPStore()
+
+    @contextmanager
+    def fake_vnext_store_context(_context):
+        yield store
+
+    monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fake_vnext_store_context)
+    context = MCPRuntimeContext(
+        database_url="postgresql://localhost/alicebot",
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+
+    update_payload = call_mcp_tool(
+        context,
+        name="alice_project_update_candidate",
+        arguments={"project_id": "project-1", "domains": ["project"]},
+    )
+    extract_payload = call_mcp_tool(
+        context,
+        name="alice_open_loop_extract",
+        arguments={"project_id": "project-1", "domains": ["project"]},
+    )
+    review_update_payload = call_mcp_tool(
+        context,
+        name="alice_project_update_review",
+        arguments={
+            "artifact_id": "artifact-1",
+            "action": "edit",
+            "edited_current_state": "Project automation reviewed.",
+        },
+    )
+    review_loop_payload = call_mcp_tool(
+        context,
+        name="alice_open_loop_review",
+        arguments={"loop_id": "loop-1", "action": "snooze", "due_at": "2026-05-12T09:00:00Z"},
+    )
+    dashboard_payload = call_mcp_tool(
+        context,
+        name="alice_project_dashboard",
+        arguments={"project_id": "project-1"},
+    )
+
+    assert update_payload["artifact_type"] == "project_update"
+    assert update_payload["metadata_json"]["candidate_memory_id"] == "memory-2"
+    assert extract_payload["created_count"] == 1
+    assert extract_payload["open_loops"][0]["metadata_json"]["owner"] == "Samir"
+    assert review_update_payload["status"] == "accepted"
+    assert store.projects["project-1"]["current_state"] == "Project automation reviewed."
+    assert review_loop_payload["due_at"] == "2026-05-12T09:00:00Z"
+    assert dashboard_payload["counts"]["open_loops"] == 1
 
 
 def test_mcp_server_initialize_and_tools_list(monkeypatch) -> None:

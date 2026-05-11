@@ -22,6 +22,7 @@ dev = [
 ]
 
 [project.scripts]
+alice = "alicebot_api.cli:main"
 alicebot = "alicebot_api.cli:main"
 alicebot-mcp = "alicebot_api.mcp_server:main"
 

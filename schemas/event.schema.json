@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://alicebot.local/schemas/event.schema.json",
+  "title": "Alice vNext Event Log Record",
+  "type": "object",
+  "required": ["id", "event_type", "actor_type", "occurred_at", "payload_json"],
+  "properties": {
+    "id": { "type": "string" },
+    "event_type": { "type": "string", "minLength": 1 },
+    "actor_type": { "type": "string", "minLength": 1 },
+    "actor_id": { "type": ["string", "null"] },
+    "target_type": { "type": ["string", "null"] },
+    "target_id": { "type": ["string", "null"] },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "payload_json": { "type": "object" },
+    "trace_id": { "type": ["string", "null"] },
+    "run_id": { "type": ["string", "null"] },
+    "integrity_hash": { "type": ["string", "null"] }
+  },
+  "additionalProperties": true
+}

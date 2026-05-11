@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://alicebot.local/schemas/source.schema.json",
+  "title": "Alice vNext Source",
+  "type": "object",
+  "required": ["id", "source_type", "content_hash", "captured_at", "domain", "sensitivity"],
+  "properties": {
+    "id": { "type": "string" },
+    "source_type": { "type": "string", "minLength": 1 },
+    "title": { "type": ["string", "null"] },
+    "author": { "type": ["string", "null"] },
+    "uri": { "type": ["string", "null"] },
+    "raw_path": { "type": ["string", "null"] },
+    "content_hash": { "type": "string", "minLength": 1 },
+    "captured_at": { "type": "string", "format": "date-time" },
+    "source_created_at": { "type": ["string", "null"], "format": "date-time" },
+    "source_modified_at": { "type": ["string", "null"], "format": "date-time" },
+    "connector_name": { "type": ["string", "null"] },
+    "external_id": { "type": ["string", "null"] },
+    "domain": {
+      "enum": [
+        "professional",
+        "personal",
+        "family",
+        "health",
+        "spiritual",
+        "financial",
+        "legal",
+        "learning",
+        "relationship",
+        "project",
+        "agent_run",
+        "system",
+        "unknown"
+      ]
+    },
+    "sensitivity": {
+      "enum": [
+        "public",
+        "internal",
+        "private",
+        "confidential",
+        "highly_sensitive",
+        "sacred",
+        "regulated",
+        "unknown"
+      ]
+    },
+    "metadata_json": { "type": "object" }
+  },
+  "additionalProperties": true
+}

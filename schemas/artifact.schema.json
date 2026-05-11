@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://alicebot.local/schemas/artifact.schema.json",
+  "title": "Alice vNext Generated Artifact",
+  "type": "object",
+  "required": [
+    "id",
+    "artifact_type",
+    "title",
+    "content_markdown",
+    "status",
+    "domain",
+    "sensitivity",
+    "generated_by",
+    "created_at"
+  ],
+  "properties": {
+    "id": { "type": "string" },
+    "artifact_type": {
+      "enum": [
+        "daily_brief",
+        "weekly_synthesis",
+        "monthly_distillation",
+        "connection_report",
+        "contradiction_report",
+        "project_update",
+        "thesis_report",
+        "open_loop_report",
+        "queue_result",
+        "research_brief",
+        "draft",
+        "context_pack",
+        "agent_resumption_brief",
+        "system_report"
+      ]
+    },
+    "title": { "type": "string" },
+    "content_markdown": { "type": "string" },
+    "status": {
+      "enum": [
+        "draft",
+        "needs_review",
+        "reviewed",
+        "accepted",
+        "rejected",
+        "promoted_to_memory",
+        "superseded",
+        "archived"
+      ]
+    },
+    "domain": { "$ref": "source.schema.json#/properties/domain" },
+    "sensitivity": { "$ref": "source.schema.json#/properties/sensitivity" },
+    "generated_by": { "type": "string" },
+    "prompt_hash": { "type": ["string", "null"] },
+    "model_info_json": { "type": "object" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "reviewed_at": { "type": ["string", "null"], "format": "date-time" },
+    "promoted_at": { "type": ["string", "null"], "format": "date-time" },
+    "metadata_json": { "type": "object" }
+  },
+  "additionalProperties": true
+}

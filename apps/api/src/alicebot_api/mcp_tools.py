@@ -124,6 +124,12 @@ from alicebot_api.task_briefing import (
     compile_and_persist_task_brief,
     get_persisted_task_brief,
 )
+from alicebot_api.vnext_brain import BrainArtifactRequest, VNextBrainService
+from alicebot_api.vnext_connections import ConnectionFinderRequest, VNextConnectionService
+from alicebot_api.vnext_contradictions import ContradictionFinderRequest, VNextContradictionService
+from alicebot_api.vnext_projects import ProjectAutomationRequest, VNextProjectService
+from alicebot_api.vnext_retrieval import VNextRetrievalRequest, VNextRetrievalService
+from alicebot_api.vnext_store import PostgresVNextStore
 
 
 _REVIEW_STATUS_CHOICES = (
@@ -176,6 +182,12 @@ class MCPRuntimeContext:
 def _store_context(context: MCPRuntimeContext):
     with user_connection(context.database_url, context.user_id) as conn:
         yield ContinuityStore(conn)
+
+
+@contextmanager
+def _vnext_store_context(context: MCPRuntimeContext):
+    with user_connection(context.database_url, context.user_id) as conn:
+        yield PostgresVNextStore(conn)
 
 
 def _normalize_arguments(arguments: object) -> Mapping[str, object]:
@@ -279,6 +291,25 @@ def _parse_optional_json_object(arguments: Mapping[str, object], key: str) -> Js
     if not isinstance(value, dict):
         raise MCPToolError(f"{key} must be a JSON object")
     return value
+
+
+def _parse_string_list(arguments: Mapping[str, object], key: str) -> tuple[str, ...]:
+    value = arguments.get(key)
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        normalized = " ".join(value.split()).strip()
+        return (normalized,) if normalized else ()
+    if not isinstance(value, list):
+        raise MCPToolError(f"{key} must be a string array")
+    output: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise MCPToolError(f"{key} must be a string array")
+        normalized = " ".join(item.split()).strip()
+        if normalized:
+            output.append(normalized)
+    return tuple(output)
 
 
 def _parse_task_brief_request(arguments: Mapping[str, object], *, mode_key: str = "mode") -> TaskBriefCompileRequestInput:
@@ -1430,6 +1461,214 @@ def _handle_alice_context_pack(context: MCPRuntimeContext, arguments: Mapping[st
     }
 
 
+def _handle_alice_vnext_context_pack(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    max_items = _parse_int(
+        arguments,
+        key="max_items",
+        default=8,
+        minimum=1,
+        maximum=50,
+    )
+    max_tokens = _parse_int(
+        arguments,
+        key="max_tokens",
+        default=8000,
+        minimum=500,
+        maximum=50_000,
+    )
+    sensitivity_allowed = _parse_string_list(arguments, "sensitivity_allowed") or (
+        "public",
+        "internal",
+        "private",
+        "unknown",
+    )
+
+    with _vnext_store_context(context) as store:
+        return VNextRetrievalService(store).compile_context_pack(
+            VNextRetrievalRequest(
+                query=_parse_required_text(arguments, "query"),
+                domains=_parse_string_list(arguments, "domains"),
+                projects=_parse_string_list(arguments, "projects"),
+                people=_parse_string_list(arguments, "people"),
+                time_window=_parse_optional_text(arguments, "time_window") or "all",
+                sensitivity_allowed=sensitivity_allowed,
+                include_sources=_parse_bool(arguments, key="include_sources", default=True),
+                include_contradictions=_parse_bool(arguments, key="include_contradictions", default=True),
+                max_items=max_items,
+                max_tokens=max_tokens,
+            )
+        )
+
+
+def _brain_artifact_request_from_arguments(arguments: Mapping[str, object]) -> BrainArtifactRequest:
+    sensitivity_allowed = _parse_string_list(arguments, "sensitivity_allowed") or (
+        "public",
+        "internal",
+        "private",
+        "unknown",
+    )
+    return BrainArtifactRequest(
+        domains=_parse_string_list(arguments, "domains"),
+        sensitivity_allowed=sensitivity_allowed,
+        generated_for=_parse_optional_text(arguments, "generated_for"),
+        source_limit=_parse_int(arguments, key="source_limit", default=8, minimum=1, maximum=50),
+        memory_limit=_parse_int(arguments, key="memory_limit", default=8, minimum=1, maximum=50),
+        open_loop_limit=_parse_int(arguments, key="open_loop_limit", default=8, minimum=1, maximum=50),
+        artifact_limit=_parse_int(arguments, key="artifact_limit", default=4, minimum=1, maximum=50),
+        discover_open_loops=_parse_bool(arguments, key="discover_open_loops", default=True),
+        create_candidate_memories=_parse_bool(arguments, key="create_candidate_memories", default=True),
+    )
+
+
+def _handle_alice_generate_daily_brief(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    with _vnext_store_context(context) as store:
+        return VNextBrainService(store).generate_daily_brief(_brain_artifact_request_from_arguments(arguments))
+
+
+def _handle_alice_generate_weekly_synthesis(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    with _vnext_store_context(context) as store:
+        return VNextBrainService(store).generate_weekly_synthesis(_brain_artifact_request_from_arguments(arguments))
+
+
+def _connection_request_from_arguments(arguments: Mapping[str, object]) -> ConnectionFinderRequest:
+    sensitivity_allowed = _parse_string_list(arguments, "sensitivity_allowed") or (
+        "public",
+        "internal",
+        "private",
+        "unknown",
+    )
+    auto_accept_threshold = _parse_optional_float(arguments, "auto_accept_threshold")
+    return ConnectionFinderRequest(
+        query=_parse_optional_text(arguments, "query") or "",
+        domains=_parse_string_list(arguments, "domains"),
+        sensitivity_allowed=sensitivity_allowed,
+        max_connections=_parse_int(arguments, key="max_connections", default=8, minimum=1, maximum=50),
+        auto_accept_threshold=auto_accept_threshold,
+    )
+
+
+def _handle_alice_generate_connections(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    with _vnext_store_context(context) as store:
+        return VNextConnectionService(store).generate_connection_report(_connection_request_from_arguments(arguments))
+
+
+def _handle_alice_graph_edge_review(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    with _vnext_store_context(context) as store:
+        return VNextConnectionService(store).review_edge(
+            edge_id=_parse_required_text(arguments, "edge_id"),
+            action=_parse_required_text(arguments, "action"),
+        )
+
+
+def _handle_alice_graph_neighborhood(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    with _vnext_store_context(context) as store:
+        return VNextConnectionService(store).graph_neighborhood(
+            target_id=_parse_required_text(arguments, "target_id"),
+        )
+
+
+def _contradiction_request_from_arguments(arguments: Mapping[str, object]) -> ContradictionFinderRequest:
+    sensitivity_allowed = _parse_string_list(arguments, "sensitivity_allowed") or (
+        "public",
+        "internal",
+        "private",
+        "unknown",
+    )
+    return ContradictionFinderRequest(
+        query=_parse_optional_text(arguments, "query") or "",
+        domains=_parse_string_list(arguments, "domains"),
+        sensitivity_allowed=sensitivity_allowed,
+        max_contradictions=_parse_int(arguments, key="max_contradictions", default=8, minimum=1, maximum=50),
+    )
+
+
+def _handle_alice_generate_contradictions(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    with _vnext_store_context(context) as store:
+        return VNextContradictionService(store).generate_contradiction_report(
+            _contradiction_request_from_arguments(arguments)
+        )
+
+
+def _handle_alice_belief_review(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    with _vnext_store_context(context) as store:
+        return VNextContradictionService(store).review_belief(
+            belief_id=_parse_required_text(arguments, "belief_id"),
+            action=_parse_required_text(arguments, "action"),
+            confidence=_parse_optional_float(arguments, "confidence"),
+            superseded_by=_parse_optional_text(arguments, "superseded_by"),
+        )
+
+
+def _handle_alice_belief_state(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    with _vnext_store_context(context) as store:
+        return VNextContradictionService(store).belief_state(
+            belief_id=_parse_required_text(arguments, "belief_id"),
+        )
+
+
+def _project_request_from_arguments(arguments: Mapping[str, object]) -> ProjectAutomationRequest:
+    sensitivity_allowed = _parse_string_list(arguments, "sensitivity_allowed") or (
+        "public",
+        "internal",
+        "private",
+        "unknown",
+    )
+    return ProjectAutomationRequest(
+        domains=_parse_string_list(arguments, "domains"),
+        sensitivity_allowed=sensitivity_allowed,
+        project_id=_parse_optional_text(arguments, "project_id"),
+        person_id=_parse_optional_text(arguments, "person_id"),
+        max_items=_parse_int(arguments, key="max_items", default=8, minimum=1, maximum=50),
+    )
+
+
+def _handle_alice_project_update_candidate(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    with _vnext_store_context(context) as store:
+        return VNextProjectService(store).generate_project_update_candidate(_project_request_from_arguments(arguments))
+
+
+def _handle_alice_project_update_review(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    with _vnext_store_context(context) as store:
+        return VNextProjectService(store).review_project_update(
+            artifact_id=_parse_required_text(arguments, "artifact_id"),
+            action=_parse_required_text(arguments, "action"),
+            edited_current_state=_parse_optional_text(arguments, "edited_current_state"),
+        )
+
+
+def _handle_alice_project_dashboard(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    sensitivity_allowed = _parse_string_list(arguments, "sensitivity_allowed") or (
+        "public",
+        "internal",
+        "private",
+        "unknown",
+    )
+    with _vnext_store_context(context) as store:
+        return VNextProjectService(store).project_dashboard(
+            project_id=_parse_required_text(arguments, "project_id"),
+            sensitivity_allowed=sensitivity_allowed,
+        )
+
+
+def _handle_alice_open_loop_extract(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    with _vnext_store_context(context) as store:
+        loops = VNextProjectService(store).extract_open_loops(_project_request_from_arguments(arguments))
+    return {"open_loops": loops, "created_count": len(loops)}
+
+
+def _handle_alice_open_loop_review(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    with _vnext_store_context(context) as store:
+        return VNextProjectService(store).review_open_loop(
+            loop_id=_parse_required_text(arguments, "loop_id"),
+            action=_parse_required_text(arguments, "action"),
+            title=_parse_optional_text(arguments, "title"),
+            description=_parse_optional_text(arguments, "description"),
+            due_at=_parse_optional_text(arguments, "due_at"),
+            priority=_parse_optional_text(arguments, "priority"),
+            resolution_note=_parse_optional_text(arguments, "resolution_note"),
+        )
+
+
 _TOOL_DEFINITIONS: list[dict[str, object]] = [
     {
         "name": "alice_capture",
@@ -2073,6 +2312,220 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
             },
         },
     },
+    {
+        "name": "alice_vnext_context_pack",
+        "description": "Compile a vNext provenance-aware context pack with retrieval trace metadata.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["query"],
+            "properties": {
+                "query": {"type": "string"},
+                "domains": {"type": "array", "items": {"type": "string"}},
+                "projects": {"type": "array", "items": {"type": "string"}},
+                "people": {"type": "array", "items": {"type": "string"}},
+                "time_window": {"type": "string"},
+                "sensitivity_allowed": {"type": "array", "items": {"type": "string"}},
+                "include_sources": {"type": "boolean"},
+                "include_contradictions": {"type": "boolean"},
+                "max_items": {"type": "integer", "minimum": 1, "maximum": 50},
+                "max_tokens": {"type": "integer", "minimum": 500, "maximum": 50000},
+            },
+        },
+    },
+    {
+        "name": "alice_generate_daily_brief",
+        "description": "Generate a vNext daily brief artifact with provenance and review status.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "generated_for": {"type": "string", "format": "date"},
+                "domains": {"type": "array", "items": {"type": "string"}},
+                "sensitivity_allowed": {"type": "array", "items": {"type": "string"}},
+                "source_limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                "memory_limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                "open_loop_limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                "artifact_limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                "discover_open_loops": {"type": "boolean"},
+                "create_candidate_memories": {"type": "boolean"},
+            },
+        },
+    },
+    {
+        "name": "alice_generate_weekly_synthesis",
+        "description": "Generate a vNext weekly synthesis artifact and candidate insight memories.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "generated_for": {"type": "string", "format": "date"},
+                "domains": {"type": "array", "items": {"type": "string"}},
+                "sensitivity_allowed": {"type": "array", "items": {"type": "string"}},
+                "source_limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                "memory_limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                "open_loop_limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                "artifact_limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                "discover_open_loops": {"type": "boolean"},
+                "create_candidate_memories": {"type": "boolean"},
+            },
+        },
+    },
+    {
+        "name": "alice_generate_connections",
+        "description": "Generate a vNext connection report and candidate graph edges.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "query": {"type": "string"},
+                "domains": {"type": "array", "items": {"type": "string"}},
+                "sensitivity_allowed": {"type": "array", "items": {"type": "string"}},
+                "max_connections": {"type": "integer", "minimum": 1, "maximum": 50},
+                "auto_accept_threshold": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+            },
+        },
+    },
+    {
+        "name": "alice_graph_edge_review",
+        "description": "Review, accept, or reject a vNext candidate graph edge.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["edge_id", "action"],
+            "properties": {
+                "edge_id": {"type": "string"},
+                "action": {"type": "string", "enum": ["review", "accept", "reject"]},
+            },
+        },
+    },
+    {
+        "name": "alice_graph_neighborhood",
+        "description": "Return active vNext graph edges around a target id.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["target_id"],
+            "properties": {
+                "target_id": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "alice_generate_contradictions",
+        "description": "Generate a vNext contradiction report and candidate contradiction graph edges.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "query": {"type": "string"},
+                "domains": {"type": "array", "items": {"type": "string"}},
+                "sensitivity_allowed": {"type": "array", "items": {"type": "string"}},
+                "max_contradictions": {"type": "integer", "minimum": 1, "maximum": 50},
+            },
+        },
+    },
+    {
+        "name": "alice_belief_review",
+        "description": "Reinforce, challenge, supersede, or retire a vNext belief.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["belief_id", "action"],
+            "properties": {
+                "belief_id": {"type": "string"},
+                "action": {"type": "string", "enum": ["reinforce", "challenge", "supersede", "retire"]},
+                "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                "superseded_by": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "alice_belief_state",
+        "description": "Return current and historical state for a vNext belief.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["belief_id"],
+            "properties": {
+                "belief_id": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "alice_project_update_candidate",
+        "description": "Generate a vNext project update candidate artifact.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "project_id": {"type": "string"},
+                "domains": {"type": "array", "items": {"type": "string"}},
+                "sensitivity_allowed": {"type": "array", "items": {"type": "string"}},
+                "max_items": {"type": "integer", "minimum": 1, "maximum": 50},
+            },
+        },
+    },
+    {
+        "name": "alice_project_update_review",
+        "description": "Accept, edit, or reject a vNext project update candidate artifact.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["artifact_id", "action"],
+            "properties": {
+                "artifact_id": {"type": "string"},
+                "action": {"type": "string", "enum": ["accept", "edit", "reject"]},
+                "edited_current_state": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "alice_project_dashboard",
+        "description": "Return vNext project dashboard state, memories, open loops, and artifacts.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["project_id"],
+            "properties": {
+                "project_id": {"type": "string"},
+                "sensitivity_allowed": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+    },
+    {
+        "name": "alice_open_loop_extract",
+        "description": "Extract vNext candidate open loops from selected sources.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "project_id": {"type": "string"},
+                "person_id": {"type": "string"},
+                "domains": {"type": "array", "items": {"type": "string"}},
+                "sensitivity_allowed": {"type": "array", "items": {"type": "string"}},
+                "max_items": {"type": "integer", "minimum": 1, "maximum": 50},
+            },
+        },
+    },
+    {
+        "name": "alice_open_loop_review",
+        "description": "Close, snooze, edit, or reopen a vNext open loop.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["loop_id", "action"],
+            "properties": {
+                "loop_id": {"type": "string"},
+                "action": {"type": "string", "enum": ["close", "snooze", "edit", "reopen"]},
+                "title": {"type": "string"},
+                "description": {"type": "string"},
+                "due_at": {"type": "string"},
+                "priority": {"type": "string"},
+                "resolution_note": {"type": "string"},
+            },
+        },
+    },
 ]
 
 _TOOL_HANDLERS = {
@@ -2109,6 +2562,20 @@ _TOOL_HANDLERS = {
     "alice_explain": _handle_alice_explain,
     "alice_artifact_inspect": _handle_alice_artifact_inspect,
     "alice_context_pack": _handle_alice_context_pack,
+    "alice_vnext_context_pack": _handle_alice_vnext_context_pack,
+    "alice_generate_daily_brief": _handle_alice_generate_daily_brief,
+    "alice_generate_weekly_synthesis": _handle_alice_generate_weekly_synthesis,
+    "alice_generate_connections": _handle_alice_generate_connections,
+    "alice_graph_edge_review": _handle_alice_graph_edge_review,
+    "alice_graph_neighborhood": _handle_alice_graph_neighborhood,
+    "alice_generate_contradictions": _handle_alice_generate_contradictions,
+    "alice_belief_review": _handle_alice_belief_review,
+    "alice_belief_state": _handle_alice_belief_state,
+    "alice_project_update_candidate": _handle_alice_project_update_candidate,
+    "alice_project_update_review": _handle_alice_project_update_review,
+    "alice_project_dashboard": _handle_alice_project_dashboard,
+    "alice_open_loop_extract": _handle_alice_open_loop_extract,
+    "alice_open_loop_review": _handle_alice_open_loop_review,
 }
 
 

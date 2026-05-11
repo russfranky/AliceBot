@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://alicebot.local/schemas/context-pack.schema.json",
+  "title": "Alice vNext Context Pack",
+  "type": "object",
+  "required": [
+    "context_pack_id",
+    "query_interpretation",
+    "current_known_state",
+    "relevant_memories",
+    "sources",
+    "warnings",
+    "trace_id"
+  ],
+  "properties": {
+    "context_pack_id": { "type": "string" },
+    "query_interpretation": { "type": "object" },
+    "current_known_state": { "type": "array", "items": { "type": "object" } },
+    "relevant_memories": { "type": "array", "items": { "$ref": "memory.schema.json" } },
+    "relevant_beliefs": { "type": "array", "items": { "type": "object" } },
+    "decisions": { "type": "array", "items": { "type": "object" } },
+    "open_loops": { "type": "array", "items": { "type": "object" } },
+    "supporting_evidence": { "type": "array", "items": { "type": "object" } },
+    "contradicting_evidence": { "type": "array", "items": { "type": "object" } },
+    "recent_changes": { "type": "array", "items": { "type": "object" } },
+    "historical_timeline": { "type": "array", "items": { "type": "object" } },
+    "missing_information": { "type": "array", "items": { "type": "object" } },
+    "sources": { "type": "array", "items": { "$ref": "source.schema.json" } },
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "trace_id": { "type": "string" }
+  },
+  "additionalProperties": true
+}
