@@ -213,9 +213,11 @@ from alicebot_api.vnext_evals import (
 from alicebot_api.vnext_projects import ProjectAutomationRequest, VNextProjectService, VNextProjectValidationError
 from alicebot_api.vnext_queue import QueueTaskRequest, VNextQueueService, VNextQueueValidationError
 from alicebot_api.vnext_retrieval import VNextRetrievalRequest, VNextRetrievalService, VNextRetrievalValidationError
+from alicebot_api.vnext_json import json_safe
 from alicebot_api.vnext_store import PostgresVNextStore
 
 DEFAULT_CLI_USER_ID = "00000000-0000-0000-0000-000000000001"
+DEFAULT_VNEXT_SENSITIVITY_ALLOWED = ("public", "internal", "private", "unknown")
 MAINTENANCE_REPORT_PATH_ENV = "ALICEBOT_MAINTENANCE_REPORT_PATH"
 DEFAULT_MAINTENANCE_REPORT_PATH = (
     Path(__file__).resolve().parents[4] / "artifacts" / "ops" / "maintenance_status_latest.json"
@@ -488,6 +490,15 @@ def _run_capture(ctx: CLIContext, args: argparse.Namespace) -> str:
     return format_capture_output(payload)
 
 
+def _json_dumps(value: object) -> str:
+    return json.dumps(json_safe(value), indent=2, sort_keys=True)
+
+
+def _vnext_sensitivity_allowed(args: argparse.Namespace) -> tuple[str, ...]:
+    values = getattr(args, "sensitivity_allowed", None)
+    return tuple(values) if values else DEFAULT_VNEXT_SENSITIVITY_ALLOWED
+
+
 def _run_vnext_sources_capture_text(ctx: CLIContext, args: argparse.Namespace) -> str:
     raw_text = " ".join(args.raw_text).strip()
     with _vnext_store_context(ctx) as store:
@@ -497,7 +508,7 @@ def _run_vnext_sources_capture_text(ctx: CLIContext, args: argparse.Namespace) -
             domain=args.domain,
             sensitivity=args.sensitivity,
         )
-    return json.dumps(result.to_record(), indent=2, sort_keys=True)
+    return _json_dumps(result.to_record())
 
 
 def _run_vnext_sources_capture_file(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -507,7 +518,7 @@ def _run_vnext_sources_capture_file(ctx: CLIContext, args: argparse.Namespace) -
             domain=args.domain,
             sensitivity=args.sensitivity,
         )
-    return json.dumps(result.to_record(), indent=2, sort_keys=True)
+    return _json_dumps(result.to_record())
 
 
 def _run_vnext_sources_import_markdown(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -517,7 +528,7 @@ def _run_vnext_sources_import_markdown(ctx: CLIContext, args: argparse.Namespace
             domain=args.domain,
             sensitivity=args.sensitivity,
         )
-    return json.dumps(result.to_record(), indent=2, sort_keys=True)
+    return _json_dumps(result.to_record())
 
 
 def _run_vnext_sources_import_chatgpt(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -527,7 +538,7 @@ def _run_vnext_sources_import_chatgpt(ctx: CLIContext, args: argparse.Namespace)
             domain=args.domain,
             sensitivity=args.sensitivity,
         )
-    return json.dumps(result.to_record(), indent=2, sort_keys=True)
+    return _json_dumps(result.to_record())
 
 
 def _run_vnext_connectors_list(_ctx: CLIContext, _args: argparse.Namespace) -> str:
@@ -536,7 +547,7 @@ def _run_vnext_connectors_list(_ctx: CLIContext, _args: argparse.Namespace) -> s
         "count": len(list_connector_definitions()),
         "order": [definition.name for definition in list_connector_definitions()],
     }
-    return json.dumps(payload, indent=2, sort_keys=True)
+    return _json_dumps(payload)
 
 
 def _run_vnext_connectors_ingest(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -548,7 +559,7 @@ def _run_vnext_connectors_ingest(ctx: CLIContext, args: argparse.Namespace) -> s
             default_domain=args.domain,
             default_sensitivity=args.sensitivity,
         )
-    return json.dumps(result.to_record(), indent=2, sort_keys=True)
+    return _json_dumps(result.to_record())
 
 
 def _run_context_pack(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -560,20 +571,20 @@ def _run_context_pack(ctx: CLIContext, args: argparse.Namespace) -> str:
                 domains=tuple(args.domain),
                 projects=tuple(args.project),
                 people=tuple(args.person),
-                sensitivity_allowed=tuple(args.sensitivity_allowed),
+                sensitivity_allowed=_vnext_sensitivity_allowed(args),
                 include_sources=not args.no_sources,
                 include_contradictions=not args.no_contradictions,
                 max_items=args.max_items,
                 max_tokens=args.max_tokens,
             )
         )
-    return json.dumps(payload, indent=2, sort_keys=True)
+    return _json_dumps(payload)
 
 
 def _brain_artifact_request_from_args(args: argparse.Namespace) -> BrainArtifactRequest:
     return BrainArtifactRequest(
         domains=tuple(args.domain),
-        sensitivity_allowed=tuple(args.sensitivity_allowed),
+        sensitivity_allowed=_vnext_sensitivity_allowed(args),
         generated_for=args.generated_for,
         source_limit=args.source_limit,
         memory_limit=args.memory_limit,
@@ -588,21 +599,21 @@ def _run_daily_brief(ctx: CLIContext, args: argparse.Namespace) -> str:
     del args.generate
     with _vnext_store_context(ctx) as store:
         artifact = VNextBrainService(store).generate_daily_brief(_brain_artifact_request_from_args(args))
-    return json.dumps(artifact, indent=2, sort_keys=True)
+    return _json_dumps(artifact)
 
 
 def _run_weekly_synthesis(ctx: CLIContext, args: argparse.Namespace) -> str:
     del args.generate
     with _vnext_store_context(ctx) as store:
         artifact = VNextBrainService(store).generate_weekly_synthesis(_brain_artifact_request_from_args(args))
-    return json.dumps(artifact, indent=2, sort_keys=True)
+    return _json_dumps(artifact)
 
 
 def _connection_finder_request_from_args(args: argparse.Namespace) -> ConnectionFinderRequest:
     return ConnectionFinderRequest(
         query=getattr(args, "query", "") or "",
         domains=tuple(args.domain),
-        sensitivity_allowed=tuple(args.sensitivity_allowed),
+        sensitivity_allowed=_vnext_sensitivity_allowed(args),
         max_connections=args.max_connections,
         auto_accept_threshold=args.auto_accept_threshold,
     )
@@ -611,26 +622,26 @@ def _connection_finder_request_from_args(args: argparse.Namespace) -> Connection
 def _run_connections_generate(ctx: CLIContext, args: argparse.Namespace) -> str:
     with _vnext_store_context(ctx) as store:
         artifact = VNextConnectionService(store).generate_connection_report(_connection_finder_request_from_args(args))
-    return json.dumps(artifact, indent=2, sort_keys=True)
+    return _json_dumps(artifact)
 
 
 def _run_vnext_graph_review(ctx: CLIContext, args: argparse.Namespace) -> str:
     with _vnext_store_context(ctx) as store:
         edge = VNextConnectionService(store).review_edge(edge_id=args.edge_id, action=args.action)
-    return json.dumps(edge, indent=2, sort_keys=True)
+    return _json_dumps(edge)
 
 
 def _run_vnext_graph_neighborhood(ctx: CLIContext, args: argparse.Namespace) -> str:
     with _vnext_store_context(ctx) as store:
         payload = VNextConnectionService(store).graph_neighborhood(target_id=args.target_id)
-    return json.dumps(payload, indent=2, sort_keys=True)
+    return _json_dumps(payload)
 
 
 def _contradiction_finder_request_from_args(args: argparse.Namespace) -> ContradictionFinderRequest:
     return ContradictionFinderRequest(
         query=getattr(args, "query", "") or "",
         domains=tuple(args.domain),
-        sensitivity_allowed=tuple(args.sensitivity_allowed),
+        sensitivity_allowed=_vnext_sensitivity_allowed(args),
         max_contradictions=args.max_contradictions,
     )
 
@@ -640,7 +651,7 @@ def _run_vnext_contradictions_generate(ctx: CLIContext, args: argparse.Namespace
         artifact = VNextContradictionService(store).generate_contradiction_report(
             _contradiction_finder_request_from_args(args)
         )
-    return json.dumps(artifact, indent=2, sort_keys=True)
+    return _json_dumps(artifact)
 
 
 def _run_vnext_belief_review(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -651,19 +662,19 @@ def _run_vnext_belief_review(ctx: CLIContext, args: argparse.Namespace) -> str:
             confidence=args.confidence,
             superseded_by=args.superseded_by,
         )
-    return json.dumps(belief, indent=2, sort_keys=True)
+    return _json_dumps(belief)
 
 
 def _run_vnext_belief_state(ctx: CLIContext, args: argparse.Namespace) -> str:
     with _vnext_store_context(ctx) as store:
         payload = VNextContradictionService(store).belief_state(belief_id=args.belief_id)
-    return json.dumps(payload, indent=2, sort_keys=True)
+    return _json_dumps(payload)
 
 
 def _project_automation_request_from_args(args: argparse.Namespace) -> ProjectAutomationRequest:
     return ProjectAutomationRequest(
         domains=tuple(args.domain),
-        sensitivity_allowed=tuple(args.sensitivity_allowed),
+        sensitivity_allowed=_vnext_sensitivity_allowed(args),
         project_id=getattr(args, "project_id", None),
         person_id=getattr(args, "person_id", None),
         max_items=args.max_items,
@@ -673,7 +684,7 @@ def _project_automation_request_from_args(args: argparse.Namespace) -> ProjectAu
 def _run_vnext_project_update_candidate(ctx: CLIContext, args: argparse.Namespace) -> str:
     with _vnext_store_context(ctx) as store:
         artifact = VNextProjectService(store).generate_project_update_candidate(_project_automation_request_from_args(args))
-    return json.dumps(artifact, indent=2, sort_keys=True)
+    return _json_dumps(artifact)
 
 
 def _run_vnext_project_update_review(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -683,22 +694,22 @@ def _run_vnext_project_update_review(ctx: CLIContext, args: argparse.Namespace) 
             action=args.action,
             edited_current_state=args.edited_current_state,
         )
-    return json.dumps(artifact, indent=2, sort_keys=True)
+    return _json_dumps(artifact)
 
 
 def _run_vnext_project_dashboard(ctx: CLIContext, args: argparse.Namespace) -> str:
     with _vnext_store_context(ctx) as store:
         payload = VNextProjectService(store).project_dashboard(
             project_id=args.project_id,
-            sensitivity_allowed=tuple(args.sensitivity_allowed),
+            sensitivity_allowed=_vnext_sensitivity_allowed(args),
         )
-    return json.dumps(payload, indent=2, sort_keys=True)
+    return _json_dumps(payload)
 
 
 def _run_vnext_open_loops_extract(ctx: CLIContext, args: argparse.Namespace) -> str:
     with _vnext_store_context(ctx) as store:
         loops = VNextProjectService(store).extract_open_loops(_project_automation_request_from_args(args))
-    return json.dumps({"open_loops": loops, "created_count": len(loops)}, indent=2, sort_keys=True)
+    return _json_dumps({"open_loops": loops, "created_count": len(loops)})
 
 
 def _run_vnext_open_loop_review(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -712,7 +723,7 @@ def _run_vnext_open_loop_review(ctx: CLIContext, args: argparse.Namespace) -> st
             priority=args.priority,
             resolution_note=args.resolution_note,
         )
-    return json.dumps(loop, indent=2, sort_keys=True)
+    return _json_dumps(loop)
 
 
 def _run_vnext_queue_add(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -728,13 +739,13 @@ def _run_vnext_queue_add(ctx: CLIContext, args: argparse.Namespace) -> str:
                 write_policy=args.write_policy,
             )
         )
-    return json.dumps(task, indent=2, sort_keys=True)
+    return _json_dumps(task)
 
 
 def _run_vnext_queue_process_next(ctx: CLIContext, _args: argparse.Namespace) -> str:
     with _vnext_store_context(ctx) as store:
         result = VNextQueueService(store).process_next_task()
-    return json.dumps(result.to_record(), indent=2, sort_keys=True)
+    return _json_dumps(result.to_record())
 
 
 def _run_vnext_artifact_review(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -743,7 +754,7 @@ def _run_vnext_artifact_review(ctx: CLIContext, args: argparse.Namespace) -> str
             artifact_id=args.artifact_id,
             action=args.action,
         )
-    return json.dumps(artifact, indent=2, sort_keys=True)
+    return _json_dumps(artifact)
 
 
 def _run_vnext_artifact_export(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -752,7 +763,7 @@ def _run_vnext_artifact_export(ctx: CLIContext, args: argparse.Namespace) -> str
             artifact_id=args.artifact_id,
             output_dir=args.output_dir,
         )
-    return json.dumps({"artifact_id": args.artifact_id, "output_path": str(output_path)}, indent=2, sort_keys=True)
+    return _json_dumps({"artifact_id": args.artifact_id, "output_path": str(output_path)})
 
 
 def _run_mutation_generate(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -1526,7 +1537,7 @@ def build_parser() -> argparse.ArgumentParser:
     context_pack_parser.add_argument(
         "--sensitivity-allowed",
         action="append",
-        default=["public", "internal", "private", "unknown"],
+        default=None,
         help="Allowed sensitivity. Repeatable.",
     )
     context_pack_parser.add_argument("--max-items", type=int, default=8, help="Maximum selected memories.")
@@ -1546,7 +1557,7 @@ def build_parser() -> argparse.ArgumentParser:
     daily_brief_parser.add_argument(
         "--sensitivity-allowed",
         action="append",
-        default=["public", "internal", "private", "unknown"],
+        default=None,
         help="Allowed sensitivity. Repeatable.",
     )
     daily_brief_parser.add_argument("--source-limit", type=int, default=8, help="Maximum source inputs.")
@@ -1575,7 +1586,7 @@ def build_parser() -> argparse.ArgumentParser:
     weekly_synthesis_parser.add_argument(
         "--sensitivity-allowed",
         action="append",
-        default=["public", "internal", "private", "unknown"],
+        default=None,
         help="Allowed sensitivity. Repeatable.",
     )
     weekly_synthesis_parser.add_argument("--source-limit", type=int, default=8, help="Maximum source inputs.")
@@ -1605,7 +1616,7 @@ def build_parser() -> argparse.ArgumentParser:
     connections_generate_parser.add_argument(
         "--sensitivity-allowed",
         action="append",
-        default=["public", "internal", "private", "unknown"],
+        default=None,
         help="Allowed sensitivity. Repeatable.",
     )
     connections_generate_parser.add_argument(
@@ -1772,7 +1783,7 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_contradictions_generate_parser.add_argument(
         "--sensitivity-allowed",
         action="append",
-        default=["public", "internal", "private", "unknown"],
+        default=None,
         help="Allowed sensitivity. Repeatable.",
     )
     vnext_contradictions_generate_parser.add_argument(
@@ -1817,7 +1828,7 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_project_update_parser.add_argument(
         "--sensitivity-allowed",
         action="append",
-        default=["public", "internal", "private", "unknown"],
+        default=None,
         help="Allowed sensitivity. Repeatable.",
     )
     vnext_project_update_parser.add_argument("--max-items", type=int, default=8, help="Maximum selected inputs.")
@@ -1837,7 +1848,7 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_project_dashboard_parser.add_argument(
         "--sensitivity-allowed",
         action="append",
-        default=["public", "internal", "private", "unknown"],
+        default=None,
         help="Allowed sensitivity. Repeatable.",
     )
     vnext_project_dashboard_parser.set_defaults(handler=_run_vnext_project_dashboard)
@@ -1857,7 +1868,7 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_open_loops_extract_parser.add_argument(
         "--sensitivity-allowed",
         action="append",
-        default=["public", "internal", "private", "unknown"],
+        default=None,
         help="Allowed sensitivity. Repeatable.",
     )
     vnext_open_loops_extract_parser.add_argument("--max-items", type=int, default=8, help="Maximum selected sources.")

@@ -3,6 +3,9 @@ from __future__ import annotations
 from alicebot_api.vnext_retrieval import VNextRetrievalRequest, VNextRetrievalService, classify_query, query_terms
 
 
+_UNSET = object()
+
+
 class InMemoryVNextRetrievalStore:
     def __init__(
         self,
@@ -17,6 +20,9 @@ class InMemoryVNextRetrievalStore:
         self.open_loops = open_loops or []
         self.provenance_links = provenance_links or []
         self.events: list[dict[str, object]] = []
+        self.memory_search_domains: object = _UNSET
+        self.source_search_domains: object = _UNSET
+        self.open_loop_domains: object = _UNSET
 
     def append_event(self, event: dict[str, object]) -> dict[str, object]:
         self.events.append(event)
@@ -30,7 +36,8 @@ class InMemoryVNextRetrievalStore:
         sensitivity_allowed: list[str] | None = None,
         limit: int = 8,
     ) -> list[dict[str, object]]:
-        del query, domains, sensitivity_allowed
+        del query, sensitivity_allowed
+        self.memory_search_domains = domains
         return self.memories[:limit]
 
     def search_sources(
@@ -41,7 +48,8 @@ class InMemoryVNextRetrievalStore:
         sensitivity_allowed: list[str] | None = None,
         limit: int = 8,
     ) -> list[dict[str, object]]:
-        del query, domains, sensitivity_allowed
+        del query, sensitivity_allowed
+        self.source_search_domains = domains
         return self.sources[:limit]
 
     def list_open_loops(
@@ -52,7 +60,8 @@ class InMemoryVNextRetrievalStore:
         sensitivity_allowed: list[str] | None = None,
         limit: int = 8,
     ) -> list[dict[str, object]]:
-        del domains, sensitivity_allowed
+        del sensitivity_allowed
+        self.open_loop_domains = domains
         rows = [row for row in self.open_loops if status is None or row.get("status") == status]
         return rows[:limit]
 
@@ -206,6 +215,40 @@ def test_context_pack_filters_sensitive_memories_and_records_trace_exclusion() -
     excluded = [candidate for candidate in pack["trace"]["candidates"] if candidate["target_id"] == "memory-secret"]
     assert excluded[0]["selected"] is False
     assert excluded[0]["exclusion_reason"] == "sensitivity_filtered"
+
+
+def test_unscoped_query_does_not_filter_to_unknown_domain() -> None:
+    store = InMemoryVNextRetrievalStore(
+        memories=[
+            {
+                "id": "memory-personal",
+                "memory_type": "semantic",
+                "canonical_text": "Coffee preference is pour over.",
+                "status": "active",
+                "confidence": 0.8,
+                "domain": "personal",
+                "sensitivity": "private",
+            }
+        ],
+        sources=[
+            {
+                "id": "source-personal",
+                "source_type": "manual_text",
+                "title": "Coffee preference",
+                "content_hash": "sha256:coffee",
+                "domain": "personal",
+                "sensitivity": "private",
+            }
+        ],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(VNextRetrievalRequest(query="coffee preference"))
+
+    assert pack["query_interpretation"]["domains"] == []
+    assert store.memory_search_domains is None
+    assert store.source_search_domains is None
+    assert store.open_loop_domains is None
+    assert pack["relevant_memories"][0]["id"] == "memory-personal"
 
 
 def test_context_pack_records_missing_information_when_no_candidates_match() -> None:

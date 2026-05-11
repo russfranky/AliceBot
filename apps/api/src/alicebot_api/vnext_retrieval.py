@@ -177,8 +177,6 @@ def _infer_domains(lowered_query: str) -> list[str]:
         domains.extend(["project", "professional"])
     if _contains_any(lowered_query, ("family", "health", "spiritual", "money", "legal")):
         domains.append("personal")
-    if not domains:
-        domains.append("unknown")
     return domains
 
 
@@ -281,19 +279,19 @@ class VNextRetrievalService:
 
         memory_rows = self.store.search_memories(
             query=request.query,
-            domains=domains,
+            domains=domains or None,
             sensitivity_allowed=sensitivity_allowed,
             limit=max(request.max_items * 2, request.max_items),
         )
         source_rows = self.store.search_sources(
             query=request.query,
-            domains=domains,
+            domains=domains or None,
             sensitivity_allowed=sensitivity_allowed,
             limit=max(DEFAULT_SOURCE_LIMIT, request.max_items),
         )
         open_loop_rows = self.store.list_open_loops(
             status="open",
-            domains=domains,
+            domains=domains or None,
             sensitivity_allowed=sensitivity_allowed,
             limit=DEFAULT_OPEN_LOOP_LIMIT,
         )

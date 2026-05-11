@@ -129,6 +129,7 @@ from alicebot_api.vnext_connections import ConnectionFinderRequest, VNextConnect
 from alicebot_api.vnext_contradictions import ContradictionFinderRequest, VNextContradictionService
 from alicebot_api.vnext_projects import ProjectAutomationRequest, VNextProjectService
 from alicebot_api.vnext_retrieval import VNextRetrievalRequest, VNextRetrievalService
+from alicebot_api.vnext_json import json_safe
 from alicebot_api.vnext_store import PostgresVNextStore
 
 
@@ -501,6 +502,7 @@ def _build_recall_query(arguments: Mapping[str, object], *, limit: int) -> Conti
 
 
 def _canonicalize_json(value: object) -> object:
+    value = json_safe(value)
     if isinstance(value, dict):
         return {
             key: _canonicalize_json(value[key])

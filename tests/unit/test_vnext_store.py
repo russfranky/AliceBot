@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
@@ -527,3 +528,48 @@ def test_append_and_list_event_log_records_use_integrity_payload() -> None:
     assert isinstance(event_insert_params[7], Jsonb)
     assert event_insert_params[7].obj == {"b": 2, "a": 1}
     assert event_insert_params[10] == event["integrity_hash"]
+
+
+def test_jsonb_and_event_hash_normalize_postgres_scalar_values() -> None:
+    project_id = uuid4()
+    captured_at = datetime(2026, 5, 10, 12, 30, tzinfo=UTC)
+    event = build_event_log_record(
+        event_type="project.update_candidate_created",
+        actor_type="system",
+        target_type="project",
+        target_id=str(project_id),
+        payload={
+            "project_id": project_id,
+            "source": {
+                "captured_at": captured_at,
+            },
+        },
+    )
+    cursor = RecordingCursor(fetchone_results=[{"id": str(project_id)}, _event_row(project_id)])
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    store.create_project(
+        {
+            "id": str(project_id),
+            "name": "Alice vNext",
+            "slug": "alice-vnext",
+            "metadata_json": {
+                "candidate_memory_id": project_id,
+                "source_captured_at": captured_at,
+            },
+        }
+    )
+
+    assert event["payload_json"] == {
+        "project_id": str(project_id),
+        "source": {
+            "captured_at": "2026-05-10T12:30:00+00:00",
+        },
+    }
+    project_insert_params = cursor.executed[0][1]
+    assert project_insert_params is not None
+    assert isinstance(project_insert_params[-1], Jsonb)
+    assert project_insert_params[-1].obj == {
+        "candidate_memory_id": str(project_id),
+        "source_captured_at": "2026-05-10T12:30:00+00:00",
+    }

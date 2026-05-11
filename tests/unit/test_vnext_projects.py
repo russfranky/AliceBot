@@ -238,6 +238,7 @@ def test_accepting_project_update_updates_project_promotes_memory_and_appends_re
     assert store.projects["project-1"]["current_state"] == "Alice vNext project automation is under review."
     assert store.memories["memory-2"]["status"] == "active"
     assert store.revisions[0]["memory_id"] == "memory-2"
+    assert store.revisions[0]["memory_key"] == store.memories["memory-2"]["memory_key"]
     assert store.revisions[0]["revision_type"] == "edited"
     assert store.events[-1]["event_type"] == "project.update_candidate_accepted"
 
@@ -268,7 +269,7 @@ def test_open_loop_extraction_and_review_support_source_owner_and_filters() -> N
     assert loops[0]["metadata_json"]["source_captured_at"] == "2026-05-10T09:00:00Z"
     assert loops[0]["metadata_json"]["owner"] == "Samir"
     assert snoozed["due_at"] == "2026-05-12T09:00:00Z"
-    assert closed["status"] == "closed"
+    assert closed["status"] == "resolved"
     assert dashboard["project"]["id"] == "project-1"
     assert dashboard["counts"]["open_loops"] == 1
 

@@ -389,10 +389,17 @@ class VNextProjectService:
         project_id = str(metadata.get("project_id"))
         candidate_memory_id = str(metadata.get("candidate_memory_id"))
         self.store.update_project(project_id=project_id, patch={"current_state": current_state})
-        self.store.update_memory(memory_id=candidate_memory_id, patch={"status": "active", "canonical_text": current_state})
+        updated_memory = self.store.update_memory(
+            memory_id=candidate_memory_id,
+            patch={"status": "active", "canonical_text": current_state},
+        )
+        memory_key = str(updated_memory.get("memory_key", "")).strip()
+        if memory_key == "":
+            raise VNextProjectValidationError("candidate memory is missing memory_key")
         self.store.append_revision(
             {
                 "memory_id": candidate_memory_id,
+                "memory_key": memory_key,
                 "revision_type": "edited" if action == "edit" else "promoted",
                 "action": "project_update_review",
                 "text_after": current_state,
@@ -427,7 +434,7 @@ class VNextProjectService:
         if self.store.get_open_loop(loop_id) is None:
             raise VNextProjectValidationError(f"open loop {loop_id} was not found")
         if action == "close":
-            return self.store.update_open_loop_status(loop_id=loop_id, status="closed", resolution_note=resolution_note)
+            return self.store.update_open_loop_status(loop_id=loop_id, status="resolved", resolution_note=resolution_note)
         if action == "reopen":
             return self.store.update_open_loop_status(loop_id=loop_id, status="open")
         patch: JsonObject = {}

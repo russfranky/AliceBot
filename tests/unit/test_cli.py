@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import UTC, datetime
 import json
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -95,6 +96,17 @@ def test_parser_routes_required_commands() -> None:
     for argv, expected_handler_name in cases:
         parsed = parser.parse_args(argv)
         assert parsed.handler.__name__ == expected_handler_name
+
+
+def test_parser_preserves_explicit_vnext_sensitivity_filter() -> None:
+    parser = cli_module.build_parser()
+    explicit = parser.parse_args(["context-pack", "coffee", "--sensitivity-allowed", "public"])
+    omitted = parser.parse_args(["context-pack", "coffee"])
+
+    assert explicit.sensitivity_allowed == ["public"]
+    assert cli_module._vnext_sensitivity_allowed(explicit) == ("public",)
+    assert omitted.sensitivity_allowed is None
+    assert cli_module._vnext_sensitivity_allowed(omitted) == ("public", "internal", "private", "unknown")
 
 
 class FakeVNextCliStore:
@@ -477,26 +489,29 @@ def test_vnext_connector_cli_lists_and_ingests_payload_file(monkeypatch, tmp_pat
 
 def test_context_pack_cli_returns_structured_vnext_pack(monkeypatch) -> None:
     store = FakeVNextCliStore()
+    memory_id = uuid4()
+    source_id = uuid4()
+    captured_at = datetime(2026, 5, 10, 0, 0, tzinfo=UTC)
     store.memories.append(
         {
-            "id": "memory-1",
+            "id": memory_id,
             "memory_type": "semantic",
             "canonical_text": "Alice context packs need provenance.",
             "status": "active",
             "confidence": 0.8,
             "domain": "project",
             "sensitivity": "private",
-            "first_seen_at": "2026-05-10T00:00:00Z",
-            "last_seen_at": "2026-05-10T00:00:00Z",
+            "first_seen_at": captured_at,
+            "last_seen_at": captured_at,
         }
     )
     store.sources.append(
         {
-            "id": "source-1",
+            "id": source_id,
             "source_type": "manual_text",
             "title": "Alice context source",
             "content_hash": "sha256:abc",
-            "captured_at": "2026-05-10T00:00:00Z",
+            "captured_at": captured_at,
             "domain": "project",
             "sensitivity": "private",
         }
@@ -520,8 +535,10 @@ def test_context_pack_cli_returns_structured_vnext_pack(monkeypatch) -> None:
 
     payload = json.loads(output)
     assert payload["query_interpretation"]["query_type"] == "strategic_synthesis"
-    assert payload["relevant_memories"][0]["id"] == "memory-1"
-    assert payload["sources"][0]["id"] == "source-1"
+    assert payload["relevant_memories"][0]["id"] == str(memory_id)
+    assert payload["relevant_memories"][0]["first_seen_at"] == "2026-05-10T00:00:00+00:00"
+    assert payload["sources"][0]["id"] == str(source_id)
+    assert payload["sources"][0]["captured_at"] == "2026-05-10T00:00:00+00:00"
     assert payload["trace"]["selected_count"] == 2
 
 

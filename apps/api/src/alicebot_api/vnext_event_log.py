@@ -3,8 +3,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import hashlib
 import json
+from typing import cast
 from uuid import uuid4
 
+from alicebot_api.vnext_json import json_safe
 from alicebot_api.vnext_repositories import EventStore, JsonObject
 
 
@@ -12,8 +14,8 @@ def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
-def stable_json_dumps(payload: JsonObject) -> str:
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+def stable_json_dumps(payload: object) -> str:
+    return json.dumps(json_safe(payload), sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
 def integrity_hash_for_event(event: JsonObject) -> str:
@@ -41,10 +43,11 @@ def build_event_log_record(
         "target_type": target_type,
         "target_id": target_id,
         "occurred_at": occurred_at or _utc_now_iso(),
-        "payload_json": payload or {},
+        "payload_json": json_safe(payload or {}),
         "trace_id": trace_id,
         "run_id": run_id,
     }
+    event = cast(JsonObject, json_safe(event))
     event["integrity_hash"] = integrity_hash_for_event(event)
     return event
 

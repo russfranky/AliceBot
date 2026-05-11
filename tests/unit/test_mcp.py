@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from io import BytesIO
-from uuid import UUID
+import json
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -337,6 +339,65 @@ def test_alice_vnext_context_pack_mcp_tool(monkeypatch) -> None:
     assert payload["sources"][0]["id"] == "source-1"
     assert payload["trace_id"] == payload["trace"]["trace_id"]
     assert store.events[-1]["event_type"] == "retrieval.context_pack_compiled"
+
+
+def test_alice_vnext_context_pack_mcp_tool_normalizes_row_scalars(monkeypatch) -> None:
+    store = FakeVNextMCPStore()
+    memory_id = uuid4()
+    source_id = uuid4()
+    captured_at = datetime(2026, 5, 10, 9, 0, tzinfo=UTC)
+
+    def search_memories(**_kwargs) -> list[dict[str, object]]:
+        return [
+            {
+                "id": memory_id,
+                "memory_type": "semantic",
+                "canonical_text": "Coffee preference is pour over.",
+                "status": "active",
+                "confidence": 0.9,
+                "domain": "personal",
+                "sensitivity": "private",
+                "first_seen_at": captured_at,
+                "last_seen_at": captured_at,
+            }
+        ]
+
+    def search_sources(**_kwargs) -> list[dict[str, object]]:
+        return [
+            {
+                "id": source_id,
+                "source_type": "manual_text",
+                "title": "Coffee note",
+                "content_hash": "sha256:coffee",
+                "captured_at": captured_at,
+                "domain": "personal",
+                "sensitivity": "private",
+            }
+        ]
+
+    store.search_memories = search_memories  # type: ignore[method-assign]
+    store.search_sources = search_sources  # type: ignore[method-assign]
+
+    @contextmanager
+    def fake_vnext_store_context(_context):
+        yield store
+
+    monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fake_vnext_store_context)
+    context = MCPRuntimeContext(
+        database_url="postgresql://localhost/alicebot",
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+
+    payload = call_mcp_tool(
+        context,
+        name="alice_vnext_context_pack",
+        arguments={"query": "coffee preference"},
+    )
+
+    json.dumps(payload)
+    assert payload["relevant_memories"][0]["id"] == str(memory_id)
+    assert payload["relevant_memories"][0]["first_seen_at"] == "2026-05-10T09:00:00+00:00"
+    assert payload["sources"][0]["id"] == str(source_id)
 
 
 def test_alice_generate_daily_and_weekly_brief_mcp_tools(monkeypatch) -> None:

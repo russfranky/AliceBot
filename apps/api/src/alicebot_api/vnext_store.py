@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-from datetime import date, datetime
 from typing import Any, cast
-from uuid import UUID
 
 import psycopg
 from psycopg.types.json import Jsonb
 
 from alicebot_api.store import ContinuityStoreInvariantError
 from alicebot_api.vnext_event_log import build_event_log_record
+from alicebot_api.vnext_json import json_safe
 from alicebot_api.vnext_repositories import JsonObject
 
 
@@ -278,29 +277,17 @@ BRAIN_CHARTER_COLUMNS = """
 def _json_object(value: object | None) -> Jsonb:
     if value is None:
         value = {}
-    return Jsonb(value)
+    return Jsonb(_json_safe(value))
 
 
 def _json_list(value: object | None) -> Jsonb:
     if value is None:
         value = []
-    return Jsonb(value)
+    return Jsonb(_json_safe(value))
 
 
 def _json_safe(value: object) -> object:
-    if isinstance(value, UUID):
-        return str(value)
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, date):
-        return value.isoformat()
-    if isinstance(value, dict):
-        return {str(key): _json_safe(child) for key, child in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_safe(child) for child in value]
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    return str(value)
+    return json_safe(value)
 
 
 def _sorted_field_names(record: JsonObject) -> list[str]:
