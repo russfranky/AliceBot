@@ -2,6 +2,12 @@ import React from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
+import {
+  VNEXT_DOMAIN_OPTIONS,
+  VNEXT_SENSITIVITY_OPTIONS,
+  VNEXT_SUPPORTED_CONNECTOR_IDS,
+  getVNextWorkspaceFixtureContract,
+} from "../../components/vnext-brain-workspace";
 import VNextPage from "./page";
 
 const EXPECTED_SURFACES = [
@@ -21,6 +27,43 @@ const EXPECTED_SURFACES = [
   "Graph",
   "Connectors",
   "Settings",
+];
+
+const EXPECTED_VNEXT_DOMAINS = [
+  "professional",
+  "personal",
+  "family",
+  "health",
+  "spiritual",
+  "financial",
+  "legal",
+  "learning",
+  "relationship",
+  "project",
+  "agent_run",
+  "system",
+  "unknown",
+];
+
+const EXPECTED_VNEXT_SENSITIVITIES = [
+  "public",
+  "internal",
+  "private",
+  "confidential",
+  "highly_sensitive",
+  "sacred",
+  "regulated",
+  "unknown",
+];
+
+const EXPECTED_SPRINT_11_CONNECTORS = [
+  "telegram",
+  "browser_clipper",
+  "pdf_document",
+  "docx_document",
+  "csv_table",
+  "screenshot_ocr",
+  "voice_transcription",
 ];
 
 describe("VNextPage", () => {
@@ -47,11 +90,31 @@ describe("VNextPage", () => {
     expect(screen.getByText("Connector settings")).toBeInTheDocument();
     expect(screen.getAllByText("Telegram capture").length).toBeGreaterThan(0);
     expect(screen.getByText("Browser clipper")).toBeInTheDocument();
+    expect(screen.getByText("DOCX processing")).toBeInTheDocument();
+    expect(screen.getByText("CSV processing")).toBeInTheDocument();
+    expect(screen.getByText("Screenshot processing")).toBeInTheDocument();
     expect(screen.getAllByText("Domain: Work").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Sensitivity: Private").length).toBeGreaterThan(0);
     expect(screen.getByText("Memory sources used")).toBeInTheDocument();
     expect(screen.getAllByText("Contradictions").length).toBeGreaterThan(0);
     expect(screen.getByText("Why this answer")).toBeInTheDocument();
+  });
+
+  it("keeps fixture labels aligned to vNext schema values and connector contracts", () => {
+    const fixture = getVNextWorkspaceFixtureContract();
+    const domainValues = VNEXT_DOMAIN_OPTIONS.map((option) => option.value);
+    const sensitivityValues = VNEXT_SENSITIVITY_OPTIONS.map((option) => option.value);
+
+    expect(domainValues).toEqual(EXPECTED_VNEXT_DOMAINS);
+    expect(sensitivityValues).toEqual(EXPECTED_VNEXT_SENSITIVITIES);
+    expect([...VNEXT_SUPPORTED_CONNECTOR_IDS]).toEqual(EXPECTED_SPRINT_11_CONNECTORS);
+    expect(fixture.connectorIds).toEqual(EXPECTED_SPRINT_11_CONNECTORS);
+    expect(fixture.domains.every((domain) => EXPECTED_VNEXT_DOMAINS.includes(domain))).toBe(true);
+    expect(
+      fixture.sensitivities.every((sensitivity) =>
+        EXPECTED_VNEXT_SENSITIVITIES.includes(sensitivity),
+      ),
+    ).toBe(true);
   });
 
   it("updates review state, labels, project assignment, and open loops from Inbox actions", () => {
@@ -65,15 +128,15 @@ describe("VNextPage", () => {
     expect(screen.getByText("Saved edited memory text with review provenance intact.")).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Domain label"), {
-      target: { value: "Operations" },
+      target: { value: "financial" },
     });
     fireEvent.change(screen.getByLabelText("Sensitivity label"), {
-      target: { value: "Internal" },
+      target: { value: "confidential" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Apply domain and sensitivity labels" }));
-    expect(screen.getByText("Applied labels: Operations / Internal.")).toBeInTheDocument();
-    expect(screen.getAllByText("Domain: Operations").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Sensitivity: Internal").length).toBeGreaterThan(0);
+    expect(screen.getByText("Applied labels: Financial / Confidential.")).toBeInTheDocument();
+    expect(screen.getAllByText("Domain: Financial").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Sensitivity: Confidential").length).toBeGreaterThan(0);
 
     fireEvent.change(screen.getByLabelText("Assigned project"), {
       target: { value: "Launch command center" },
@@ -123,15 +186,15 @@ describe("VNextPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Browser clipper/i }));
     fireEvent.change(screen.getByLabelText("Connector domain default"), {
-      target: { value: "Operations" },
+      target: { value: "project" },
     });
     fireEvent.change(screen.getByLabelText("Connector sensitivity default"), {
-      target: { value: "Internal" },
+      target: { value: "confidential" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Save connector defaults" }));
 
-    expect(screen.getByText("Saved Browser clipper defaults: Operations / Internal.")).toBeInTheDocument();
-    expect(screen.getAllByText("Default domain: Operations").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Default sensitivity: Internal").length).toBeGreaterThan(0);
+    expect(screen.getByText("Saved Browser clipper defaults: Project / Confidential.")).toBeInTheDocument();
+    expect(screen.getAllByText("Default domain: Project").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Default sensitivity: Confidential").length).toBeGreaterThan(0);
   });
 });

@@ -5,11 +5,45 @@ import { FormEvent, useState } from "react";
 import { SectionCard } from "./section-card";
 import { StatusBadge } from "./status-badge";
 
-const DOMAIN_OPTIONS = ["Work", "Personal", "Health", "Finance", "Learning", "Operations"] as const;
-const SENSITIVITY_OPTIONS = ["Public", "Internal", "Private", "Sensitive"] as const;
+export const VNEXT_DOMAIN_OPTIONS = [
+  { value: "professional", label: "Work" },
+  { value: "personal", label: "Personal" },
+  { value: "family", label: "Family" },
+  { value: "health", label: "Health" },
+  { value: "spiritual", label: "Spiritual" },
+  { value: "financial", label: "Financial" },
+  { value: "legal", label: "Legal" },
+  { value: "learning", label: "Learning" },
+  { value: "relationship", label: "Relationship" },
+  { value: "project", label: "Project" },
+  { value: "agent_run", label: "Agent run" },
+  { value: "system", label: "System" },
+  { value: "unknown", label: "Unknown" },
+] as const;
 
-type Domain = (typeof DOMAIN_OPTIONS)[number];
-type Sensitivity = (typeof SENSITIVITY_OPTIONS)[number];
+export const VNEXT_SENSITIVITY_OPTIONS = [
+  { value: "public", label: "Public" },
+  { value: "internal", label: "Internal" },
+  { value: "private", label: "Private" },
+  { value: "confidential", label: "Confidential" },
+  { value: "highly_sensitive", label: "Highly sensitive" },
+  { value: "sacred", label: "Sacred" },
+  { value: "regulated", label: "Regulated" },
+  { value: "unknown", label: "Unknown" },
+] as const;
+
+export const VNEXT_SUPPORTED_CONNECTOR_IDS = [
+  "telegram",
+  "browser_clipper",
+  "pdf_document",
+  "docx_document",
+  "csv_table",
+  "screenshot_ocr",
+  "voice_transcription",
+] as const;
+
+type Domain = (typeof VNEXT_DOMAIN_OPTIONS)[number]["value"];
+type Sensitivity = (typeof VNEXT_SENSITIVITY_OPTIONS)[number]["value"];
 type ReviewStatus = "requires_review" | "accepted" | "edited" | "rejected" | "promoted";
 
 type ReviewItem = {
@@ -71,6 +105,21 @@ type ConnectorSetting = {
   failureMode: string;
 };
 
+function optionLabel<T extends string>(
+  options: readonly { value: T; label: string }[],
+  value: T,
+) {
+  return options.find((option) => option.value === value)?.label ?? value;
+}
+
+function domainLabel(domain: Domain) {
+  return optionLabel(VNEXT_DOMAIN_OPTIONS, domain);
+}
+
+function sensitivityLabel(sensitivity: Sensitivity) {
+  return optionLabel(VNEXT_SENSITIVITY_OPTIONS, sensitivity);
+}
+
 const SURFACES = [
   "Home",
   "Inbox",
@@ -96,8 +145,8 @@ const DEFAULT_REVIEW_ITEM: ReviewItem = {
   kind: "memory_candidate",
   status: "requires_review",
   note: "Promoted from a project meeting capture where the owner was implied but not explicitly confirmed.",
-  domain: "Work",
-  sensitivity: "Private",
+  domain: "project",
+  sensitivity: "private",
   project: "Product launch",
   updatedAt: "2026-05-10T08:30:00Z",
   sourceIds: ["capture.launch-review.042", "artifact.product-review-notes"],
@@ -112,8 +161,8 @@ const INITIAL_REVIEW_ITEMS: ReviewItem[] = [
     kind: "artifact_memory",
     status: "requires_review",
     note: "File parser extracted a personal health signal, but the document sensitivity is not operator-confirmed.",
-    domain: "Health",
-    sensitivity: "Sensitive",
+    domain: "health",
+    sensitivity: "highly_sensitive",
     project: "Personal admin",
     updatedAt: "2026-05-10T07:45:00Z",
     sourceIds: ["artifact.lab-panel.pdf", "capture.health-admin.011"],
@@ -125,8 +174,8 @@ const INITIAL_REVIEW_ITEMS: ReviewItem[] = [
     kind: "open_loop_candidate",
     status: "requires_review",
     note: "Waiting-for signal appeared in weekly synthesis and should remain visible until closed.",
-    domain: "Work",
-    sensitivity: "Internal",
+    domain: "legal",
+    sensitivity: "internal",
     project: "Vendor onboarding",
     updatedAt: "2026-05-09T16:20:00Z",
     sourceIds: ["brief.weekly.2026-W19", "person.priya"],
@@ -140,8 +189,8 @@ const INITIAL_OPEN_LOOPS: OpenLoopItem[] = [
     title: "Confirm launch checklist owner",
     status: "due_soon",
     due: "Today",
-    domain: "Work",
-    sensitivity: "Private",
+    domain: "project",
+    sensitivity: "private",
     sourceIds: ["capture.launch-review.042"],
   },
   {
@@ -149,8 +198,8 @@ const INITIAL_OPEN_LOOPS: OpenLoopItem[] = [
     title: "Ask Priya for vendor legal review ETA",
     status: "waiting_for",
     due: "Tomorrow",
-    domain: "Work",
-    sensitivity: "Internal",
+    domain: "legal",
+    sensitivity: "internal",
     sourceIds: ["person.priya", "brief.weekly.2026-W19"],
   },
 ];
@@ -162,8 +211,8 @@ const INITIAL_ARTIFACTS: GeneratedArtifact[] = [
     type: "Daily Brief",
     status: "ready",
     summary: "Focus on the launch checklist owner, unresolved vendor legal review, and one sensitive health document review.",
-    domain: "Work",
-    sensitivity: "Private",
+    domain: "project",
+    sensitivity: "private",
     sources: ["capture.launch-review.042", "open_loop.loop-1", "memory.review-1"],
     provenance: "Generated by daily brief assembly from reviewed memories, open loops, and queue state.",
   },
@@ -173,8 +222,8 @@ const INITIAL_ARTIFACTS: GeneratedArtifact[] = [
     type: "Weekly Synthesis",
     status: "ready",
     summary: "Work graph pressure is concentrated around launch ownership, vendor waiting-for items, and project follow-through.",
-    domain: "Work",
-    sensitivity: "Internal",
+    domain: "professional",
+    sensitivity: "internal",
     sources: ["brief.daily.2026-05-10", "person.priya", "project.vendor-onboarding"],
     provenance: "Generated by weekly synthesis from accepted brief items and graph edges.",
   },
@@ -198,18 +247,18 @@ const INITIAL_ANSWER: AskAnswer = {
     "Sensitive health evidence is excluded from this work-domain answer.",
   ],
   sources: ["open_loop.loop-1", "memory.review-1", "person.priya", "brief.daily.2026-05-10"],
-  domain: "Work",
-  sensitivity: "Private",
+  domain: "project",
+  sensitivity: "private",
 };
 
-const INITIAL_CONNECTORS: ConnectorSetting[] = [
+export const INITIAL_CONNECTORS: ConnectorSetting[] = [
   {
     id: "telegram",
     name: "Telegram capture",
     stage: "Phase 2",
     status: "Webhook payloads",
-    defaultDomain: "Personal",
-    defaultSensitivity: "Private",
+    defaultDomain: "personal",
+    defaultSensitivity: "private",
     cursor: "provider_update_id",
     evidence: "Raw Telegram update JSON",
     failureMode: "Failed items pause cursor advancement.",
@@ -219,8 +268,8 @@ const INITIAL_CONNECTORS: ConnectorSetting[] = [
     name: "Browser clipper",
     stage: "Phase 2",
     status: "Clip payloads",
-    defaultDomain: "Learning",
-    defaultSensitivity: "Private",
+    defaultDomain: "learning",
+    defaultSensitivity: "private",
     cursor: "captured_at or external id",
     evidence: "URL, selection, page text, and optional HTML",
     failureMode: "Bad clips stay out of memory.",
@@ -230,19 +279,52 @@ const INITIAL_CONNECTORS: ConnectorSetting[] = [
     name: "PDF processing",
     stage: "Phase 2",
     status: "Extracted text",
-    defaultDomain: "Work",
-    defaultSensitivity: "Private",
+    defaultDomain: "unknown",
+    defaultSensitivity: "private",
     cursor: "modified time or external id",
     evidence: "Extracted PDF text plus file metadata",
     failureMode: "Parser failures leave existing sources unchanged.",
+  },
+  {
+    id: "docx_document",
+    name: "DOCX processing",
+    stage: "Phase 2",
+    status: "Extracted text",
+    defaultDomain: "unknown",
+    defaultSensitivity: "private",
+    cursor: "modified time or external id",
+    evidence: "Extracted DOCX text plus file metadata",
+    failureMode: "Parser failures leave existing sources unchanged.",
+  },
+  {
+    id: "csv_table",
+    name: "CSV processing",
+    stage: "Phase 2",
+    status: "Normalized rows",
+    defaultDomain: "professional",
+    defaultSensitivity: "private",
+    cursor: "modified time or external id",
+    evidence: "CSV text or rows plus file metadata",
+    failureMode: "Malformed rows are logged without advancing past the failed item.",
+  },
+  {
+    id: "screenshot_ocr",
+    name: "Screenshot processing",
+    stage: "Phase 2",
+    status: "OCR text",
+    defaultDomain: "unknown",
+    defaultSensitivity: "private",
+    cursor: "captured_at or external id",
+    evidence: "OCR text plus screenshot metadata",
+    failureMode: "OCR extraction failures leave existing sources unchanged.",
   },
   {
     id: "voice_transcription",
     name: "Voice transcription",
     stage: "Phase 2",
     status: "Transcript payloads",
-    defaultDomain: "Personal",
-    defaultSensitivity: "Private",
+    defaultDomain: "personal",
+    defaultSensitivity: "private",
     cursor: "recorded_at or external id",
     evidence: "Transcript text and segment metadata",
     failureMode: "Unusable transcripts are logged for retry.",
@@ -283,16 +365,16 @@ const PROJECTS = [
     status: "active",
     progress: "3 of 5 loops closed",
     next: "Confirm checklist owner",
-    domain: "Work" as Domain,
-    sensitivity: "Private" as Sensitivity,
+    domain: "project" as Domain,
+    sensitivity: "private" as Sensitivity,
   },
   {
     name: "Vendor onboarding",
     status: "blocked",
     progress: "Waiting on legal review",
     next: "Ask Priya for ETA",
-    domain: "Work" as Domain,
-    sensitivity: "Internal" as Sensitivity,
+    domain: "legal" as Domain,
+    sensitivity: "internal" as Sensitivity,
   },
 ];
 
@@ -301,15 +383,38 @@ const PEOPLE = [
     name: "Priya",
     relation: "Vendor legal owner",
     evidence: "Referenced by waiting-for loop and weekly synthesis.",
-    sensitivity: "Internal" as Sensitivity,
+    sensitivity: "internal" as Sensitivity,
   },
   {
     name: "Morgan",
     relation: "Possible launch checklist owner",
     evidence: "Older note conflicts with newer meeting capture.",
-    sensitivity: "Private" as Sensitivity,
+    sensitivity: "private" as Sensitivity,
   },
 ];
+
+export function getVNextWorkspaceFixtureContract() {
+  return {
+    domains: [
+      ...INITIAL_REVIEW_ITEMS.map((item) => item.domain),
+      ...INITIAL_OPEN_LOOPS.map((loop) => loop.domain),
+      ...INITIAL_ARTIFACTS.map((artifact) => artifact.domain),
+      INITIAL_ANSWER.domain,
+      ...PROJECTS.map((project) => project.domain),
+      ...INITIAL_CONNECTORS.map((connector) => connector.defaultDomain),
+    ],
+    sensitivities: [
+      ...INITIAL_REVIEW_ITEMS.map((item) => item.sensitivity),
+      ...INITIAL_OPEN_LOOPS.map((loop) => loop.sensitivity),
+      ...INITIAL_ARTIFACTS.map((artifact) => artifact.sensitivity),
+      INITIAL_ANSWER.sensitivity,
+      ...PROJECTS.map((project) => project.sensitivity),
+      ...PEOPLE.map((person) => person.sensitivity),
+      ...INITIAL_CONNECTORS.map((connector) => connector.defaultSensitivity),
+    ],
+    connectorIds: INITIAL_CONNECTORS.map((connector) => connector.id),
+  };
+}
 
 const BELIEFS = [
   {
@@ -457,7 +562,7 @@ export function VNextBrainWorkspace() {
       domain: draftDomain,
       sensitivity: draftSensitivity,
     });
-    logAction(`Applied labels: ${draftDomain} / ${draftSensitivity}.`);
+    logAction(`Applied labels: ${domainLabel(draftDomain)} / ${sensitivityLabel(draftSensitivity)}.`);
   }
 
   function assignProject() {
@@ -510,7 +615,9 @@ export function VNextBrainWorkspace() {
           : connector,
       ),
     );
-    logAction(`Saved ${selectedConnector.name} defaults: ${connectorDomain} / ${connectorSensitivity}.`);
+    logAction(
+      `Saved ${selectedConnector.name} defaults: ${domainLabel(connectorDomain)} / ${sensitivityLabel(connectorSensitivity)}.`,
+    );
   }
 
   function askAlice(event: FormEvent<HTMLFormElement>) {
@@ -627,8 +734,8 @@ export function VNextBrainWorkspace() {
             <div className="cluster">
               <StatusBadge status="active" label="Local-first" />
               <StatusBadge status="requires_review" label="Sensitive items held" />
-              <span className="meta-pill">Default domain: Work</span>
-              <span className="meta-pill">Default sensitivity: Private</span>
+              <span className="meta-pill">Default domain: {domainLabel("professional")}</span>
+              <span className="meta-pill">Default sensitivity: {sensitivityLabel("private")}</span>
             </div>
             <p className="muted-copy">
               Retrieval should use reviewed evidence first, suppress sensitive cross-domain evidence, and show
@@ -662,8 +769,8 @@ export function VNextBrainWorkspace() {
                   <StatusBadge status={item.status} />
                 </span>
                 <span className="list-row__meta">
-                  <span className="meta-pill">Domain: {item.domain}</span>
-                  <span className="meta-pill">Sensitivity: {item.sensitivity}</span>
+                  <span className="meta-pill">Domain: {domainLabel(item.domain)}</span>
+                  <span className="meta-pill">Sensitivity: {sensitivityLabel(item.sensitivity)}</span>
                   <span className="meta-pill">Project: {item.project}</span>
                 </span>
               </button>
@@ -679,8 +786,8 @@ export function VNextBrainWorkspace() {
           <div className="detail-stack">
             <div className="cluster">
               <StatusBadge status={selectedReview.status} />
-              <span className="meta-pill">Domain: {selectedReview.domain}</span>
-              <span className="meta-pill">Sensitivity: {selectedReview.sensitivity}</span>
+              <span className="meta-pill">Domain: {domainLabel(selectedReview.domain)}</span>
+              <span className="meta-pill">Sensitivity: {sensitivityLabel(selectedReview.sensitivity)}</span>
               <span className="meta-pill">Project: {selectedReview.project}</span>
             </div>
 
@@ -723,9 +830,9 @@ export function VNextBrainWorkspace() {
                   value={draftDomain}
                   onChange={(event) => setDraftDomain(event.target.value as Domain)}
                 >
-                  {DOMAIN_OPTIONS.map((domain) => (
-                    <option key={domain} value={domain}>
-                      {domain}
+                  {VNEXT_DOMAIN_OPTIONS.map((domain) => (
+                    <option key={domain.value} value={domain.value}>
+                      {domain.label}
                     </option>
                   ))}
                 </select>
@@ -737,9 +844,9 @@ export function VNextBrainWorkspace() {
                   value={draftSensitivity}
                   onChange={(event) => setDraftSensitivity(event.target.value as Sensitivity)}
                 >
-                  {SENSITIVITY_OPTIONS.map((sensitivity) => (
-                    <option key={sensitivity} value={sensitivity}>
-                      {sensitivity}
+                  {VNEXT_SENSITIVITY_OPTIONS.map((sensitivity) => (
+                    <option key={sensitivity.value} value={sensitivity.value}>
+                      {sensitivity.label}
                     </option>
                   ))}
                 </select>
@@ -827,8 +934,8 @@ export function VNextBrainWorkspace() {
               <span className="transcript-entry__role transcript-entry__role--assistant">
                 Alice answer
               </span>
-              <span className="meta-pill">Domain: {answer.domain}</span>
-              <span className="meta-pill">Sensitivity: {answer.sensitivity}</span>
+              <span className="meta-pill">Domain: {domainLabel(answer.domain)}</span>
+              <span className="meta-pill">Sensitivity: {sensitivityLabel(answer.sensitivity)}</span>
             </div>
             <p className="response-copy">{answer.summary}</p>
             <div className="key-value-grid">
@@ -869,8 +976,8 @@ export function VNextBrainWorkspace() {
                 </div>
                 <p>{artifact.summary}</p>
                 <div className="list-row__meta">
-                  <span className="meta-pill">Domain: {artifact.domain}</span>
-                  <span className="meta-pill">Sensitivity: {artifact.sensitivity}</span>
+                  <span className="meta-pill">Domain: {domainLabel(artifact.domain)}</span>
+                  <span className="meta-pill">Sensitivity: {sensitivityLabel(artifact.sensitivity)}</span>
                   <span className="meta-pill">Sources: {summarizeSources(artifact.sources)}</span>
                 </div>
                 <p className="responsive-note">Provenance: {artifact.provenance}</p>
@@ -938,7 +1045,7 @@ export function VNextBrainWorkspace() {
             </div>
             <div>
               <dt>Sensitive gates</dt>
-              <dd>One Health / Sensitive artifact is withheld from work retrieval.</dd>
+              <dd>One Health / Highly sensitive artifact is withheld from work retrieval.</dd>
             </div>
           </div>
         </SectionCard>
@@ -957,8 +1064,8 @@ export function VNextBrainWorkspace() {
                 </div>
                 <p>{item.note}</p>
                 <div className="list-row__meta">
-                  <span className="meta-pill">Domain: {item.domain}</span>
-                  <span className="meta-pill">Sensitivity: {item.sensitivity}</span>
+                  <span className="meta-pill">Domain: {domainLabel(item.domain)}</span>
+                  <span className="meta-pill">Sensitivity: {sensitivityLabel(item.sensitivity)}</span>
                   <span className="meta-pill">Sources: {summarizeSources(item.sourceIds)}</span>
                 </div>
               </article>
@@ -983,8 +1090,8 @@ export function VNextBrainWorkspace() {
                 <p>{project.progress}</p>
                 <div className="list-row__meta">
                   <span className="meta-pill">Next: {project.next}</span>
-                  <span className="meta-pill">Domain: {project.domain}</span>
-                  <span className="meta-pill">Sensitivity: {project.sensitivity}</span>
+                  <span className="meta-pill">Domain: {domainLabel(project.domain)}</span>
+                  <span className="meta-pill">Sensitivity: {sensitivityLabel(project.sensitivity)}</span>
                 </div>
               </article>
             ))}
@@ -1001,7 +1108,7 @@ export function VNextBrainWorkspace() {
               <article key={person.name} className="list-row">
                 <div className="list-row__topline">
                   <h3 className="list-row__title">{person.name}</h3>
-                  <span className="meta-pill">Sensitivity: {person.sensitivity}</span>
+                  <span className="meta-pill">Sensitivity: {sensitivityLabel(person.sensitivity)}</span>
                 </div>
                 <p>{person.relation}</p>
                 <p className="responsive-note">Evidence: {person.evidence}</p>
@@ -1047,8 +1154,8 @@ export function VNextBrainWorkspace() {
                 </div>
                 <div className="list-row__meta">
                   <span className="meta-pill">Due: {loop.due}</span>
-                  <span className="meta-pill">Domain: {loop.domain}</span>
-                  <span className="meta-pill">Sensitivity: {loop.sensitivity}</span>
+                  <span className="meta-pill">Domain: {domainLabel(loop.domain)}</span>
+                  <span className="meta-pill">Sensitivity: {sensitivityLabel(loop.sensitivity)}</span>
                   <span className="meta-pill">Sources: {summarizeSources(loop.sourceIds)}</span>
                 </div>
               </article>
@@ -1125,8 +1232,10 @@ export function VNextBrainWorkspace() {
                 </span>
                 <span className="list-row__meta">
                   <span className="meta-pill">{connector.stage}</span>
-                  <span className="meta-pill">Default domain: {connector.defaultDomain}</span>
-                  <span className="meta-pill">Default sensitivity: {connector.defaultSensitivity}</span>
+                  <span className="meta-pill">Default domain: {domainLabel(connector.defaultDomain)}</span>
+                  <span className="meta-pill">
+                    Default sensitivity: {sensitivityLabel(connector.defaultSensitivity)}
+                  </span>
                 </span>
               </button>
             ))}
@@ -1166,9 +1275,9 @@ export function VNextBrainWorkspace() {
                   value={connectorDomain}
                   onChange={(event) => setConnectorDomain(event.target.value as Domain)}
                 >
-                  {DOMAIN_OPTIONS.map((domain) => (
-                    <option key={domain} value={domain}>
-                      {domain}
+                  {VNEXT_DOMAIN_OPTIONS.map((domain) => (
+                    <option key={domain.value} value={domain.value}>
+                      {domain.label}
                     </option>
                   ))}
                 </select>
@@ -1180,9 +1289,9 @@ export function VNextBrainWorkspace() {
                   value={connectorSensitivity}
                   onChange={(event) => setConnectorSensitivity(event.target.value as Sensitivity)}
                 >
-                  {SENSITIVITY_OPTIONS.map((sensitivity) => (
-                    <option key={sensitivity} value={sensitivity}>
-                      {sensitivity}
+                  {VNEXT_SENSITIVITY_OPTIONS.map((sensitivity) => (
+                    <option key={sensitivity.value} value={sensitivity.value}>
+                      {sensitivity.label}
                     </option>
                   ))}
                 </select>
