@@ -2,7 +2,7 @@
 
 Alice vNext is the next public wedge for Alice as a true second brain: a local-first memory kernel, reviewable generated briefs, connector-backed evidence capture, and agent-facing context packs.
 
-This preview is not a hosted launch. It is a repo-local, deterministic release candidate built around the vNext memory-kernel schema and the fixture-safe workflows shipped in this branch.
+This preview is not a hosted launch. It is a repo-local, deterministic public preview built around the vNext memory-kernel schema and the fixture-safe workflows shipped under `v0.5.1-vnext-preview`.
 
 ## Product Shape
 
@@ -29,6 +29,7 @@ Alice vNext has three layers:
 4. Use [example ALICE.md](ALICE.example.md) as the first Brain Charter.
 5. Use [demo script](demo-video-script.md) for a short walkthrough.
 6. Use [release checklist](../release/vnext-public-release-checklist.md) before publishing or tagging.
+7. Review [preview release notes](../release/v0.5.1-vnext-preview-release-notes.md) and [tag plan](../release/v0.5.1-vnext-preview-tag-plan.md).
 
 ## Launch Boundary
 

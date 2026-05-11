@@ -18,7 +18,8 @@ Alice helps agents **remember what matters, resume interrupted work, explain why
 `v0.5.1` is the current **pre-1.0 public release**.
 
 This working tree also contains the Alice vNext public-preview seed described in
-[docs/vnext/README.md](docs/vnext/README.md). vNext is not tagged as the current public release yet.
+[docs/vnext/README.md](docs/vnext/README.md). The vNext preview uses the pre-release tag
+`v0.5.1-vnext-preview`; `v0.5.1` remains the current stable pre-1.0 public release.
 
 Most assistants are still good only in the moment. They can answer the current prompt, but they struggle to preserve decisions, track open loops, recover context across sessions, and stay aligned after memory corrections.
 
@@ -49,6 +50,8 @@ Start with:
 - [Example ALICE.md](docs/vnext/ALICE.example.md)
 - [vNext demo video script](docs/vnext/demo-video-script.md)
 - [vNext release checklist](docs/release/vnext-public-release-checklist.md)
+- [vNext preview release notes](docs/release/v0.5.1-vnext-preview-release-notes.md)
+- [vNext preview tag plan](docs/release/v0.5.1-vnext-preview-tag-plan.md)
 
 ## Release Boundary (`v0.5.1`)
 

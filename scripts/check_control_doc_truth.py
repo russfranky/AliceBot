@@ -19,6 +19,7 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
         relative_path="README.md",
         required_markers=(
             "`v0.5.1` is the current **pre-1.0 public release**.",
+            "`v0.5.1-vnext-preview`",
             "## Release Boundary (`v0.5.1`)",
             "Phase 13 adoption surfaces:",
             "Historical planning/control artifacts remain available in:",
@@ -30,15 +31,15 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
         required_markers=(
             "`v0.5.1`: released",
             "Phase 14 is shipped.",
-            "Alice vNext Sprint 1 - Architecture Foundation and Schema is active.",
+            "Alice vNext public preview release gate is active for `v0.5.1-vnext-preview`.",
         ),
     ),
     ControlDocTruthRule(
         relative_path=".ai/active/SPRINT_PACKET.md",
         required_markers=(
-            "Alice vNext Sprint 1 - Architecture Foundation and Schema",
-            "`v0.5.1` is the current public release boundary.",
-            "feature-foundation",
+            "Alice vNext Public Preview Release Gate",
+            "`v0.5.1-vnext-preview` is the vNext public-preview tag target.",
+            "release-gate",
         ),
     ),
     ControlDocTruthRule(
@@ -51,9 +52,9 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
     ControlDocTruthRule(
         relative_path=".ai/handoff/CURRENT_STATE.md",
         required_markers=(
-            "`v0.5.1` is the latest published tag.",
+            "`v0.5.1` remains the latest stable public release tag.",
             "Phase 14 is shipped.",
-            "Alice vNext Sprint 1 - Architecture Foundation and Schema is active.",
+            "Alice vNext public preview release gate is active.",
         ),
     ),
     ControlDocTruthRule(

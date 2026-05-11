@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-05-11
+
+- Prepared the Alice vNext public-preview release package for `v0.5.1-vnext-preview`.
+- Promoted the vNext preview docs from release-candidate posture to tag-ready preview posture while keeping `v0.5.1` as the current stable pre-1.0 public release.
+- Added vNext preview release notes and tag plan with rollback instructions.
+- Completed the vNext public release checklist with current verification evidence.
+- Realigned control docs from stale "Sprint 1 active" wording to the completed Sprint 1-12 preview surface and the active vNext release gate.
+- Verified the vNext Postgres-backed CLI/API/MCP smoke path, full unit suite, web test/lint/build gates, control-doc truth check, eval harness, Git diff whitespace check, and post-merge GitHub Security Scans.
+
 ## 2026-04-16
 
 - Closed out Phase 14 after shipping all five planned sprints:

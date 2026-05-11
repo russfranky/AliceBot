@@ -12,12 +12,14 @@ Alice is a pre-1.0 continuity platform for AI agents and agent-assisted workflow
 - Phase 13 shipped one-call continuity, Alice Lite, and memory hygiene / conversation health visibility.
 - Phase 14 shipped provider adapters, model packs, reference integrations, and design-partner launch/admin surfaces.
 - `HF-001` shipped logging safety and disk guardrails for local/Lite runtime behavior.
-- `v0.5.1` is the latest published pre-1.0 release tag.
+- `v0.5.1` is the latest stable pre-1.0 release tag.
+- `v0.5.1-vnext-preview` is the vNext public-preview pre-release target.
 
 ## Current Repo Posture
 - Phase 14 is shipped.
 - `HF-001` is shipped.
-- No post-Phase-14 execution sprint is active yet.
+- Alice vNext Sprint 1 through Sprint 12 preview scope is implemented.
+- Alice vNext public preview release gate is active.
 
 ## Latest Completed Phase
 ### Phase 14: Provider Adapters + Design Partner Launch
@@ -60,4 +62,5 @@ Phase 14 turned Alice from a strong continuity system into a practical integrati
 
 ## Immediate Product Posture
 - `v0.5.1` is the current public release boundary.
-- The next product decision is the next phase definition on top of the shipped Phase 14 + `HF-001` baseline.
+- `v0.5.1-vnext-preview` is the vNext public-preview release target on top of the shipped Phase 14 + `HF-001` baseline.
+- The next product decision after the preview tag is whether to prioritize live-backed UI, connector auth/polling, production scheduling, or model-backed evaluation.

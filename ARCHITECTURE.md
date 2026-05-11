@@ -2,7 +2,7 @@
 
 ## Scope Boundary
 - **Shipped baseline:** Phases 9-14, `HF-001`, and Bridge `B1` through `B4`.
-- **Current execution posture:** `v0.5.1` is the latest published tag; Phase 14 and `HF-001` are shipped; no post-Phase-14 execution sprint is active yet.
+- **Current execution posture:** `v0.5.1` remains the stable public release tag; Phase 14 and `HF-001` are shipped; `v0.5.1-vnext-preview` is the vNext public-preview tag target.
 - **Release principle:** `v0.5.1` is the current pre-1.0 public release boundary for the shipped Phase 14 platform plus the logging-safety hardening.
 
 ## Current System Overview
@@ -139,5 +139,6 @@ Alice is a modular continuity platform with shared continuity semantics across l
 
 ## Current Architectural Posture
 - `v0.5.1` is the active public release boundary.
+- `v0.5.1-vnext-preview` packages the local-first vNext public preview without changing the stable baseline boundary.
 - Alice is now a broader continuity platform with provider/runtime portability, model packs, runnable external-builder integrations, design-partner launch/admin support, and safe local logging defaults.
 - The continuity substrate remains the same system of record; the delivered work packages that substrate into practical adoption paths without changing the core continuity semantics.
