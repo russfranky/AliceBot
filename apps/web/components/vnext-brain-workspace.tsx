@@ -12,6 +12,7 @@ import type {
   VNextConnectorHealthRecord,
   VNextContextPack,
   VNextDogfoodingDashboard,
+  VNextDoctorPayload,
   VNextEventRecord,
   VNextMemoryRecord,
   VNextOpenLoopRecord,
@@ -21,6 +22,7 @@ import type {
   VNextProjectRecord,
   VNextSchedulerStatus,
   VNextSourceRecord,
+  VNextSourceTracePayload,
   VNextTaskRecord,
   VNextWorkspacePayload,
 } from "../lib/api";
@@ -39,6 +41,8 @@ import {
   reviewVNextArtifact,
   reviewVNextMemory,
   reviewVNextOpenLoop,
+  reviewVNextSource,
+  runVNextDoctor,
   runVNextSchedulerDue,
   runVNextSchedulerWorkflowNow,
   syncVNextLocalFolderConnector,
@@ -132,6 +136,8 @@ type WorkspaceView = {
   qualityEvals: VNextArtifactQualityEvalRecord[];
   connectorHealth: { items: VNextConnectorHealthRecord[]; count: number; order: string[] };
   dogfooding: VNextDogfoodingDashboard;
+  doctor: VNextDoctorPayload;
+  traceability: { items: VNextSourceTracePayload[]; count: number; order: string[] };
   agentActivity: NonNullable<VNextWorkspacePayload["agent_activity"]>;
   policyTelemetry: VNextPolicyTelemetrySummary;
   scheduler: VNextSchedulerStatus;
@@ -161,8 +167,10 @@ const SURFACES = [
   "Agent Activity",
   "Schedules",
   "Timeline",
+  "Trace",
   "Graph",
   "Connectors",
+  "Doctor",
   "Settings",
 ];
 
@@ -344,6 +352,24 @@ const EMPTY_DOGFOODING: VNextDogfoodingDashboard = {
   last_successful_scheduler_run: null,
   connector_health: EMPTY_CONNECTOR_HEALTH,
   insight_feedback: { count: 0, useful_yes: 0, useful_no: 0, useful_not_sure: 0, missed_something_yes: 0 },
+};
+
+const EMPTY_DOCTOR: VNextDoctorPayload = {
+  status: "unknown",
+  fix_safe_applied: false,
+  ci_mode: true,
+  blocking_failure_count: 0,
+  warning_count: 0,
+  checks: [],
+  recommended_fixes: [],
+  migration_status: {},
+  connector_health: EMPTY_CONNECTOR_HEALTH,
+};
+
+const EMPTY_TRACEABILITY: { items: VNextSourceTracePayload[]; count: number; order: string[] } = {
+  items: [],
+  count: 0,
+  order: [],
 };
 
 const FIXTURE_SOURCES: VNextSourceRecord[] = [
@@ -908,6 +934,90 @@ const FIXTURE_DOGFOODING: VNextDogfoodingDashboard = {
   insight_feedback: { count: 3, useful_yes: 2, useful_no: 0, useful_not_sure: 1, missed_something_yes: 1 },
 };
 
+const FIXTURE_DOCTOR: VNextDoctorPayload = {
+  status: "pass",
+  fix_safe_applied: false,
+  ci_mode: true,
+  blocking_failure_count: 0,
+  warning_count: 0,
+  checks: [
+    {
+      name: "migrations",
+      status: "pass",
+      severity: "info",
+      message: "Required vNext dogfood hardening tables are present.",
+      details: { status: "ok" },
+    },
+    {
+      name: "connector_settings",
+      status: "pass",
+      severity: "info",
+      message: "Core connector settings rows exist.",
+      details: { missing: [] },
+    },
+    {
+      name: "scheduler_daemon",
+      status: "pass",
+      severity: "info",
+      message: "Scheduler daemon status is available.",
+      details: { running: false, configured: true },
+    },
+  ],
+  recommended_fixes: [],
+  migration_status: { status: "ok", missing_tables: [] },
+  connector_health: FIXTURE_CONNECTOR_HEALTH,
+};
+
+const FIXTURE_TRACEABILITY = {
+  items: FIXTURE_SOURCES.map((source) => {
+    const sourceId = source.id;
+    const candidateMemories = FIXTURE_REVIEW_ITEMS.filter(
+      (memory) => textValue(asRecord(memory.metadata_json).source_id) === sourceId,
+    );
+    const artifacts = FIXTURE_ARTIFACTS.filter((artifact) => {
+      const metadata = asRecord(artifact.metadata_json);
+      const refs = Array.isArray(metadata.source_refs) ? metadata.source_refs : metadata.source_ids;
+      return Array.isArray(refs) && refs.map(String).some((ref) => ref === sourceId || ref === `source:${sourceId}`);
+    });
+    const openLoops = FIXTURE_OPEN_LOOPS.filter((loop) => loop.source_id === sourceId);
+    const events = FIXTURE_EVENTS.filter(
+      (event) =>
+        event.target_id === sourceId ||
+        candidateMemories.some((memory) => memory.id === event.target_id) ||
+        artifacts.some((artifact) => artifact.id === event.target_id) ||
+        openLoops.some((loop) => loop.id === event.target_id),
+    );
+    return {
+      trace_id: `source:${sourceId}`,
+      trace_kind: "capture_to_brief",
+      source,
+      chunks: [
+        {
+          id: `chunk-${sourceId}`,
+          source_id: sourceId,
+          chunk_index: 0,
+          text: sourceText(source),
+          token_count: sourceText(source).split(/\s+/).filter(Boolean).length,
+        },
+      ],
+      candidate_memories: candidateMemories,
+      artifacts,
+      open_loops: openLoops,
+      events,
+      summary: {
+        source_id: sourceId,
+        chunk_count: 1,
+        candidate_memory_count: candidateMemories.length,
+        artifact_count: artifacts.length,
+        open_loop_count: openLoops.length,
+        event_count: events.length,
+      },
+    };
+  }),
+  count: FIXTURE_SOURCES.length,
+  order: FIXTURE_SOURCES.map((source) => `source:${source.id}`),
+};
+
 function fixtureWorkspace(): WorkspaceView {
   const projectDashboards: VNextProjectDashboard[] = FIXTURE_PROJECTS.map((project) => {
     const openLoops = FIXTURE_OPEN_LOOPS.filter((loop) => loop.project_id === project.id);
@@ -942,6 +1052,8 @@ function fixtureWorkspace(): WorkspaceView {
     qualityEvals: FIXTURE_QUALITY_EVALS,
     connectorHealth: FIXTURE_CONNECTOR_HEALTH,
     dogfooding: FIXTURE_DOGFOODING,
+    doctor: FIXTURE_DOCTOR,
+    traceability: FIXTURE_TRACEABILITY,
     agentActivity: FIXTURE_AGENT_ACTIVITY,
     policyTelemetry: FIXTURE_POLICY_TELEMETRY,
     scheduler: FIXTURE_SCHEDULER,
@@ -969,6 +1081,8 @@ function emptyWorkspace(): WorkspaceView {
     qualityEvals: [],
     connectorHealth: EMPTY_CONNECTOR_HEALTH,
     dogfooding: EMPTY_DOGFOODING,
+    doctor: EMPTY_DOCTOR,
+    traceability: EMPTY_TRACEABILITY,
     agentActivity: EMPTY_AGENT_ACTIVITY,
     policyTelemetry: EMPTY_POLICY_TELEMETRY,
     scheduler: EMPTY_SCHEDULER,
@@ -993,6 +1107,8 @@ function workspaceFromPayload(payload: VNextWorkspacePayload): WorkspaceView {
     qualityEvals: payload.quality_evals ?? [],
     connectorHealth: payload.connector_health ?? EMPTY_CONNECTOR_HEALTH,
     dogfooding: payload.dogfooding ?? EMPTY_DOGFOODING,
+    doctor: payload.doctor ?? EMPTY_DOCTOR,
+    traceability: payload.traceability ?? EMPTY_TRACEABILITY,
     agentActivity: payload.agent_activity ?? EMPTY_AGENT_ACTIVITY,
     policyTelemetry: payload.policy_telemetry ?? EMPTY_POLICY_TELEMETRY,
     scheduler: payload.scheduler ?? EMPTY_SCHEDULER,
@@ -1160,6 +1276,23 @@ export function VNextBrainWorkspace({
   );
   const [defaultDomain, setDefaultDomain] = useState<Domain>("project");
   const [defaultSensitivity, setDefaultSensitivity] = useState<Sensitivity>("private");
+  const [selectedSourceId, setSelectedSourceId] = useState("");
+  const selectedSource = useMemo(
+    () => workspace.sources.find((source) => source.id === selectedSourceId) ?? workspace.sources[0] ?? null,
+    [selectedSourceId, workspace.sources],
+  );
+  const selectedSourceTrace = useMemo(
+    () =>
+      selectedSource
+        ? workspace.traceability.items.find((trace) => trace.summary.source_id === selectedSource.id) ?? null
+        : null,
+    [selectedSource, workspace.traceability.items],
+  );
+  const [sourceTitleDraft, setSourceTitleDraft] = useState("");
+  const [sourceDomainDraft, setSourceDomainDraft] = useState<Domain>("project");
+  const [sourceSensitivityDraft, setSourceSensitivityDraft] = useState<Sensitivity>("private");
+  const [sourceProjectDraft, setSourceProjectDraft] = useState("");
+  const [sourceReviewNote, setSourceReviewNote] = useState("Reviewed from /vnext operator console.");
 
   const [selectedReviewId, setSelectedReviewId] = useState("");
   const selectedReview = useMemo(
@@ -1259,6 +1392,21 @@ export function VNextBrainWorkspace({
       void refreshWorkspace("Live vNext workspace loaded.");
     }
   }, [liveModeReady, refreshWorkspace]);
+
+  useEffect(() => {
+    if (selectedSource) {
+      const metadata = asRecord(selectedSource.metadata_json);
+      setSelectedSourceId(selectedSource.id);
+      setSourceTitleDraft(textValue(selectedSource.title) || selectedSource.source_type);
+      setSourceDomainDraft(asDomain(selectedSource.domain));
+      setSourceSensitivityDraft(asSensitivity(selectedSource.sensitivity));
+      setSourceProjectDraft(textValue(metadata.project_id) || workspace.projects[0]?.id || "");
+    } else {
+      setSelectedSourceId("");
+      setSourceTitleDraft("");
+      setSourceProjectDraft(workspace.projects[0]?.id ?? "");
+    }
+  }, [selectedSource, workspace.projects]);
 
   useEffect(() => {
     if (selectedReview) {
@@ -1377,6 +1525,7 @@ export function VNextBrainWorkspace({
         "Demo source captured and candidate memory generated.",
       );
       setSelectedReviewId(nextMemory.id);
+      setSelectedSourceId(nextSource.id);
       return;
     }
 
@@ -1550,6 +1699,150 @@ export function VNextBrainWorkspace({
         });
       },
       "Open loop created from live workspace.",
+    );
+  }
+
+  async function handleSourceAction(action: "review" | "update" | "assign_project" | "archive") {
+    if (!selectedSource) {
+      return;
+    }
+    if (action === "assign_project" && !sourceProjectDraft) {
+      setStatusTone("danger");
+      setStatusText("Choose a project before assigning the source.");
+      return;
+    }
+
+    if (!liveModeReady || !apiBaseUrl || !userId) {
+      updateFixtureWorkspace(
+        (previous) => {
+          const now = new Date().toISOString();
+          if (action === "archive") {
+            const view = {
+              ...previous,
+              sources: previous.sources.filter((source) => source.id !== selectedSource.id),
+              traceability: {
+                ...previous.traceability,
+                items: previous.traceability.items.filter((trace) => trace.summary.source_id !== selectedSource.id),
+                count: previous.traceability.items.filter((trace) => trace.summary.source_id !== selectedSource.id).length,
+                order: previous.traceability.order.filter((traceId) => traceId !== `source:${selectedSource.id}`),
+              },
+            };
+            return { ...view, summary: createSummary(view) };
+          }
+          const nextSources = previous.sources.map((source) =>
+            source.id === selectedSource.id
+              ? {
+                  ...source,
+                  title: sourceTitleDraft,
+                  domain: sourceDomainDraft,
+                  sensitivity: sourceSensitivityDraft,
+                  metadata_json: {
+                    ...asRecord(source.metadata_json),
+                    review_status: action === "review" ? "reviewed" : "updated",
+                    reviewed_at: now,
+                    review_note: sourceReviewNote,
+                    project_id: action === "assign_project" ? sourceProjectDraft : asRecord(source.metadata_json).project_id,
+                    updated_from: "vnext_workspace",
+                  },
+                }
+              : source,
+          );
+          const traceability = {
+            ...previous.traceability,
+            items: previous.traceability.items.map((trace) =>
+              trace.summary.source_id === selectedSource.id
+                ? {
+                    ...trace,
+                    source: nextSources.find((source) => source.id === selectedSource.id) ?? trace.source,
+                  }
+                : trace,
+            ),
+          };
+          const view = { ...previous, sources: nextSources, traceability };
+          return { ...view, summary: createSummary(view) };
+        },
+        `Demo source action applied: ${action}.`,
+      );
+      return;
+    }
+
+    await runLiveAction(
+      `Applying source action: ${action}...`,
+      async () => {
+        await reviewVNextSource(apiBaseUrl, selectedSource.id, {
+          user_id: userId,
+          action,
+          title: action === "archive" ? undefined : sourceTitleDraft,
+          domain: action === "archive" ? undefined : sourceDomainDraft,
+          sensitivity: action === "archive" ? undefined : sourceSensitivityDraft,
+          project_id: action === "assign_project" ? sourceProjectDraft : undefined,
+          review_note: sourceReviewNote.trim() || undefined,
+        });
+      },
+      `Source action applied: ${action}.`,
+    );
+  }
+
+  async function handleCreateOpenLoopFromSource() {
+    if (!selectedSource) {
+      return;
+    }
+    const title = openLoopTitle.trim() || `Review ${sourceTitleDraft || selectedSource.title || selectedSource.source_type}`;
+    if (!liveModeReady || !apiBaseUrl || !userId) {
+      const nextLoop: VNextOpenLoopRecord = {
+        id: `loop-source-demo-${workspace.openLoops.length + 1}`,
+        title,
+        description: sourceReviewNote,
+        due_at: openLoopDueAt || null,
+        priority: openLoopPriority,
+        status: "open",
+        source_id: selectedSource.id,
+        project_id: sourceProjectDraft || null,
+        domain: sourceDomainDraft,
+        sensitivity: sourceSensitivityDraft,
+      };
+      updateFixtureWorkspace(
+        (previous) => {
+          const traceability = {
+            ...previous.traceability,
+            items: previous.traceability.items.map((trace) =>
+              trace.summary.source_id === selectedSource.id
+                ? {
+                    ...trace,
+                    open_loops: [nextLoop, ...trace.open_loops],
+                    summary: {
+                      ...trace.summary,
+                      open_loop_count: trace.summary.open_loop_count + 1,
+                    },
+                  }
+                : trace,
+            ),
+          };
+          const view = { ...previous, openLoops: [nextLoop, ...previous.openLoops], traceability };
+          return { ...view, summary: createSummary(view) };
+        },
+        "Demo source-backed open loop created.",
+      );
+      setSelectedOpenLoopId(nextLoop.id);
+      return;
+    }
+
+    await runLiveAction(
+      "Creating source-backed open loop...",
+      async () => {
+        await createVNextOpenLoop(apiBaseUrl, {
+          user_id: userId,
+          title,
+          description: sourceReviewNote.trim() || undefined,
+          due_at: openLoopDueAt.trim() || undefined,
+          priority: openLoopPriority,
+          project_id: sourceProjectDraft || undefined,
+          source_id: selectedSource.id,
+          domain: sourceDomainDraft,
+          sensitivity: sourceSensitivityDraft,
+        });
+      },
+      "Source-backed open loop created.",
     );
   }
 
@@ -2208,6 +2501,35 @@ export function VNextBrainWorkspace({
     );
   }
 
+  async function handleRunDoctor(fixSafe: boolean) {
+    if (fixSafe && typeof window !== "undefined" && !window.confirm("Run vNext doctor --fix-safe?")) {
+      return;
+    }
+    if (!liveModeReady || !apiBaseUrl || !userId) {
+      updateFixtureWorkspace(
+        (previous) => ({
+          ...previous,
+          doctor: {
+            ...previous.doctor,
+            status: "pass",
+            fix_safe_applied: fixSafe,
+            checks: previous.doctor.checks.length ? previous.doctor.checks : FIXTURE_DOCTOR.checks,
+            recommended_fixes: [],
+          },
+        }),
+        fixSafe ? "Demo doctor safe fix completed." : "Demo doctor check completed.",
+      );
+      return;
+    }
+    await runLiveAction(
+      fixSafe ? "Running doctor safe fix..." : "Running doctor checks...",
+      async () => {
+        await runVNextDoctor(apiBaseUrl, { user_id: userId, fix_safe: fixSafe, ci: true });
+      },
+      fixSafe ? "Doctor safe fix completed." : "Doctor checks completed.",
+    );
+  }
+
   const selectedLoop = workspace.openLoops.find((loop) => loop.id === selectedOpenLoopId) ?? workspace.openLoops[0] ?? null;
   const selectedConnector =
     INITIAL_CONNECTORS.find((connector) => connector.id === selectedConnectorId) ?? INITIAL_CONNECTORS[0];
@@ -2435,23 +2757,129 @@ export function VNextBrainWorkspace({
           <div className="list-rows">
             {workspace.sources.length ? (
               workspace.sources.slice(0, 5).map((source) => (
-                <article key={source.id} className="list-row">
-                  <div className="list-row__topline">
-                    <div>
+                <button
+                  key={source.id}
+                  type="button"
+                  className={`list-row vnext-review-button${selectedSource?.id === source.id ? " is-selected" : ""}`}
+                  onClick={() => setSelectedSourceId(source.id)}
+                >
+                  <span className="list-row__topline">
+                    <span className="detail-stack">
                       <span className="list-row__eyebrow mono">{source.source_type}</span>
-                      <h3 className="list-row__title">{source.title || source.id}</h3>
-                    </div>
+                      <span className="list-row__title">{source.title || source.id}</span>
+                    </span>
                     <StatusBadge status={source.sensitivity ?? "unknown"} />
-                  </div>
-                  <p>{sourceText(source).slice(0, 220)}</p>
-                  <div className="list-row__meta">
+                  </span>
+                  <span>{sourceText(source).slice(0, 220)}</span>
+                  <span className="list-row__meta">
                     <span className="meta-pill">Domain: {domainLabel(asDomain(source.domain))}</span>
+                    <span className="meta-pill">Review: {textValue(asRecord(source.metadata_json).review_status) || "unreviewed"}</span>
                     <span className="meta-pill">Captured: {source.captured_at}</span>
-                  </div>
-                </article>
+                  </span>
+                </button>
               ))
             ) : (
               <EmptyState title="Inbox is empty" description="Capture a note to create a live source and candidate memory." />
+            )}
+          </div>
+        </SectionCard>
+
+        <SectionCard
+          eyebrow="Inbox"
+          title="Source detail and review"
+          description="Selected source evidence can be reviewed, relabeled, assigned to a project, archived, or turned into an open loop without promoting memory."
+        >
+          <div className="detail-stack">
+            {selectedSource ? (
+              <>
+                <div className="cluster">
+                  <StatusBadge status={textValue(asRecord(selectedSource.metadata_json).review_status) || "unreviewed"} />
+                  <span className="meta-pill mono">Source {selectedSource.id}</span>
+                  <span className="meta-pill">Connector: {textValue(selectedSource.connector_name) || "manual"}</span>
+                </div>
+                <div className="form-field">
+                  <label htmlFor="vnext-source-title-edit">Selected source title</label>
+                  <input
+                    id="vnext-source-title-edit"
+                    value={sourceTitleDraft}
+                    onChange={(event) => setSourceTitleDraft(event.target.value)}
+                  />
+                </div>
+                <div className="form-field-group form-field-group--two-up">
+                  <div className="form-field">
+                    <label htmlFor="vnext-source-domain-edit">Source domain</label>
+                    <select
+                      id="vnext-source-domain-edit"
+                      value={sourceDomainDraft}
+                      onChange={(event) => setSourceDomainDraft(event.target.value as Domain)}
+                    >
+                      {VNEXT_DOMAIN_OPTIONS.map((domain) => (
+                        <option key={domain.value} value={domain.value}>{domain.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="form-field">
+                    <label htmlFor="vnext-source-sensitivity-edit">Source sensitivity</label>
+                    <select
+                      id="vnext-source-sensitivity-edit"
+                      value={sourceSensitivityDraft}
+                      onChange={(event) => setSourceSensitivityDraft(event.target.value as Sensitivity)}
+                    >
+                      {VNEXT_SENSITIVITY_OPTIONS.map((sensitivity) => (
+                        <option key={sensitivity.value} value={sensitivity.value}>{sensitivity.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div className="form-field">
+                  <label htmlFor="vnext-source-project-edit">Source project</label>
+                  <select
+                    id="vnext-source-project-edit"
+                    value={sourceProjectDraft}
+                    onChange={(event) => setSourceProjectDraft(event.target.value)}
+                  >
+                    <option value="">No project</option>
+                    {workspace.projects.map((project) => (
+                      <option key={project.id} value={project.id}>{project.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="form-field">
+                  <label htmlFor="vnext-source-review-note">Review note</label>
+                  <textarea
+                    id="vnext-source-review-note"
+                    value={sourceReviewNote}
+                    onChange={(event) => setSourceReviewNote(event.target.value)}
+                  />
+                </div>
+                <div className="vnext-review-actions">
+                  <button type="button" className="button" onClick={() => void handleSourceAction("review")} disabled={Boolean(pendingAction)}>Mark reviewed</button>
+                  <button type="button" className="button-secondary" onClick={() => void handleSourceAction("update")} disabled={Boolean(pendingAction)}>Save source update</button>
+                  <button type="button" className="button-secondary" onClick={() => void handleSourceAction("assign_project")} disabled={Boolean(pendingAction || !sourceProjectDraft)}>Assign source project</button>
+                  <button type="button" className="button-secondary" onClick={() => void handleCreateOpenLoopFromSource()} disabled={Boolean(pendingAction)}>Create source open loop</button>
+                  <button type="button" className="button-secondary button-secondary--danger" onClick={() => void handleSourceAction("archive")} disabled={Boolean(pendingAction)}>Archive source</button>
+                </div>
+                <div className="key-value-grid">
+                  <div>
+                    <dt>Raw evidence</dt>
+                    <dd>{sourceText(selectedSource).slice(0, 600)}</dd>
+                  </div>
+                  <div>
+                    <dt>Chunks</dt>
+                    <dd>{selectedSourceTrace?.summary.chunk_count ?? 0}</dd>
+                  </div>
+                  <div>
+                    <dt>Candidate memories</dt>
+                    <dd>{selectedSourceTrace?.summary.candidate_memory_count ?? 0}</dd>
+                  </div>
+                  <div>
+                    <dt>Artifacts</dt>
+                    <dd>{selectedSourceTrace?.summary.artifact_count ?? 0}</dd>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <EmptyState title="No selected source" description="Capture or select source evidence before reviewing it." />
             )}
           </div>
         </SectionCard>
@@ -2560,6 +2988,12 @@ export function VNextBrainWorkspace({
                     <span className="meta-pill">Sensitivity: {sensitivityLabel(asSensitivity(artifact.sensitivity))}</span>
                     <span className="meta-pill">Generated by: {artifact.generated_by}</span>
                     <span className="meta-pill">Mode: {artifactGenerationMode(artifact)}</span>
+                    {textValue(asRecord(artifact.metadata_json).scheduler_run_id) ? (
+                      <span className="meta-pill mono">Run {textValue(asRecord(artifact.metadata_json).scheduler_run_id)}</span>
+                    ) : null}
+                    {textValue(asRecord(artifact.metadata_json).trace_id) ? (
+                      <span className="meta-pill mono">Trace {textValue(asRecord(artifact.metadata_json).trace_id)}</span>
+                    ) : null}
                     {artifactGenerationMode(artifact) === "model_backed" ? (
                       <span className="meta-pill">Model: {artifactModelLabel(artifact)}</span>
                     ) : null}
@@ -3371,6 +3805,69 @@ export function VNextBrainWorkspace({
         </SectionCard>
 
         <SectionCard
+          eyebrow="Trace"
+          title="Capture-to-brief trace"
+          description="Follow selected source evidence through chunks, candidate memories, generated artifacts, open loops, ratings, and event-log records."
+        >
+          <div id="vnext-trace" className="detail-stack">
+            {selectedSourceTrace ? (
+              <>
+                <div className="cluster">
+                  <span className="meta-pill mono">{selectedSourceTrace.trace_id}</span>
+                  <span className="meta-pill">Chunks: {selectedSourceTrace.summary.chunk_count}</span>
+                  <span className="meta-pill">Memories: {selectedSourceTrace.summary.candidate_memory_count}</span>
+                  <span className="meta-pill">Artifacts: {selectedSourceTrace.summary.artifact_count}</span>
+                  <span className="meta-pill">Events: {selectedSourceTrace.summary.event_count}</span>
+                </div>
+                <div className="key-value-grid">
+                  <div>
+                    <dt>Source</dt>
+                    <dd>{selectedSourceTrace.source.title || selectedSourceTrace.source.id}</dd>
+                  </div>
+                  <div>
+                    <dt>Candidate memories</dt>
+                    <dd>
+                      {selectedSourceTrace.candidate_memories.length
+                        ? selectedSourceTrace.candidate_memories.map(memoryText).join(" ")
+                        : "No candidate memory linked yet."}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Generated artifacts</dt>
+                    <dd>
+                      {selectedSourceTrace.artifacts.length
+                        ? selectedSourceTrace.artifacts.map((artifact) => artifact.title || artifact.id).join(", ")
+                        : "No generated artifact references this source yet."}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Open loops</dt>
+                    <dd>
+                      {selectedSourceTrace.open_loops.length
+                        ? selectedSourceTrace.open_loops.map((loop) => loop.title).join(", ")
+                        : "No open loop linked yet."}
+                    </dd>
+                  </div>
+                </div>
+                <div className="timeline-list">
+                  {selectedSourceTrace.events.slice(0, 6).map((event) => (
+                    <article key={`trace-event-${event.id}`} className="timeline-item">
+                      <div className="timeline-item__topline">
+                        <span className="list-row__eyebrow mono">{event.occurred_at}</span>
+                        <h3 className="list-row__title">{event.event_type}</h3>
+                      </div>
+                      <p>{event.target_type ? `${event.target_type}:${event.target_id}` : "workspace event"}</p>
+                    </article>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <EmptyState title="No source trace" description="Select a source with linked candidates or artifacts to inspect its capture-to-brief path." />
+            )}
+          </div>
+        </SectionCard>
+
+        <SectionCard
           eyebrow="Graph"
           title="Connection graph"
           description="Graph visualization remains lightweight and read-only; live graph polish is deferred."
@@ -3594,6 +4091,82 @@ export function VNextBrainWorkspace({
               </div>
             </div>
           ) : null}
+        </SectionCard>
+      </div>
+
+      <div id="vnext-doctor" className="content-grid content-grid--wide">
+        <SectionCard
+          eyebrow="Doctor"
+          title="Readiness checks"
+          description="Doctor checks expose migration, connector settings/state, secret reference, scheduler daemon, and capture pipeline posture."
+        >
+          <div className="cluster">
+            <StatusBadge
+              status={workspace.doctor.status === "pass" ? "accepted" : workspace.doctor.status === "fail" ? "failed" : "requires_review"}
+              label={`Doctor: ${workspace.doctor.status}`}
+            />
+            <span className="meta-pill">Blocking: {workspace.doctor.blocking_failure_count}</span>
+            <span className="meta-pill">Warnings: {workspace.doctor.warning_count}</span>
+            <span className="meta-pill">CI mode: {workspace.doctor.ci_mode ? "on" : "off"}</span>
+            <span className="meta-pill">Safe fix: {workspace.doctor.fix_safe_applied ? "applied" : "not applied"}</span>
+          </div>
+          <div className="vnext-review-actions">
+            <button type="button" className="button" onClick={() => void handleRunDoctor(false)} disabled={Boolean(pendingAction)}>
+              Run doctor
+            </button>
+            <button type="button" className="button-secondary" onClick={() => void handleRunDoctor(true)} disabled={Boolean(pendingAction)}>
+              Run doctor --fix-safe
+            </button>
+          </div>
+          <div className="list-rows">
+            {workspace.doctor.checks.length ? (
+              workspace.doctor.checks.map((check) => (
+                <article key={check.name} className="list-row">
+                  <div className="list-row__topline">
+                    <div>
+                      <span className="list-row__eyebrow mono">{check.severity}</span>
+                      <h3 className="list-row__title">{check.name}</h3>
+                    </div>
+                    <StatusBadge status={check.status} />
+                  </div>
+                  <p>{check.message}</p>
+                  {check.recommended_fix ? <p className="responsive-note">Fix: {check.recommended_fix}</p> : null}
+                </article>
+              ))
+            ) : (
+              <EmptyState title="No doctor checks loaded" description="Run doctor or load live workspace readiness to populate checks." />
+            )}
+          </div>
+        </SectionCard>
+
+        <SectionCard
+          eyebrow="Doctor"
+          title="Readiness details"
+          description="Dogfood readiness and connector health are shown together so setup issues are visible before daily use."
+        >
+          <div className="key-value-grid key-value-grid--compact">
+            <div>
+              <dt>Dogfood readiness</dt>
+              <dd>{workspace.dogfooding.dogfood_readiness?.status ?? "unknown"}</dd>
+            </div>
+            <div>
+              <dt>Migration status</dt>
+              <dd>{textValue(workspace.doctor.migration_status["status"]) || "unknown"}</dd>
+            </div>
+            <div>
+              <dt>Connector health rows</dt>
+              <dd>{workspace.doctor.connector_health.count}</dd>
+            </div>
+            <div>
+              <dt>Recommended fixes</dt>
+              <dd>{workspace.doctor.recommended_fixes.filter(Boolean).length}</dd>
+            </div>
+          </div>
+          <div className="cluster">
+            {workspace.doctor.recommended_fixes.filter(Boolean).map((fix) => (
+              <span key={String(fix)} className="meta-pill">{fix}</span>
+            ))}
+          </div>
         </SectionCard>
       </div>
 

@@ -75,6 +75,7 @@ alicebot vnext smoke capture-to-brief
 alicebot vnext smoke connector-hardening
 alicebot vnext smoke secret-redaction
 alicebot vnext smoke dogfood-doctor
+alicebot vnext smoke operator-console
 ```
 
 The vNext agent arguments are `--agent-id`, `--agent-type`, `--agent-run-id`, `--agent-task-id`, `--project-scope`, and `--permission-profile`. Agent-originated scheduler and memory-proposal commands are policy checked, logged, and kept review-only where they create memory or generated artifacts.
@@ -82,6 +83,8 @@ The vNext agent arguments are `--agent-id`, `--agent-type`, `--agent-run-id`, `-
 Model-backed generation arguments are available on daily brief, weekly synthesis, connection report, contradiction report, project update candidate, and scheduler run-now commands: `--generation-mode`, `--model-route-mode`, `--model-provider`, `--model`, `--model-temperature`, and `--allow-cloud-private`. Private and highly sensitive scopes remain local-only or disabled unless explicitly configured.
 
 Live capture connector commands preserve the same trust model as manual capture: raw source text is archived, domain/sensitivity defaults are explicit, source material is treated as untrusted, agent output produces review-only artifacts/proposals, and capture-to-brief promotion still requires human review. Connector settings and state now persist outside the event log, while settings/state changes still write audit events. Secret values are never printed; the CLI stores or resolves only `secret_ref` values.
+
+The `operator-console` smoke is the broadest local go/no-go check for daily `/vnext` operation. It verifies source review, memory review, artifact review/rating, source-backed open-loop creation, scheduler run-now artifact creation, connector health visibility, doctor readiness, event logging, and source-to-brief traceability.
 
 ## Temporal History Commands
 

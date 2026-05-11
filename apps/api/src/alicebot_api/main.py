@@ -490,6 +490,7 @@ from alicebot_api.vnext_contradictions import (
     VNextContradictionValidationError,
 )
 from alicebot_api.vnext_dogfooding import VNextDogfoodingService
+from alicebot_api.vnext_doctor import VNextDoctorService
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_projects import ProjectAutomationRequest, VNextProjectService, VNextProjectValidationError
 from alicebot_api.vnext_queue import (
@@ -1222,6 +1223,16 @@ class VNextSourceCaptureRequest(VNextAgentRequest):
     sensitivity: str = Field(default="unknown", min_length=1, max_length=80)
 
 
+class VNextSourceReviewRequest(VNextAgentRequest):
+    user_id: UUID
+    action: str = Field(min_length=1, max_length=40)
+    title: str | None = Field(default=None, min_length=1, max_length=280)
+    domain: str | None = Field(default=None, min_length=1, max_length=80)
+    sensitivity: str | None = Field(default=None, min_length=1, max_length=80)
+    project_id: str | None = Field(default=None, min_length=1, max_length=120)
+    review_note: str | None = Field(default=None, min_length=1, max_length=4000)
+
+
 class VNextConnectorSyncRequest(VNextAgentRequest):
     user_id: UUID
     items: list[dict[str, object]] = Field(default_factory=list)
@@ -1484,6 +1495,12 @@ class VNextSchedulerControlRequest(VNextAgentRequest):
     user_id: UUID
 
 
+class VNextDoctorRunRequest(BaseModel):
+    user_id: UUID
+    fix_safe: bool = False
+    ci: bool = True
+
+
 def _vnext_public_error_response(*, status_code: int, detail: str) -> JSONResponse:
     return JSONResponse(status_code=status_code, content={"detail": detail})
 
@@ -1554,6 +1571,170 @@ def _vnext_status_counts(rows: list[dict[str, object]], *, field: str = "status"
         status = str(row.get(field, "unknown"))
         counts[status] = counts.get(status, 0) + 1
     return counts
+
+
+def _vnext_metadata(row: dict[str, object] | None) -> dict[str, object]:
+    if row is None:
+        return {}
+    value = row.get("metadata_json")
+    return value if isinstance(value, dict) else {}
+
+
+def _vnext_payload(row: dict[str, object]) -> dict[str, object]:
+    value = row.get("payload_json")
+    return value if isinstance(value, dict) else {}
+
+
+def _vnext_ref_values(value: object) -> list[str]:
+    refs: list[str] = []
+    if isinstance(value, str):
+        if value.strip():
+            refs.append(value.strip())
+    elif isinstance(value, dict):
+        for key in ("source_id", "id", "ref", "source_ref"):
+            candidate = value.get(key)
+            if isinstance(candidate, (str, int)):
+                refs.append(str(candidate))
+        for nested_key in ("source_ids", "source_refs", "sources"):
+            refs.extend(_vnext_ref_values(value.get(nested_key)))
+    elif isinstance(value, list):
+        for item in value:
+            refs.extend(_vnext_ref_values(item))
+    return refs
+
+
+def _vnext_ref_matches_source(value: object, source_id: str) -> bool:
+    normalized = str(source_id)
+    return any(ref == normalized or ref == f"source:{normalized}" for ref in _vnext_ref_values(value))
+
+
+def _vnext_row_references_source(row: dict[str, object], source_id: str) -> bool:
+    if str(row.get("source_id") or "") == str(source_id):
+        return True
+    metadata = _vnext_metadata(row)
+    for key in ("source_id", "source_ids", "source_ref", "source_refs", "source_references", "selected_source_ids"):
+        if _vnext_ref_matches_source(metadata.get(key), source_id):
+            return True
+    return _vnext_ref_matches_source(row.get("source_event_ids"), source_id)
+
+
+def _vnext_event_references(
+    event: dict[str, object],
+    *,
+    source_id: str,
+    memory_ids: set[str],
+    artifact_ids: set[str],
+    open_loop_ids: set[str],
+) -> bool:
+    target_type = str(event.get("target_type") or "")
+    target_id = str(event.get("target_id") or "")
+    if target_type == "source" and target_id == source_id:
+        return True
+    if target_type == "memory" and target_id in memory_ids:
+        return True
+    if target_type == "artifact" and target_id in artifact_ids:
+        return True
+    if target_type == "open_loop" and target_id in open_loop_ids:
+        return True
+    payload = _vnext_payload(event)
+    return any(
+        _vnext_ref_matches_source(payload.get(key), source_id)
+        for key in ("source_id", "source_ids", "source_ref", "source_refs", "source_references", "selected_source_ids")
+    )
+
+
+def _vnext_source_chunks(store: PostgresVNextStore, source_id: str) -> list[dict[str, object]]:
+    if not hasattr(store, "list_source_chunks"):
+        return []
+    return list(store.list_source_chunks(source_id))
+
+
+def _vnext_source_trace(
+    *,
+    store: PostgresVNextStore,
+    source: dict[str, object],
+    memories: list[dict[str, object]],
+    artifacts: list[dict[str, object]],
+    open_loops: list[dict[str, object]],
+    events: list[dict[str, object]],
+) -> dict[str, object]:
+    source_id = str(source["id"])
+    related_memories = [memory for memory in memories if _vnext_row_references_source(memory, source_id)]
+    related_artifacts = [artifact for artifact in artifacts if _vnext_row_references_source(artifact, source_id)]
+    related_open_loops = [loop for loop in open_loops if _vnext_row_references_source(loop, source_id)]
+    memory_ids = {str(memory["id"]) for memory in related_memories}
+    artifact_ids = {str(artifact["id"]) for artifact in related_artifacts}
+    open_loop_ids = {str(loop["id"]) for loop in related_open_loops}
+    related_events = [
+        event
+        for event in events
+        if _vnext_event_references(
+            event,
+            source_id=source_id,
+            memory_ids=memory_ids,
+            artifact_ids=artifact_ids,
+            open_loop_ids=open_loop_ids,
+        )
+    ]
+    trace_id = next((str(event.get("trace_id")) for event in related_events if event.get("trace_id")), None)
+    chunks = _vnext_source_chunks(store, source_id)
+    return {
+        "trace_id": trace_id or f"source:{source_id}",
+        "trace_kind": "capture_to_brief",
+        "source": source,
+        "chunks": chunks,
+        "candidate_memories": related_memories,
+        "artifacts": related_artifacts,
+        "open_loops": related_open_loops,
+        "events": related_events,
+        "summary": {
+            "source_id": source_id,
+            "chunk_count": len(chunks),
+            "candidate_memory_count": len(related_memories),
+            "artifact_count": len(related_artifacts),
+            "open_loop_count": len(related_open_loops),
+            "event_count": len(related_events),
+        },
+    }
+
+
+def _vnext_artifact_trace(
+    *,
+    artifact: dict[str, object],
+    sources: list[dict[str, object]],
+    quality_evals: list[dict[str, object]],
+    events: list[dict[str, object]],
+) -> dict[str, object]:
+    artifact_id = str(artifact["id"])
+    metadata = _vnext_metadata(artifact)
+    source_refs = _vnext_ref_values(metadata.get("source_refs")) + _vnext_ref_values(metadata.get("source_ids"))
+    related_sources = [
+        source
+        for source in sources
+        if str(source.get("id")) in source_refs or f"source:{source.get('id')}" in source_refs
+    ]
+    related_evals = [rating for rating in quality_evals if str(rating.get("artifact_id")) == artifact_id]
+    related_events = [
+        event
+        for event in events
+        if str(event.get("target_type") or "") == "artifact" and str(event.get("target_id") or "") == artifact_id
+    ]
+    return {
+        "trace_id": metadata.get("trace_id") or metadata.get("scheduler_run_id") or f"artifact:{artifact_id}",
+        "trace_kind": "artifact_review",
+        "artifact": artifact,
+        "sources": related_sources,
+        "quality_evals": related_evals,
+        "events": related_events,
+        "summary": {
+            "artifact_id": artifact_id,
+            "source_count": len(related_sources),
+            "quality_eval_count": len(related_evals),
+            "event_count": len(related_events),
+            "scheduler_run_id": metadata.get("scheduler_run_id"),
+            "agent_run_id": metadata.get("agent_run_id"),
+        },
+    }
 
 
 def _vnext_agent_identity(request: VNextAgentRequest) -> AgentIdentity | None:
@@ -1647,6 +1828,7 @@ def _vnext_workspace_payload(store: PostgresVNextStore) -> dict[str, object]:
     scheduler_status = {**scheduler_status, "daemon": daemon_status()}
     connector_health = VNextConnectorService(store).connector_health_all()
     dogfooding = VNextDogfoodingService(store).dashboard()
+    doctor = VNextDoctorService(store).run(ci=True)
     policy_telemetry = summarize_agent_policy_telemetry(
         agent_events=agent_events,
         artifacts=artifacts,
@@ -1659,6 +1841,17 @@ def _vnext_workspace_payload(store: PostgresVNextStore) -> dict[str, object]:
             project_dashboards.append(project_service.project_dashboard(project_id=str(project["id"])))
         except VNextProjectValidationError:
             continue
+    trace_items = [
+        _vnext_source_trace(
+            store=store,
+            source=source,
+            memories=memories,
+            artifacts=artifacts,
+            open_loops=open_loops,
+            events=recent_events,
+        )
+        for source in sources[:8]
+    ]
     return {
         "mode": "live",
         "summary": {
@@ -1682,6 +1875,12 @@ def _vnext_workspace_payload(store: PostgresVNextStore) -> dict[str, object]:
         "quality_evals": quality_evals,
         "connector_health": connector_health,
         "dogfooding": dogfooding,
+        "doctor": doctor,
+        "traceability": {
+            "items": trace_items,
+            "count": len(trace_items),
+            "order": [str(trace.get("trace_id")) for trace in trace_items],
+        },
         "projects": projects,
         "project_dashboards": project_dashboards,
         "open_loops": open_loops,
@@ -6330,6 +6529,22 @@ def get_vnext_dogfooding_dashboard(user_id: UUID) -> JSONResponse:
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
 
+@app.get("/v0/vnext/doctor")
+def get_vnext_doctor(user_id: UUID, ci: bool = True) -> JSONResponse:
+    settings = get_settings()
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = VNextDoctorService(PostgresVNextStore(conn)).run(ci=ci)
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.post("/v0/vnext/doctor/run")
+def run_vnext_doctor(request: VNextDoctorRunRequest) -> JSONResponse:
+    settings = get_settings()
+    with user_connection(settings.database_url, request.user_id) as conn:
+        payload = VNextDoctorService(PostgresVNextStore(conn)).run(fix_safe=request.fix_safe, ci=request.ci)
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
 @app.post("/v0/vnext/artifacts/{artifact_id}/insight-feedback")
 def record_vnext_artifact_insight_feedback(
     artifact_id: UUID,
@@ -6369,6 +6584,133 @@ def get_vnext_source(source_id: UUID, user_id: UUID) -> JSONResponse:
         status_code=200,
         content=jsonable_encoder(payload),
     )
+
+
+@app.post("/v0/vnext/sources/{source_id}/review")
+def review_vnext_source(source_id: UUID, request: VNextSourceReviewRequest) -> JSONResponse:
+    settings = get_settings()
+    action = request.action.strip().casefold()
+    if action not in {"review", "update", "assign_project", "archive"}:
+        return _vnext_public_error_response(status_code=400, detail="vNext source review action is invalid")
+
+    with user_connection(settings.database_url, request.user_id) as conn:
+        store = PostgresVNextStore(conn)
+        existing = store.get_source(str(source_id))
+        if existing is None:
+            return _vnext_public_error_response(status_code=404, detail="vNext source was not found")
+        if action == "archive":
+            archived = store.delete_source(source_id=str(source_id), actor_type="user")
+            append_event(
+                store,
+                event_type="source.archived",
+                actor_type="user",
+                target_type="source",
+                target_id=str(source_id),
+                payload={"action": action, "review_note": request.review_note},
+            )
+            trace = _vnext_source_trace(
+                store=store,
+                source=archived,
+                memories=store.list_memories(status=None),
+                artifacts=store.list_artifacts(limit=100),
+                open_loops=store.list_open_loops(status=None, limit=100),
+                events=store.list_events(limit=100),
+            )
+            return JSONResponse(status_code=200, content=jsonable_encoder({"source": archived, "archived": True, "trace": trace}))
+
+        if action == "assign_project" and request.project_id is None:
+            return _vnext_public_error_response(status_code=400, detail="project_id is required")
+
+        metadata = {
+            **_vnext_metadata(existing),
+            "review_status": "reviewed" if action == "review" else "updated",
+            "reviewed_at": datetime.now(UTC).isoformat(),
+            "review_note": request.review_note,
+            "updated_from": "vnext_workspace",
+        }
+        if request.project_id is not None:
+            metadata["project_id"] = request.project_id
+        patch: dict[str, object] = {"metadata_json": metadata}
+        if request.title is not None:
+            patch["title"] = request.title
+        if request.domain is not None:
+            patch["domain"] = request.domain
+        if request.sensitivity is not None:
+            patch["sensitivity"] = request.sensitivity
+        updated = store.update_source(source_id=str(source_id), patch=patch, actor_type="user")
+        if action == "assign_project":
+            store.create_edge(
+                {
+                    "from_type": "source",
+                    "from_id": str(source_id),
+                    "to_type": "project",
+                    "to_id": request.project_id,
+                    "edge_type": "belongs_to_project",
+                    "confidence": 1.0,
+                    "explanation": "Assigned from live /vnext source review.",
+                    "created_by": "user",
+                    "metadata_json": {"review_action": action},
+                },
+                actor_type="user",
+            )
+        append_event(
+            store,
+            event_type={
+                "review": "source.reviewed",
+                "update": "source.updated_from_workspace",
+                "assign_project": "source.assigned_project",
+            }[action],
+            actor_type="user",
+            target_type="source",
+            target_id=str(source_id),
+            payload={"action": action, "project_id": request.project_id, "review_note": request.review_note},
+        )
+        trace = _vnext_source_trace(
+            store=store,
+            source=updated,
+            memories=store.list_memories(status=None),
+            artifacts=store.list_artifacts(limit=100),
+            open_loops=store.list_open_loops(status=None, limit=100),
+            events=store.list_events(limit=100),
+        )
+
+    return JSONResponse(status_code=200, content=jsonable_encoder({"source": updated, "archived": False, "trace": trace}))
+
+
+@app.get("/v0/vnext/traces/sources/{source_id}")
+def get_vnext_source_trace(source_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+    with user_connection(settings.database_url, user_id) as conn:
+        store = PostgresVNextStore(conn)
+        source = store.get_source(str(source_id))
+        if source is None:
+            return _vnext_public_error_response(status_code=404, detail="vNext source was not found")
+        payload = _vnext_source_trace(
+            store=store,
+            source=source,
+            memories=store.list_memories(status=None),
+            artifacts=store.list_artifacts(limit=100),
+            open_loops=store.list_open_loops(status=None, limit=100),
+            events=store.list_events(limit=100),
+        )
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.get("/v0/vnext/traces/artifacts/{artifact_id}")
+def get_vnext_artifact_trace(artifact_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+    with user_connection(settings.database_url, user_id) as conn:
+        store = PostgresVNextStore(conn)
+        artifact = store.get_artifact(str(artifact_id))
+        if artifact is None:
+            return _vnext_public_error_response(status_code=404, detail="vNext artifact was not found")
+        payload = _vnext_artifact_trace(
+            artifact=artifact,
+            sources=store.list_sources(limit=100),
+            quality_evals=store.list_artifact_quality_ratings(artifact_id=str(artifact_id), limit=100),
+            events=store.list_events(limit=100),
+        )
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
 
 @app.delete("/v0/vnext/sources/{source_id}")

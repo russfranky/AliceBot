@@ -27,8 +27,10 @@ const EXPECTED_SURFACES = [
   "Agent Activity",
   "Schedules",
   "Timeline",
+  "Trace",
   "Graph",
   "Connectors",
+  "Doctor",
   "Settings",
 ];
 
@@ -92,14 +94,16 @@ describe("VNextPage", () => {
 
     expect(screen.getByText("Recent activity")).toBeInTheDocument();
     expect(screen.getByText("Source capture")).toBeInTheDocument();
-    expect(screen.getByText("Candidate memories")).toBeInTheDocument();
+    expect(screen.getAllByText("Candidate memories").length).toBeGreaterThan(0);
     expect(screen.getByText("Evidence-first answer")).toBeInTheDocument();
     expect(screen.getByText("Artifacts with review actions")).toBeInTheDocument();
     expect(screen.getByText("Belief review")).toBeInTheDocument();
     expect(screen.getByText("Agents and policy posture")).toBeInTheDocument();
     expect(screen.getByText("Governed scheduler")).toBeInTheDocument();
+    expect(screen.getByText("Capture-to-brief trace")).toBeInTheDocument();
     expect(screen.getByText("Connection graph")).toBeInTheDocument();
     expect(screen.getByText("Connector settings")).toBeInTheDocument();
+    expect(screen.getByText("Readiness checks")).toBeInTheDocument();
     expect(screen.getByText("Brain Charter")).toBeInTheDocument();
     expect(screen.getAllByText("Telegram capture").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Browser clipper").length).toBeGreaterThan(0);
@@ -135,6 +139,16 @@ describe("VNextPage", () => {
 
   it("updates review state, labels, project assignment, and open loops from Inbox actions", async () => {
     await renderVNextPage();
+
+    fireEvent.change(screen.getByLabelText("Selected source title"), {
+      target: { value: "Reviewed launch source" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save source update" }));
+    expect(screen.getAllByText("Demo source action applied: update.").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Reviewed launch source").length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Mark reviewed" }));
+    expect(screen.getAllByText("Demo source action applied: review.").length).toBeGreaterThan(0);
 
     fireEvent.change(screen.getByLabelText("Edited memory title"), {
       target: { value: "Confirmed launch owner needs explicit review." },
@@ -172,7 +186,7 @@ describe("VNextPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create open loop from selected memory" }));
     expect(screen.getAllByText("Demo open loop created.").length).toBeGreaterThan(0);
     expect(screen.getByText("Follow up with Sam about launch owner")).toBeInTheDocument();
-  });
+  }, 10000);
 
   it("refreshes Ask Alice output and generates reviewable artifacts", async () => {
     await renderVNextPage();
@@ -227,5 +241,14 @@ describe("VNextPage", () => {
     expect(screen.getAllByText("Demo Brain Charter settings saved.").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Browser clipper").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Default sensitivity: Private").length).toBeGreaterThan(0);
+  });
+
+  it("runs fixture doctor checks from the readiness panel", async () => {
+    await renderVNextPage();
+
+    fireEvent.click(screen.getByRole("button", { name: "Run doctor" }));
+
+    expect(screen.getAllByText("Demo doctor check completed.").length).toBeGreaterThan(0);
+    expect(screen.getByText("Doctor: pass")).toBeInTheDocument();
   });
 });

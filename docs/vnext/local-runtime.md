@@ -61,7 +61,7 @@ Useful options:
 
 The `/vnext` Schedules surface shows daemon posture, last due scan, next due workflow, currently running workflow, recent failures, last successful run per workflow, and run history. The Timeline surface remains backed by the append-only event log. Agent Activity includes policy blocks, filters, review-gated decisions, workflow triggers, memory proposals, and artifact generation telemetry.
 
-The `/vnext` Home and Connectors surfaces also show dogfooding and capture health: captures by connector, captures today/week, candidate memory creation, artifact ratings, useful-insight feedback, connector enabled/configured state, persisted settings, secret presence, cursors, dedupe, failures, and last sync posture.
+The `/vnext` Home, Inbox, Trace, Doctor, and Connectors surfaces also show dogfooding and capture health: captures by connector, captures today/week, candidate memory creation, source review/archive posture, capture-to-brief traceability, doctor readiness, artifact ratings, useful-insight feedback, connector enabled/configured state, persisted settings, secret presence, cursors, dedupe, failures, and last sync posture.
 
 The API exposes the same local runtime posture through:
 
@@ -76,6 +76,11 @@ The API exposes the same local runtime posture through:
 - `POST /v0/vnext/connectors/telegram/sync`
 - `POST /v0/vnext/connectors/local-folder/sync`
 - `GET /v0/vnext/dogfooding`
+- `GET /v0/vnext/doctor`
+- `POST /v0/vnext/doctor/run`
+- `POST /v0/vnext/sources/{source_id}/review`
+- `GET /v0/vnext/traces/sources/{source_id}`
+- `GET /v0/vnext/traces/artifacts/{artifact_id}`
 
 Scheduler workflow configuration can also carry `model_options` so due scans run model-backed workflows only when policy and routing allow them.
 
@@ -112,6 +117,7 @@ alicebot vnext smoke capture-to-brief
 alicebot vnext smoke connector-hardening
 alicebot vnext smoke secret-redaction
 alicebot vnext smoke dogfood-doctor
+alicebot vnext smoke operator-console
 ```
 
 It seeds a small local-runtime fixture, marks all six scheduler workflows due, runs the foreground daemon once, and checks that each workflow produces a reviewable artifact with scheduler metadata.
@@ -120,4 +126,4 @@ The model-backed smoke seeds a scheduled model-backed workflow and verifies that
 
 The live-capture connector smoke verifies allowlisted Telegram import, rejected Telegram chat isolation, local folder import with generated-folder ignore rules, browser clipper capture, review-only agent output ingestion, and connector health telemetry. The capture-to-brief smoke verifies that a fresh browser clip can enter retrieval, produce a reviewable Daily Brief, record a quality rating, and show up in dogfooding telemetry.
 
-The connector-hardening smoke verifies dedicated connector settings/state rows, Telegram cursor persistence, rejected-chat logging, local-folder generated-output ignores, restart dedupe, and health counters. The secret-redaction smoke verifies that Telegram and browser clipper secrets never appear in persisted source/event output. The dogfood-doctor smoke verifies migration readiness, default connector rows, scheduler posture, configured secret references, and blocking failure counts.
+The connector-hardening smoke verifies dedicated connector settings/state rows, Telegram cursor persistence, rejected-chat logging, local-folder generated-output ignores, restart dedupe, and health counters. The secret-redaction smoke verifies that Telegram and browser clipper secrets never appear in persisted source/event output. The dogfood-doctor smoke verifies migration readiness, default connector rows, scheduler posture, configured secret references, and blocking failure counts. The operator-console smoke verifies the live daily operation path across source review, memory review, artifact review/rating, source-backed open loops, scheduler run-now, connector health, doctor readiness, event logging, and capture-to-brief traceability.

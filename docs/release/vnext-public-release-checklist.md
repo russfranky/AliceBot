@@ -22,6 +22,7 @@ Use this checklist before cutting a vNext preview tag or public announcement. Do
 - [x] Connector secrets use references and local encrypted/env-backed providers without exposing raw values.
 - [x] Connector health and dogfooding capture metrics are visible in the UI.
 - [x] Local doctor checks report missing migrations, missing connector rows, secret reference problems, scheduler posture, and capture failures.
+- [x] `/vnext` exposes live source review/update/archive, source-backed open-loop creation, doctor/readiness checks, and capture-to-brief traces.
 - [x] Live local capture works for allowlisted Telegram, local folder/Obsidian notes, browser clips, and agent outputs.
 - [x] Connector payload ingestion preserves raw evidence, default domain/sensitivity, and cursor posture.
 - [x] Generated artifacts remain reviewable and are not auto-promoted to trusted memory.
@@ -42,6 +43,7 @@ Use this checklist before cutting a vNext preview tag or public announcement. Do
 - [x] Real Postgres connector-hardening smoke check.
 - [x] Real Postgres secret-redaction smoke check.
 - [x] Real Postgres dogfood-doctor smoke check.
+- [x] Real Postgres operator-console smoke check.
 
 ## Security and Privacy
 
@@ -72,6 +74,7 @@ Current evidence recorded on 2026-05-11:
 - Real Postgres connector-hardening smoke passed for settings rows, cursor persistence, rejected-chat logging, generated-folder ignores, restart dedupe, and health counters.
 - Real Postgres secret-redaction smoke passed for Telegram token absence, browser token absence, and redacted capture-token evidence.
 - Real Postgres dogfood-doctor smoke passed with zero blocking failures and zero warnings.
+- Real Postgres operator-console smoke passed for source review, memory review, artifact review/rating, source-backed open loops, scheduler run-now, connector health, doctor readiness, event logging, and capture-to-brief traceability.
 - `./.venv/bin/python -m pytest tests/unit -q`: `1125 passed`.
 - `./.venv/bin/python -m pytest tests/integration -q`: `370 passed`.
 - `pnpm --dir apps/web test`: `207 passed`.

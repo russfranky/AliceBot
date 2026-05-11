@@ -22,7 +22,7 @@ Alice vNext has three layers:
 - Agentic control plane: scoped agent identities, permission profiles, policy decisions, memory proposals, and Agent Activity audit surface.
 - Governed scheduler: disabled-by-default workflow controls, a local daemon runner, due scans, run history, trace IDs, failures, duplicate-run locks, and reviewable artifacts.
 - Connectors: allowlisted Telegram sync, local folder/Obsidian scan and watch, browser clipper capture endpoint, Hermes/OpenClaw-style agent output ingestion, dedicated settings/state rows, local encrypted secret references, retry/cursor hardening, plus deterministic PDF, DOCX, CSV, screenshot OCR, and voice transcript payload ingestion.
-- UI: live/fixture-backed `/vnext` workspace for review, Ask Alice, briefs, queue, projects, Agent Activity, Schedules, beliefs, graph, live connector configuration, connector health/defaults/bookmarklet guidance, dogfooding readiness telemetry, privacy settings, model comparison, and quality ratings.
+- UI: live/fixture-backed `/vnext` workspace for source review, source archive, capture-to-brief traces, Ask Alice, briefs, queue, projects, Agent Activity, Schedules, beliefs, graph, live connector configuration, connector health/defaults/bookmarklet guidance, dogfooding readiness telemetry, doctor/readiness checks, privacy settings, model comparison, and quality ratings.
 - Evals: synthetic corpus and baseline metrics for recall, temporal reasoning, contradictions, provenance, privacy, open loops, and prompt injection.
 
 ## Start Here
@@ -36,7 +36,7 @@ Alice vNext has three layers:
 7. Use [release checklist](../release/vnext-public-release-checklist.md) before publishing or tagging.
 8. Review [preview release notes](../release/v0.5.1-vnext-preview-release-notes.md) and [tag plan](../release/v0.5.1-vnext-preview-tag-plan.md).
 9. Review the [dogfood daily checklist](../runbooks/vnext-dogfood-daily-checklist.md) before daily local-alpha use.
-10. Review the [agentic control plane CTO summary](../vnext-agentic-control-plane-cto-summary.md), [local runtime CTO summary](../vnext-local-runtime-cto-summary.md), [model-backed intelligence CTO summary](../vnext-model-backed-intelligence-cto-summary.md), [live capture connectors CTO summary](../vnext-live-capture-connectors-cto-summary.md), and [dogfood hardening CTO summary](../vnext-dogfood-hardening-cto-summary.md) for sprint closeouts.
+10. Review the [agentic control plane CTO summary](../vnext-agentic-control-plane-cto-summary.md), [local runtime CTO summary](../vnext-local-runtime-cto-summary.md), [model-backed intelligence CTO summary](../vnext-model-backed-intelligence-cto-summary.md), [live capture connectors CTO summary](../vnext-live-capture-connectors-cto-summary.md), [dogfood hardening CTO summary](../vnext-dogfood-hardening-cto-summary.md), and [live-backed operator console CTO summary](../vnext-live-backed-operator-console-cto-summary.md) for sprint closeouts.
 
 ## Launch Boundary
 

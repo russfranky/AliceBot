@@ -205,6 +205,8 @@ export type VNextRow = JsonObject & {
 export type VNextSourceRecord = VNextRow & {
   source_type: string;
   captured_at: string;
+  connector_name?: string | null;
+  external_id?: string | null;
   metadata_json?: JsonObject;
 };
 
@@ -501,6 +503,56 @@ export type VNextDogfoodingDashboard = {
   };
 };
 
+export type VNextDoctorCheckRecord = {
+  name: string;
+  status: string;
+  severity: string;
+  message: string;
+  recommended_fix?: string | null;
+  details?: JsonObject;
+};
+
+export type VNextDoctorPayload = {
+  status: "pass" | "warn" | "fail" | string;
+  fix_safe_applied: boolean;
+  ci_mode: boolean;
+  blocking_failure_count: number;
+  warning_count: number;
+  checks: VNextDoctorCheckRecord[];
+  recommended_fixes: Array<string | null>;
+  migration_status: JsonObject;
+  connector_health: { items: VNextConnectorHealthRecord[]; count: number; order: string[] };
+};
+
+export type VNextSourceTracePayload = {
+  trace_id: string;
+  trace_kind: string;
+  source: VNextSourceRecord;
+  chunks: JsonObject[];
+  candidate_memories: VNextMemoryRecord[];
+  artifacts: VNextArtifactRecord[];
+  open_loops: VNextOpenLoopRecord[];
+  events: VNextEventRecord[];
+  summary: {
+    source_id: string;
+    chunk_count: number;
+    candidate_memory_count: number;
+    artifact_count: number;
+    open_loop_count: number;
+    event_count: number;
+  };
+};
+
+export type VNextArtifactTracePayload = {
+  trace_id: string;
+  trace_kind: string;
+  artifact: VNextArtifactRecord;
+  sources: VNextSourceRecord[];
+  quality_evals: VNextArtifactQualityEvalRecord[];
+  events: VNextEventRecord[];
+  summary: JsonObject;
+};
+
 export type VNextTelemetryCounter = {
   count: number;
   [key: string]: unknown;
@@ -549,6 +601,8 @@ export type VNextWorkspacePayload = {
   agent_activity?: VNextAgentActivity;
   connector_health?: { items: VNextConnectorHealthRecord[]; count: number; order: string[] };
   dogfooding?: VNextDogfoodingDashboard;
+  doctor?: VNextDoctorPayload;
+  traceability?: { items: VNextSourceTracePayload[]; count: number; order: string[] };
   policy_telemetry?: VNextPolicyTelemetrySummary;
   scheduler?: VNextSchedulerStatus;
   brain_charter: VNextBrainCharterRecord | null;
@@ -560,6 +614,16 @@ export type VNextSourceCreatePayload = {
   title?: string | null;
   domain: string;
   sensitivity: string;
+};
+
+export type VNextSourceReviewPayload = {
+  user_id: string;
+  action: "review" | "update" | "assign_project" | "archive";
+  title?: string;
+  domain?: string;
+  sensitivity?: string;
+  project_id?: string;
+  review_note?: string;
 };
 
 export type VNextMemoryReviewPayload = {
@@ -4076,6 +4140,39 @@ export function createVNextSource(apiBaseUrl: string, payload: VNextSourceCreate
   });
 }
 
+export function reviewVNextSource(
+  apiBaseUrl: string,
+  sourceId: string,
+  payload: VNextSourceReviewPayload,
+) {
+  return requestJson<{ source: VNextSourceRecord; archived: boolean; trace: VNextSourceTracePayload }>(
+    apiBaseUrl,
+    `/v0/vnext/sources/${sourceId}/review`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export function getVNextSourceTrace(apiBaseUrl: string, sourceId: string, userId: string) {
+  return requestJson<VNextSourceTracePayload>(
+    apiBaseUrl,
+    `/v0/vnext/traces/sources/${sourceId}`,
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function getVNextArtifactTrace(apiBaseUrl: string, artifactId: string, userId: string) {
+  return requestJson<VNextArtifactTracePayload>(
+    apiBaseUrl,
+    `/v0/vnext/traces/artifacts/${artifactId}`,
+    undefined,
+    { user_id: userId },
+  );
+}
+
 export function createVNextContextPack(
   apiBaseUrl: string,
   payload: {
@@ -4272,6 +4369,16 @@ export function getVNextDogfoodingDashboard(apiBaseUrl: string, userId: string) 
     undefined,
     { user_id: userId },
   );
+}
+
+export function runVNextDoctor(
+  apiBaseUrl: string,
+  payload: { user_id: string; fix_safe?: boolean; ci?: boolean },
+) {
+  return requestJson<VNextDoctorPayload>(apiBaseUrl, "/v0/vnext/doctor/run", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export function recordVNextArtifactInsightFeedback(

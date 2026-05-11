@@ -143,7 +143,10 @@ alicebot vnext smoke capture-to-brief
 alicebot vnext smoke connector-hardening
 alicebot vnext smoke secret-redaction
 alicebot vnext smoke dogfood-doctor
+alicebot vnext smoke operator-console
 ```
+
+The operator-console smoke verifies the live `/vnext` loop end to end: source review persists, memory/artifact/open-loop actions persist, scheduler run-now creates an artifact, connector health and doctor readiness are visible, and capture-to-brief traceability exists.
 
 ## Connector Payload Demo
 

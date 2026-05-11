@@ -1809,6 +1809,196 @@ def _run_vnext_smoke_capture_to_brief(ctx: CLIContext, _args: argparse.Namespace
     return _json_dumps(payload)
 
 
+def _run_vnext_smoke_operator_console(ctx: CLIContext, _args: argparse.Namespace) -> str:
+    smoke_id = str(uuid4())
+    browser_capture_token = f"operator-console-smoke-{smoke_id}"
+    secrets = InMemorySecretProvider(
+        {
+            "browser.capture_token.operator_console": browser_capture_token,
+            "telegram.bot_token.default": "operator-console-smoke-telegram",
+        }
+    )
+    with _vnext_store_context(ctx) as store:
+        connector_service = VNextConnectorService(store, secret_provider=secrets)
+        connector_service.ensure_default_settings()
+        connector_service.update_config("telegram", enabled=False, secret_ref="telegram.bot_token.default")
+        connector_service.update_config("browser_clipper", enabled=True, secret_ref="browser.capture_token.operator_console")
+        capture = connector_service.capture_browser_clip(
+            {
+                "url": f"https://example.test/operator-console/{smoke_id}",
+                "title": "Operator console smoke source",
+                "selected_text": f"Fact: operator console smoke {smoke_id} should be traceable from capture to brief.",
+                "user_note": "TODO: review the operator console trace.",
+                "capture_token": browser_capture_token,
+            },
+            default_domain="project",
+            default_sensitivity="private",
+        )
+        source_id = capture.source_ids[0] if capture.source_ids else None
+        if source_id is None:
+            raise RuntimeError("operator console smoke failed to capture source")
+
+        source = store.get_source(source_id)
+        source_metadata = source.get("metadata_json") if isinstance(source, dict) and isinstance(source.get("metadata_json"), dict) else {}
+        reviewed_source = store.update_source(
+            source_id=source_id,
+            patch={
+                "metadata_json": {
+                    **source_metadata,
+                    "review_status": "reviewed",
+                    "reviewed_at": datetime.now(UTC).isoformat(),
+                    "review_note": "Reviewed by operator-console smoke.",
+                }
+            },
+            actor_type="user",
+        )
+        append_event(
+            store,
+            event_type="source.reviewed",
+            actor_type="user",
+            target_type="source",
+            target_id=source_id,
+            payload={"smoke": "operator-console"},
+        )
+
+        project = store.create_project(
+            {
+                "name": f"Operator console smoke {smoke_id[:8]}",
+                "slug": f"operator-console-{smoke_id[:8]}",
+                "status": "active",
+                "current_state": "Smoke project created for operator console traceability.",
+                "domain": "project",
+                "sensitivity": "private",
+                "metadata_json": {"smoke": "operator-console"},
+            },
+            actor_type="user",
+        )
+        candidate_memory = next(
+            (
+                memory
+                for memory in store.list_memories(status="candidate")
+                if isinstance(memory.get("metadata_json"), dict)
+                and str(memory["metadata_json"].get("source_id")) == source_id
+            ),
+            None,
+        )
+        if candidate_memory is None:
+            raise RuntimeError("operator console smoke did not create a candidate memory")
+        memory_metadata = candidate_memory.get("metadata_json") if isinstance(candidate_memory.get("metadata_json"), dict) else {}
+        reviewed_memory = store.update_memory(
+            memory_id=str(candidate_memory["id"]),
+            patch={
+                "status": "active",
+                "metadata_json": {**memory_metadata, "project_id": str(project["id"]), "reviewed_by": "operator-console-smoke"},
+                "last_reviewed_at": datetime.now(UTC).isoformat(),
+            },
+            actor_type="user",
+        )
+        store.append_revision(
+            {
+                "memory_id": str(reviewed_memory["id"]),
+                "memory_key": str(reviewed_memory["memory_key"]),
+                "previous_value": candidate_memory.get("value"),
+                "new_value": reviewed_memory.get("value"),
+                "revision_type": "promoted",
+                "action": "operator_console_smoke_memory_review",
+                "text_before": candidate_memory.get("canonical_text"),
+                "text_after": reviewed_memory.get("canonical_text"),
+                "reason": "Operator console smoke accepted candidate memory.",
+                "actor_type": "user",
+                "metadata_json": {"smoke": "operator-console", "source_id": source_id},
+            },
+            actor_type="user",
+        )
+        loop = store.create_open_loop(
+            {
+                "title": f"Review operator console smoke {smoke_id[:8]}",
+                "description": "Source-backed open loop from operator console smoke.",
+                "priority": "normal",
+                "source_id": source_id,
+                "memory_id": str(reviewed_memory["id"]),
+                "project_id": str(project["id"]),
+                "domain": "project",
+                "sensitivity": "private",
+                "metadata_json": {"smoke": "operator-console"},
+            },
+            actor_type="user",
+        )
+        artifact = VNextBrainService(store).generate_daily_brief(
+            BrainArtifactRequest(
+                domains=("project",),
+                sensitivity_allowed=("private", "unknown"),
+                generated_for="2026-05-12",
+                discover_open_loops=True,
+                create_candidate_memories=False,
+            )
+        )
+        reviewed_artifact = VNextQueueService(store).review_artifact(artifact_id=str(artifact["id"]), action="review")
+        rating = store.create_artifact_quality_rating(
+            {
+                "artifact_id": str(artifact["id"]),
+                "reviewer_id": "operator-console-smoke",
+                "usefulness": 5,
+                "accuracy": 5,
+                "source_grounding": 5,
+                "novel_connections": 3,
+                "actionability": 4,
+                "hallucination_risk": 1,
+                "verbosity": "right_sized",
+                "metadata_json": {"smoke": "operator-console", "source_id": source_id},
+            },
+            actor_type="user",
+        )
+        scheduler = VNextSchedulerService(store)
+        scheduler.configure_workflow(
+            workflow_type="daily_brief",
+            enabled=True,
+            paused=False,
+            schedule_json=default_schedule("daily_brief"),
+            timezone="UTC",
+            actor_type="user",
+        )
+        scheduled = scheduler.run_now(
+            SchedulerRunRequest(
+                workflow_type="daily_brief",
+                domains=("project",),
+                sensitivity_allowed=("private", "unknown"),
+                generated_for="2026-05-12",
+                triggered_by="user",
+                options={"generation_mode": "deterministic"},
+            )
+        )
+        pack = VNextRetrievalService(store).compile_context_pack(
+            VNextRetrievalRequest(query=smoke_id, domains=("project",), sensitivity_allowed=("private", "unknown"))
+        )
+        health = connector_service.connector_health_all()
+        doctor = VNextDoctorService(store, secret_provider=secrets).run(fix_safe=True, ci=True)
+        events = store.list_events(limit=100)
+
+    health_items = {str(item["connector_name"]): item for item in health.get("items", []) if isinstance(item, dict)}
+    pack_source_ids = [str(source.get("id")) for source in pack.get("sources", []) if isinstance(source, dict)]
+    artifact_refs = artifact.get("metadata_json", {}).get("source_refs") if isinstance(artifact.get("metadata_json"), dict) else []
+    serialized_refs = _json_dumps(artifact_refs)
+    gates = {
+        "source_review_action_persisted": isinstance(reviewed_source.get("metadata_json"), dict)
+        and reviewed_source["metadata_json"].get("review_status") == "reviewed",
+        "memory_review_action_persisted": reviewed_memory.get("status") == "active",
+        "artifact_review_and_rating_persisted": reviewed_artifact.get("status") == "reviewed"
+        and str(rating.get("artifact_id")) == str(artifact["id"]),
+        "open_loop_created_from_source": str(loop.get("source_id")) == source_id and loop.get("status") == "open",
+        "scheduler_run_now_created_artifact": scheduled.get("artifact") is not None
+        and scheduled.get("run", {}).get("status") == "succeeded",
+        "connector_health_visible": "browser_clipper" in health_items,
+        "doctor_readiness_available": doctor.get("status") in {"pass", "warn"} and doctor.get("blocking_failure_count") == 0,
+        "capture_to_brief_trace_exists": source_id in pack_source_ids or source_id in serialized_refs,
+        "event_log_records_actions": any(event.get("event_type") == "source.reviewed" for event in events),
+    }
+    payload = {"status": "passed" if all(gates.values()) else "failed", "smoke": "operator-console", "gates": gates}
+    if payload["status"] != "passed":
+        raise RuntimeError(_json_dumps(payload))
+    return _json_dumps(payload)
+
+
 def _run_vnext_smoke_connector_hardening(ctx: CLIContext, _args: argparse.Namespace) -> str:
     smoke_id = str(uuid4())
     telegram_update_id = int(time.time() * 1000)
@@ -3633,6 +3823,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run vNext dogfood doctor smoke.",
     )
     vnext_smoke_dogfood_doctor_parser.set_defaults(handler=_run_vnext_smoke_dogfood_doctor)
+    vnext_smoke_operator_console_parser = vnext_smoke_subparsers.add_parser(
+        "operator-console",
+        help="Run the live-backed /vnext operator console smoke.",
+    )
+    vnext_smoke_operator_console_parser.set_defaults(handler=_run_vnext_smoke_operator_console)
 
     mutations_parser = subparsers.add_parser("mutations", help="Generate, inspect, and apply memory operations.")
     mutations_subparsers = mutations_parser.add_subparsers(dest="mutations_command", required=True)

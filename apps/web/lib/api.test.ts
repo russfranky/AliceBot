@@ -38,9 +38,11 @@ import {
   getVNextBrainCharter,
   getVNextConnectorsHealth,
   getVNextDogfoodingDashboard,
+  getVNextArtifactTrace,
   getVNextPolicyTelemetry,
   getVNextQualityEvals,
   getVNextSchedulerFailures,
+  getVNextSourceTrace,
   getVNextWorkspace,
   getThreadDetail,
   getThreadEvents,
@@ -87,6 +89,8 @@ import {
   reviewVNextArtifact,
   reviewVNextMemory,
   reviewVNextOpenLoop,
+  reviewVNextSource,
+  runVNextDoctor,
   runVNextSchedulerDue,
   runVNextSchedulerWorkflowNow,
   shouldExpectThreadExecutionReview,
@@ -3793,6 +3797,54 @@ describe("api helpers", () => {
       useful_insight: "yes",
       surfaced_missed: "no",
       comments: "Grounded in captured evidence.",
+    });
+  });
+
+  it("uses vNext source review, trace, and doctor endpoints", async () => {
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+
+    await reviewVNextSource("https://api.example.com", "source-1", {
+      user_id: "user-1",
+      action: "assign_project",
+      title: "Reviewed source",
+      domain: "project",
+      sensitivity: "private",
+      project_id: "project-1",
+      review_note: "Reviewed in operator console.",
+    });
+    await getVNextSourceTrace("https://api.example.com", "source-1", "user-1");
+    await getVNextArtifactTrace("https://api.example.com", "artifact-1", "user-1");
+    await runVNextDoctor("https://api.example.com", {
+      user_id: "user-1",
+      fix_safe: true,
+      ci: true,
+    });
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "https://api.example.com/v0/vnext/sources/source-1/review",
+      "https://api.example.com/v0/vnext/traces/sources/source-1?user_id=user-1",
+      "https://api.example.com/v0/vnext/traces/artifacts/artifact-1?user_id=user-1",
+      "https://api.example.com/v0/vnext/doctor/run",
+    ]);
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      user_id: "user-1",
+      action: "assign_project",
+      title: "Reviewed source",
+      domain: "project",
+      sensitivity: "private",
+      project_id: "project-1",
+      review_note: "Reviewed in operator console.",
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))).toEqual({
+      user_id: "user-1",
+      fix_safe: true,
+      ci: true,
     });
   });
 });

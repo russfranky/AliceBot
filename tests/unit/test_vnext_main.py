@@ -50,6 +50,11 @@ class FakeVNextStore:
     def list_sources(self, **kwargs) -> list[dict[str, object]]:
         return list(self.sources.values())[: kwargs.get("limit", 20)]
 
+    def update_source(self, *, source_id: str, patch: dict[str, object], **_kwargs) -> dict[str, object]:
+        source = self.sources[source_id]
+        source.update(patch)
+        return source
+
     def delete_source(self, *, source_id: str, **_kwargs) -> dict[str, object]:
         source = self.sources[source_id]
         source["deleted_at"] = "now"
@@ -59,6 +64,9 @@ class FakeVNextStore:
         row = {**chunk, "id": f"chunk-{len(self.chunks) + 1}"}
         self.chunks.append(row)
         return row
+
+    def list_source_chunks(self, source_id: str) -> list[dict[str, object]]:
+        return [chunk for chunk in self.chunks if chunk.get("source_id") == source_id]
 
     def create_memory(self, memory: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**memory, "id": f"memory-{len(self.memories) + 1}"}
@@ -352,6 +360,48 @@ class FakeVNextStore:
     def list_scheduler_runs(self, **_kwargs) -> list[dict[str, object]]:
         return []
 
+    def connector_storage_status(self) -> dict[str, object]:
+        return {
+            "connector_settings_exists": True,
+            "connector_state_exists": True,
+            "artifact_quality_ratings_exists": True,
+            "scheduler_workflows_exists": True,
+            "scheduler_runs_exists": True,
+            "migration_revision": "test",
+        }
+
+    def list_connector_settings(self) -> list[dict[str, object]]:
+        return [
+            {
+                "connector_name": name,
+                "enabled": False,
+                "configured": True,
+                "default_domain": "project",
+                "default_sensitivity": "private",
+                "sync_mode": "manual",
+                "poll_interval_seconds": None,
+                "secret_ref": None,
+                "validation_errors_json": [],
+                "metadata_json": {"config_json": {}},
+            }
+            for name in ("telegram", "local_folder", "browser_clipper", "agent_output")
+        ]
+
+    def list_connector_states(self) -> list[dict[str, object]]:
+        return [
+            {
+                "connector_name": name,
+                "cursor_type": "sync_cursor",
+                "cursor_value": None,
+                "state_json": {},
+                "items_seen": 0,
+                "items_captured": 0,
+                "items_deduped": 0,
+                "items_failed": 0,
+            }
+            for name in ("telegram", "local_folder", "browser_clipper", "agent_output")
+        ]
+
 
 def _install_fake_vnext_store(monkeypatch, store: FakeVNextStore) -> None:
     @contextmanager
@@ -451,6 +501,84 @@ def test_delete_vnext_source_endpoint_soft_deletes_source(monkeypatch) -> None:
     assert response.status_code == 200
     assert payload["id"] == source_id
     assert payload["deleted_at"] == "now"
+
+
+def test_vnext_source_review_trace_and_doctor_endpoints(monkeypatch) -> None:
+    store = FakeVNextStore(None)
+    source_id = str(uuid4())
+    artifact_id = str(uuid4())
+    store.sources[source_id] = {
+        "id": source_id,
+        "source_type": "manual_text",
+        "title": "Operator console source",
+        "content_hash": "sha256:source",
+        "captured_at": "2026-05-12T00:00:00Z",
+        "domain": "project",
+        "sensitivity": "private",
+        "metadata_json": {"raw_text": "Fact: source review persists."},
+    }
+    store.chunks.append({"id": "chunk-1", "source_id": source_id, "chunk_index": 0, "text": "Fact: source review persists."})
+    store.memories.append(
+        {
+            "id": "memory-1",
+            "memory_key": "memory.operator.source",
+            "memory_type": "semantic",
+            "canonical_text": "Source review persists.",
+            "status": "candidate",
+            "domain": "project",
+            "sensitivity": "private",
+            "metadata_json": {"source_id": source_id},
+        }
+    )
+    store.artifacts[artifact_id] = {
+        "id": artifact_id,
+        "artifact_type": "daily_brief",
+        "title": "Daily",
+        "content_markdown": "# Daily",
+        "status": "needs_review",
+        "domain": "project",
+        "sensitivity": "private",
+        "metadata_json": {"source_refs": [f"source:{source_id}"]},
+    }
+    store.open_loops.append({"id": "loop-1", "title": "Review source", "source_id": source_id, "status": "open"})
+    _install_fake_vnext_store(monkeypatch, store)
+    user_id = uuid4()
+
+    review_response = main_module.review_vnext_source(
+        main_module.UUID(source_id),
+        main_module.VNextSourceReviewRequest(
+            user_id=user_id,
+            action="assign_project",
+            title="Reviewed source",
+            domain="project",
+            sensitivity="private",
+            project_id="project-1",
+            review_note="Reviewed from test.",
+        ),
+    )
+    trace_response = main_module.get_vnext_source_trace(main_module.UUID(source_id), user_id=user_id)
+    artifact_trace_response = main_module.get_vnext_artifact_trace(main_module.UUID(artifact_id), user_id=user_id)
+    doctor_response = main_module.run_vnext_doctor(
+        main_module.VNextDoctorRunRequest(user_id=user_id, fix_safe=False, ci=True)
+    )
+
+    review_payload = json.loads(review_response.body)
+    trace_payload = json.loads(trace_response.body)
+    artifact_trace_payload = json.loads(artifact_trace_response.body)
+    doctor_payload = json.loads(doctor_response.body)
+
+    assert review_response.status_code == 200
+    assert review_payload["source"]["title"] == "Reviewed source"
+    assert review_payload["source"]["metadata_json"]["project_id"] == "project-1"
+    assert review_payload["trace"]["summary"]["candidate_memory_count"] == 1
+    assert trace_response.status_code == 200
+    assert trace_payload["summary"]["chunk_count"] == 1
+    assert trace_payload["summary"]["artifact_count"] == 1
+    assert artifact_trace_response.status_code == 200
+    assert artifact_trace_payload["summary"]["source_count"] == 1
+    assert doctor_response.status_code == 200
+    assert doctor_payload["blocking_failure_count"] == 0
+    assert any(check["name"] == "migrations" for check in doctor_payload["checks"])
 
 
 def test_create_vnext_context_pack_endpoint_returns_structured_pack(monkeypatch) -> None:
