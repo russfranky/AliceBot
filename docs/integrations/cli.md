@@ -42,18 +42,23 @@ alicebot vnext scheduler status
 alicebot vnext scheduler daemon start --foreground
 alicebot vnext scheduler daemon status
 alicebot vnext scheduler daemon stop
-alicebot vnext scheduler run-now daily_brief --agent-id hermes --permission-profile trusted_local_agent --project-scope Alice --domain project
+alicebot vnext scheduler run-now daily_brief --agent-id hermes --permission-profile trusted_local_agent --project-scope Alice --domain project --generation-mode model_backed --model-route-mode local_only
 alicebot vnext scheduler run-due --agent-id hermes --permission-profile trusted_local_agent
 alicebot vnext scheduler runs
 alicebot vnext scheduler failures
 alicebot vnext scheduler pause --agent-id hermes --permission-profile trusted_local_agent
 alicebot vnext scheduler resume --agent-id hermes --permission-profile trusted_local_agent
+alicebot vnext quality rate <artifact_id> --usefulness 5 --accuracy 5 --source-grounding 5 --novel-connections 4 --actionability 4 --hallucination-risk 1 --verbosity right_sized --comments "Grounded and useful."
+alicebot vnext quality export --limit 50
 alicebot vnext agents policy-telemetry
 alicebot vnext smoke agentic-scheduler
 alicebot vnext smoke local-runtime
+alicebot vnext smoke model-backed
 ```
 
 The vNext agent arguments are `--agent-id`, `--agent-type`, `--agent-run-id`, `--agent-task-id`, `--project-scope`, and `--permission-profile`. Agent-originated scheduler and memory-proposal commands are policy checked, logged, and kept review-only where they create memory or generated artifacts.
+
+Model-backed generation arguments are available on daily brief, weekly synthesis, connection report, contradiction report, project update candidate, and scheduler run-now commands: `--generation-mode`, `--model-route-mode`, `--model-provider`, `--model`, `--model-temperature`, and `--allow-cloud-private`. Private and highly sensitive scopes remain local-only or disabled unless explicitly configured.
 
 ## Temporal History Commands
 
@@ -74,7 +79,7 @@ The vNext agent arguments are `--agent-id`, `--agent-type`, `--agent-run-id`, `-
 - output format is deterministic for stable automated validation
 - provenance snippets remain visible in recall/resume responses
 - correction flow updates future recall/resume results
-- vNext scheduler smoke output is JSON and fails nonzero if any agent/scheduler/local-runtime gate fails
+- vNext scheduler and model-backed smoke output is JSON and fails nonzero if any agent/scheduler/local-runtime/model-routing gate fails
 
 See tests:
 

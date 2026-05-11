@@ -252,6 +252,35 @@ def test_scheduler_run_due_executes_due_enabled_workflows_and_advances_next_run(
     assert "scheduler.due_scan" in [event["event_type"] for event in store.events]
 
 
+def test_scheduler_due_scan_can_run_model_backed_workflow_from_metadata_options() -> None:
+    store = InMemorySchedulerStore()
+    service = VNextSchedulerService(store)
+    service.configure_workflow(
+        workflow_type="daily_brief",
+        enabled=True,
+        schedule_json={"kind": "daily", "time_of_day": "08:00", "days_of_week": ["monday"]},
+        timezone="UTC",
+        metadata_json={
+            "model_options": {
+                "generation_mode": "model_backed",
+                "model_route_mode": "local_only",
+                "model_provider": "deterministic_local",
+            }
+        },
+    )
+    store.workflows["daily_brief"]["next_run_at"] = "2026-05-11T08:00:00+00:00"
+
+    result = service.run_due_workflows(now=datetime(2026, 5, 11, 8, 5, tzinfo=UTC))
+
+    artifact = result["runs"][0]["artifact"]
+    assert result["due_count"] == 1
+    assert artifact["status"] == "needs_review"
+    assert artifact["metadata_json"]["generation_mode"] == "model_backed"
+    assert artifact["metadata_json"]["model_routing"]["route_mode"] == "local_only"
+    assert artifact["model_info_json"]["provider"] == "deterministic_local"
+    assert "## Source References" in artifact["content_markdown"]
+
+
 def test_scheduler_run_due_skips_workflow_when_lock_is_not_acquired() -> None:
     store = InMemorySchedulerStore()
     store.locked_workflows.add("daily_brief")
@@ -315,6 +344,44 @@ def test_remaining_scheduler_workflows_create_reviewable_artifacts(workflow_type
     assert metadata["trace_id"] == result["run"]["trace_id"]
     assert "source_refs" in metadata
     assert metadata["review_status"] == "needs_review"
+
+
+@pytest.mark.parametrize("workflow_type", ["connection_report", "contradiction_report", "open_loop_review", "project_update_scan"])
+def test_remaining_scheduler_workflows_support_model_backed_mode(workflow_type: str) -> None:
+    store = InMemorySchedulerStore()
+    store.open_loops.append(
+        {
+            "id": "loop-1",
+            "title": "Review scheduler output",
+            "status": "open",
+            "description": "Confirm model-backed scheduled workflows are review-only.",
+            "source_id": "source-1",
+            "domain": "project",
+            "sensitivity": "private",
+        }
+    )
+    service = VNextSchedulerService(store)
+
+    result = service.run_now(
+        SchedulerRunRequest(
+            workflow_type=workflow_type,
+            domains=("project",),
+            sensitivity_allowed=("public", "private"),
+            generated_for="2026-05-11",
+            options={
+                "generation_mode": "model_backed",
+                "model_route_mode": "local_only",
+                "model_provider": "deterministic_local",
+            },
+        )
+    )
+
+    artifact = result["artifact"]
+    assert result["run"]["status"] == "succeeded"
+    assert artifact["status"] == "needs_review"
+    assert artifact["metadata_json"]["generation_mode"] == "model_backed"
+    assert artifact["model_info_json"]["provider"] == "deterministic_local"
+    assert "## Facts" in artifact["content_markdown"]
 
 
 def test_scheduler_pause_clears_stale_next_run() -> None:

@@ -221,6 +221,7 @@ from alicebot_api.vnext_evals import (
 )
 from alicebot_api.vnext_projects import ProjectAutomationRequest, VNextProjectService, VNextProjectValidationError
 from alicebot_api.vnext_queue import QueueTaskRequest, VNextQueueService, VNextQueueValidationError
+from alicebot_api.vnext_repositories import JsonObject
 from alicebot_api.vnext_retrieval import VNextRetrievalRequest, VNextRetrievalService, VNextRetrievalValidationError
 from alicebot_api.vnext_scheduler import SchedulerRunRequest, VNextSchedulerService, VNextSchedulerValidationError, WORKFLOW_TYPES, default_schedule
 from alicebot_api.vnext_scheduler_runtime import (
@@ -301,6 +302,29 @@ def _add_vnext_agent_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--agent-task-id", default=None, help="Agent task id.")
     parser.add_argument("--project-scope", action="append", default=[], help="Allowed project scope. Repeatable.")
     parser.add_argument("--permission-profile", default="read_only_agent", help="Agent permission profile.")
+
+
+def _add_model_generation_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--generation-mode",
+        choices=("deterministic", "model_backed"),
+        default="deterministic",
+        help="Generation mode for reviewable vNext artifacts.",
+    )
+    parser.add_argument(
+        "--model-route-mode",
+        choices=("local_only", "cloud_allowed", "cloud_requires_approval", "model_disabled"),
+        default=None,
+        help="Model routing policy mode for model-backed generation.",
+    )
+    parser.add_argument("--model-provider", default=None, help="Optional model provider id.")
+    parser.add_argument("--model", default=None, help="Optional model id.")
+    parser.add_argument("--model-temperature", type=float, default=0.2, help="Model temperature for model-backed generation.")
+    parser.add_argument(
+        "--allow-cloud-private",
+        action="store_true",
+        help="Allow explicit cloud routing for private/restricted scopes.",
+    )
 
 
 def _add_task_brief_arguments(parser: argparse.ArgumentParser) -> None:
@@ -670,7 +694,30 @@ def _brain_artifact_request_from_args(args: argparse.Namespace) -> BrainArtifact
         artifact_limit=args.artifact_limit,
         discover_open_loops=not args.no_discover_open_loops,
         create_candidate_memories=not args.no_candidate_memories,
+        **_model_generation_kwargs_from_args(args),
     )
+
+
+def _model_generation_kwargs_from_args(args: argparse.Namespace) -> JsonObject:
+    return {
+        "generation_mode": getattr(args, "generation_mode", "deterministic"),
+        "model_route_mode": getattr(args, "model_route_mode", None),
+        "model_provider": getattr(args, "model_provider", None),
+        "model": getattr(args, "model", None),
+        "model_temperature": getattr(args, "model_temperature", 0.2),
+        "allow_cloud_private": getattr(args, "allow_cloud_private", False),
+    }
+
+
+def _model_generation_options_from_args(args: argparse.Namespace) -> JsonObject:
+    return {
+        "generation_mode": getattr(args, "generation_mode", "deterministic"),
+        "model_route_mode": getattr(args, "model_route_mode", None),
+        "model_provider": getattr(args, "model_provider", None),
+        "model": getattr(args, "model", None),
+        "model_temperature": getattr(args, "model_temperature", 0.2),
+        "allow_cloud_private": getattr(args, "allow_cloud_private", False),
+    }
 
 
 def _run_daily_brief(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -805,6 +852,7 @@ def _run_vnext_scheduler_run_now(ctx: CLIContext, args: argparse.Namespace) -> s
                     triggered_by=actor_type,
                     agent_identity=identity,
                     policy_decision=decision,
+                    options=_model_generation_options_from_args(args),
                 )
             )
     if blocked_decision is not None:
@@ -1266,6 +1314,76 @@ def _run_vnext_smoke_local_runtime(ctx: CLIContext, _args: argparse.Namespace) -
     return _json_dumps(payload)
 
 
+def _run_vnext_smoke_model_backed(ctx: CLIContext, _args: argparse.Namespace) -> str:
+    smoke_id = str(uuid4())
+    due_at = "2000-01-01T00:00:00+00:00"
+    with _vnext_store_context(ctx) as store:
+        service = VNextSchedulerService(store)
+        service.ensure_default_workflows()
+        _seed_local_runtime_smoke_inputs(store, smoke_id)
+        store.update_scheduler_workflow(
+            workflow_type="daily_brief",
+            patch={
+                "enabled": True,
+                "paused": False,
+                "schedule_json": default_schedule("daily_brief"),
+                "timezone": "UTC",
+                "next_run_at": due_at,
+                "last_error": None,
+                "metadata_json": {
+                    "model_options": {
+                        "generation_mode": "model_backed",
+                        "model_route_mode": "local_only",
+                        "model_provider": "deterministic_local",
+                        "model": "alice-vnext-grounded-synthesizer-v1",
+                    }
+                },
+            },
+            actor_type="system",
+        )
+        payload = service.run_due_workflows(limit=1, triggered_by="scheduler")
+
+    run = (payload.get("runs") or [{}])[0] if isinstance(payload.get("runs"), list) else {}
+    artifact = run.get("artifact") if isinstance(run, dict) and isinstance(run.get("artifact"), dict) else {}
+    metadata = artifact.get("metadata_json") if isinstance(artifact, dict) and isinstance(artifact.get("metadata_json"), dict) else {}
+    model_info = artifact.get("model_info_json") if isinstance(artifact, dict) and isinstance(artifact.get("model_info_json"), dict) else {}
+    content = str(artifact.get("content_markdown", "")) if isinstance(artifact, dict) else ""
+    gates = {
+        "due_scan_ran_one_workflow": payload.get("due_count") == 1,
+        "run_succeeded": ((run.get("run") or {}).get("status") if isinstance(run, dict) and isinstance(run.get("run"), dict) else None) == "succeeded",
+        "artifact_reviewable": artifact.get("status") == "needs_review",
+        "artifact_model_backed": metadata.get("generation_mode") == "model_backed",
+        "local_route_enforced": (metadata.get("model_routing") or {}).get("route_mode") == "local_only"
+        if isinstance(metadata.get("model_routing"), dict)
+        else False,
+        "provider_metadata_present": all(model_info.get(key) for key in ("provider", "model", "prompt_hash", "input_context_hash", "created_at", "policy_mode")),
+        "source_grounded_sections_present": all(
+            section in content
+            for section in (
+                "## Facts",
+                "## Inferences",
+                "## Recommendations",
+                "## Uncertainties",
+                "## Source References",
+                "## Contradictions Considered",
+                "## Open Questions",
+            )
+        ),
+        "source_refs_present": bool(metadata.get("source_refs")),
+    }
+    result = {
+        "status": "passed" if all(gates.values()) else "failed",
+        "smoke": "model-backed",
+        "gates": gates,
+        "artifact_id": artifact.get("id"),
+        "run_id": ((run.get("run") or {}).get("id") if isinstance(run, dict) and isinstance(run.get("run"), dict) else None),
+        "model_info": model_info,
+    }
+    if result["status"] != "passed":
+        raise RuntimeError(_json_dumps(result))
+    return _json_dumps(result)
+
+
 def _connection_finder_request_from_args(args: argparse.Namespace) -> ConnectionFinderRequest:
     return ConnectionFinderRequest(
         query=getattr(args, "query", "") or "",
@@ -1273,6 +1391,7 @@ def _connection_finder_request_from_args(args: argparse.Namespace) -> Connection
         sensitivity_allowed=_vnext_sensitivity_allowed(args),
         max_connections=args.max_connections,
         auto_accept_threshold=args.auto_accept_threshold,
+        **_model_generation_kwargs_from_args(args),
     )
 
 
@@ -1300,6 +1419,7 @@ def _contradiction_finder_request_from_args(args: argparse.Namespace) -> Contrad
         domains=tuple(args.domain),
         sensitivity_allowed=_vnext_sensitivity_allowed(args),
         max_contradictions=args.max_contradictions,
+        **_model_generation_kwargs_from_args(args),
     )
 
 
@@ -1335,6 +1455,7 @@ def _project_automation_request_from_args(args: argparse.Namespace) -> ProjectAu
         project_id=getattr(args, "project_id", None),
         person_id=getattr(args, "person_id", None),
         max_items=args.max_items,
+        **_model_generation_kwargs_from_args(args),
     )
 
 
@@ -1421,6 +1542,58 @@ def _run_vnext_artifact_export(ctx: CLIContext, args: argparse.Namespace) -> str
             output_dir=args.output_dir,
         )
     return _json_dumps({"artifact_id": args.artifact_id, "output_path": str(output_path)})
+
+
+def _run_vnext_quality_rate(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        if store.get_artifact(args.artifact_id) is None:
+            raise ValueError(f"artifact {args.artifact_id} was not found")
+        rating = store.create_artifact_quality_rating(
+            {
+                "artifact_id": args.artifact_id,
+                "reviewer_id": args.reviewer_id,
+                "usefulness": args.usefulness,
+                "accuracy": args.accuracy,
+                "source_grounding": args.source_grounding,
+                "novel_connections": args.novel_connections,
+                "actionability": args.actionability,
+                "hallucination_risk": args.hallucination_risk,
+                "verbosity": args.verbosity,
+                "missed_context": args.missed_context,
+                "comments": args.comments,
+                "metadata_json": {"created_from": "cli"},
+            },
+            actor_type="user",
+        )
+    return _json_dumps(rating)
+
+
+def _run_vnext_quality_export(ctx: CLIContext, args: argparse.Namespace) -> str:
+    limit = max(1, min(args.limit, 500))
+    with _vnext_store_context(ctx) as store:
+        rows = store.list_artifact_quality_ratings(
+            artifact_id=args.artifact_id,
+            limit=limit,
+        )
+    return _json_dumps(
+        {
+            "items": rows,
+            "count": len(rows),
+            "export": {
+                "format": "json",
+                "rating_fields": [
+                    "usefulness",
+                    "accuracy",
+                    "source_grounding",
+                    "novel_connections",
+                    "actionability",
+                    "hallucination_risk",
+                    "verbosity",
+                    "missed_context",
+                ],
+            },
+        }
+    )
 
 
 def _run_mutation_generate(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -2231,6 +2404,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not create candidate memories for workflows that support them.",
     )
+    _add_model_generation_arguments(daily_brief_parser)
     daily_brief_parser.set_defaults(handler=_run_daily_brief)
 
     weekly_synthesis_parser = subparsers.add_parser(
@@ -2260,6 +2434,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not create candidate memories from weekly insights.",
     )
+    _add_model_generation_arguments(weekly_synthesis_parser)
     weekly_synthesis_parser.set_defaults(handler=_run_weekly_synthesis)
 
     connections_parser = subparsers.add_parser("connections", help="Generate vNext connection reports.")
@@ -2288,6 +2463,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional confidence threshold for auto-accepted edges.",
     )
+    _add_model_generation_arguments(connections_generate_parser)
     connections_generate_parser.set_defaults(handler=_run_connections_generate)
 
     vnext_parser = subparsers.add_parser("vnext", help="Alice vNext workflows.")
@@ -2398,6 +2574,31 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_artifact_export_parser.add_argument("--output-dir", required=True, help="Directory for the Markdown file.")
     vnext_artifact_export_parser.set_defaults(handler=_run_vnext_artifact_export)
 
+    vnext_quality_parser = vnext_subparsers.add_parser("quality", help="Rate and export vNext artifact quality evals.")
+    vnext_quality_subparsers = vnext_quality_parser.add_subparsers(dest="vnext_quality_command", required=True)
+    vnext_quality_rate_parser = vnext_quality_subparsers.add_parser("rate", help="Rate a generated artifact.")
+    vnext_quality_rate_parser.add_argument("artifact_id", help="Artifact id.")
+    vnext_quality_rate_parser.add_argument("--reviewer-id", default=None, help="Optional reviewer id.")
+    vnext_quality_rate_parser.add_argument("--usefulness", type=int, default=None, help="Usefulness rating 1-5.")
+    vnext_quality_rate_parser.add_argument("--accuracy", type=int, default=None, help="Accuracy rating 1-5.")
+    vnext_quality_rate_parser.add_argument("--source-grounding", type=int, default=None, help="Source grounding rating 1-5.")
+    vnext_quality_rate_parser.add_argument("--novel-connections", type=int, default=None, help="Novel connections rating 1-5.")
+    vnext_quality_rate_parser.add_argument("--actionability", type=int, default=None, help="Actionability rating 1-5.")
+    vnext_quality_rate_parser.add_argument("--hallucination-risk", type=int, default=None, help="Hallucination risk rating 1-5.")
+    vnext_quality_rate_parser.add_argument(
+        "--verbosity",
+        choices=("too_shallow", "right_sized", "too_verbose", "unknown"),
+        default="unknown",
+        help="Verbosity judgment.",
+    )
+    vnext_quality_rate_parser.add_argument("--missed-context", default=None, help="Missing context note.")
+    vnext_quality_rate_parser.add_argument("--comments", default=None, help="Reviewer comments.")
+    vnext_quality_rate_parser.set_defaults(handler=_run_vnext_quality_rate)
+    vnext_quality_export_parser = vnext_quality_subparsers.add_parser("export", help="Export quality evals as JSON.")
+    vnext_quality_export_parser.add_argument("--artifact-id", default=None, help="Optional artifact id filter.")
+    vnext_quality_export_parser.add_argument("--limit", type=int, default=100, help="Maximum ratings to export.")
+    vnext_quality_export_parser.set_defaults(handler=_run_vnext_quality_export)
+
     vnext_graph_parser = vnext_subparsers.add_parser("graph", help="Review and inspect vNext graph edges.")
     vnext_graph_subparsers = vnext_graph_parser.add_subparsers(dest="vnext_graph_command", required=True)
 
@@ -2449,6 +2650,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=8,
         help="Maximum candidate contradictions.",
     )
+    _add_model_generation_arguments(vnext_contradictions_generate_parser)
     vnext_contradictions_generate_parser.set_defaults(handler=_run_vnext_contradictions_generate)
 
     vnext_beliefs_parser = vnext_subparsers.add_parser("beliefs", help="Review and inspect vNext beliefs.")
@@ -2489,6 +2691,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Allowed sensitivity. Repeatable.",
     )
     vnext_project_update_parser.add_argument("--max-items", type=int, default=8, help="Maximum selected inputs.")
+    _add_model_generation_arguments(vnext_project_update_parser)
     vnext_project_update_parser.set_defaults(handler=_run_vnext_project_update_candidate)
 
     vnext_project_review_parser = vnext_projects_subparsers.add_parser(
@@ -2597,6 +2800,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Allowed sensitivity. Repeatable.",
     )
+    _add_model_generation_arguments(vnext_scheduler_run_parser)
     vnext_scheduler_run_parser.set_defaults(handler=_run_vnext_scheduler_run_now)
     vnext_scheduler_run_due_parser = vnext_scheduler_subparsers.add_parser("run-due", help="Run enabled workflows whose next_run_at is due.")
     _add_vnext_agent_arguments(vnext_scheduler_run_due_parser)
@@ -2640,6 +2844,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run the local scheduler daemon and due-workflow smoke.",
     )
     vnext_smoke_local_runtime_parser.set_defaults(handler=_run_vnext_smoke_local_runtime)
+    vnext_smoke_model_backed_parser = vnext_smoke_subparsers.add_parser(
+        "model-backed",
+        help="Run a Postgres-backed scheduled model-backed workflow smoke.",
+    )
+    vnext_smoke_model_backed_parser.set_defaults(handler=_run_vnext_smoke_model_backed)
 
     mutations_parser = subparsers.add_parser("mutations", help="Generate, inspect, and apply memory operations.")
     mutations_subparsers = mutations_parser.add_subparsers(dest="mutations_command", required=True)

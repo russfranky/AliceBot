@@ -7,6 +7,12 @@ from typing import Protocol
 from uuid import uuid4
 
 from alicebot_api.vnext_event_log import append_event
+from alicebot_api.vnext_model_intelligence import (
+    ModelBackedRequest,
+    ModelRoutingRequest,
+    build_model_backed_artifact,
+    resolve_model_route,
+)
 from alicebot_api.vnext_repositories import JsonObject
 
 
@@ -93,6 +99,12 @@ class BrainArtifactRequest:
     agent_identity: JsonObject | None = None
     policy_decision: JsonObject | None = None
     metadata_json: JsonObject = field(default_factory=dict)
+    generation_mode: str = "deterministic"
+    model_route_mode: str | None = None
+    model_provider: str | None = None
+    model: str | None = None
+    model_temperature: float = 0.2
+    allow_cloud_private: bool = False
 
 
 def _today_iso() -> str:
@@ -116,10 +128,14 @@ def _parse_generated_for(value: str | None) -> date:
 def _validate_request(request: BrainArtifactRequest) -> None:
     if not request.sensitivity_allowed:
         raise VNextBrainValidationError("sensitivity_allowed must not be empty")
+    if request.generation_mode not in {"deterministic", "model_backed"}:
+        raise VNextBrainValidationError("generation_mode must be deterministic or model_backed")
     for field_name in ("source_limit", "memory_limit", "open_loop_limit", "artifact_limit"):
         value = getattr(request, field_name)
         if value < 1 or value > 50:
             raise VNextBrainValidationError(f"{field_name} must be between 1 and 50")
+    if request.model_temperature < 0.0 or request.model_temperature > 2.0:
+        raise VNextBrainValidationError("model_temperature must be between 0.0 and 2.0")
     _parse_generated_for(request.generated_for)
 
 
@@ -223,6 +239,14 @@ def _source_refs(rows: list[JsonObject]) -> list[str]:
     return list(dict.fromkeys(refs))
 
 
+def _brain_charter(store: VNextBrainStore) -> JsonObject | None:
+    getter = getattr(store, "get_brain_charter", None)
+    if not callable(getter):
+        return None
+    charter = getter()
+    return charter if isinstance(charter, dict) else None
+
+
 def _candidate_open_loop_titles(sources: list[JsonObject]) -> list[tuple[str, JsonObject]]:
     candidates: list[tuple[str, JsonObject]] = []
     pattern = re.compile(r"^\s*(?:todo|follow up|waiting on|question|ask)\s*:?\s*(.+)$", re.IGNORECASE)
@@ -255,6 +279,43 @@ class VNextBrainService:
             open_loops=[*open_loops, *candidate_open_loops],
             artifacts=artifacts,
         )
+        source_refs = _source_refs(sources)
+        metadata = {
+            "workflow": "daily_brief",
+            "generated_by": request.generated_by,
+            "agent_identity": request.agent_identity,
+            "agent_id": request.agent_identity.get("agent_id") if isinstance(request.agent_identity, dict) else None,
+            "agent_run_id": request.agent_identity.get("agent_run_id") if isinstance(request.agent_identity, dict) else None,
+            "scheduler_run_id": request.run_id if request.generated_by == "scheduler" else None,
+            "trace_id": request.trace_id,
+            "policy_decision": request.policy_decision,
+            "generated_for": day.isoformat(),
+            "source_refs": source_refs,
+            "input_summary": _input_summary(
+                sources=sources,
+                memories=memories,
+                open_loops=open_loops,
+                artifacts=artifacts,
+            ),
+            "candidate_open_loop_ids": [str(row.get("id")) for row in candidate_open_loops],
+            "generation_mode": request.generation_mode,
+            **request.metadata_json,
+        }
+        prompt_hash: str | None = None
+        model_info_json: JsonObject | None = None
+        if request.generation_mode == "model_backed":
+            model_artifact = self._model_backed_artifact(
+                request=request,
+                workflow_type="daily_brief",
+                title=f"Daily Brief - {day.isoformat()}",
+                deterministic_markdown=content,
+                context_rows=all_rows,
+                source_refs=source_refs,
+            )
+            content = model_artifact.content_markdown
+            prompt_hash = model_artifact.prompt_hash
+            model_info_json = model_artifact.model_info
+            metadata = {**metadata, **model_artifact.metadata}
         artifact = self.store.create_artifact(
             {
                 "artifact_type": "daily_brief",
@@ -264,26 +325,9 @@ class VNextBrainService:
                 "domain": _artifact_domain(request, all_rows),
                 "sensitivity": _highest_sensitivity(all_rows),
                 "generated_by": request.generated_by if request.generated_by != "system" else "vnext_daily_brief",
-                "metadata_json": {
-                    "workflow": "daily_brief",
-                    "generated_by": request.generated_by,
-                    "agent_identity": request.agent_identity,
-                    "agent_id": request.agent_identity.get("agent_id") if isinstance(request.agent_identity, dict) else None,
-                    "agent_run_id": request.agent_identity.get("agent_run_id") if isinstance(request.agent_identity, dict) else None,
-                    "scheduler_run_id": request.run_id if request.generated_by == "scheduler" else None,
-                    "trace_id": request.trace_id,
-                    "policy_decision": request.policy_decision,
-                    "generated_for": day.isoformat(),
-                    "source_refs": _source_refs(sources),
-                    "input_summary": _input_summary(
-                        sources=sources,
-                        memories=memories,
-                        open_loops=open_loops,
-                        artifacts=artifacts,
-                    ),
-                    "candidate_open_loop_ids": [str(row.get("id")) for row in candidate_open_loops],
-                    **request.metadata_json,
-                },
+                "prompt_hash": prompt_hash,
+                "model_info_json": model_info_json,
+                "metadata_json": metadata,
             },
             actor_type=request.generated_by,
         )
@@ -303,6 +347,7 @@ class VNextBrainService:
                 "candidate_open_loop_count": len(candidate_open_loops),
                 "agent_identity": request.agent_identity,
                 "policy_decision": request.policy_decision,
+                "generation_mode": request.generation_mode,
             },
         )
         if request.generated_by == "agent" and request.actor_id is not None:
@@ -335,6 +380,44 @@ class VNextBrainService:
             artifacts=artifacts,
             candidate_memories=candidate_memories,
         )
+        source_refs = _source_refs(sources)
+        metadata = {
+            "workflow": "weekly_synthesis",
+            "generated_by": request.generated_by,
+            "agent_identity": request.agent_identity,
+            "agent_id": request.agent_identity.get("agent_id") if isinstance(request.agent_identity, dict) else None,
+            "agent_run_id": request.agent_identity.get("agent_run_id") if isinstance(request.agent_identity, dict) else None,
+            "scheduler_run_id": request.run_id if request.generated_by == "scheduler" else None,
+            "trace_id": request.trace_id,
+            "policy_decision": request.policy_decision,
+            "generated_for": day.isoformat(),
+            "week": week_label,
+            "source_refs": source_refs,
+            "input_summary": _input_summary(
+                sources=sources,
+                memories=memories,
+                open_loops=open_loops,
+                artifacts=artifacts,
+            ),
+            "candidate_memory_ids": [str(row.get("id")) for row in candidate_memories],
+            "generation_mode": request.generation_mode,
+            **request.metadata_json,
+        }
+        prompt_hash: str | None = None
+        model_info_json: JsonObject | None = None
+        if request.generation_mode == "model_backed":
+            model_artifact = self._model_backed_artifact(
+                request=request,
+                workflow_type="weekly_synthesis",
+                title=f"Weekly Synthesis - {week_label}",
+                deterministic_markdown=content,
+                context_rows=all_rows,
+                source_refs=source_refs,
+            )
+            content = model_artifact.content_markdown
+            prompt_hash = model_artifact.prompt_hash
+            model_info_json = model_artifact.model_info
+            metadata = {**metadata, **model_artifact.metadata}
         artifact = self.store.create_artifact(
             {
                 "artifact_type": "weekly_synthesis",
@@ -344,27 +427,9 @@ class VNextBrainService:
                 "domain": _artifact_domain(request, all_rows),
                 "sensitivity": _highest_sensitivity(all_rows),
                 "generated_by": request.generated_by if request.generated_by != "system" else "vnext_weekly_synthesis",
-                "metadata_json": {
-                    "workflow": "weekly_synthesis",
-                    "generated_by": request.generated_by,
-                    "agent_identity": request.agent_identity,
-                    "agent_id": request.agent_identity.get("agent_id") if isinstance(request.agent_identity, dict) else None,
-                    "agent_run_id": request.agent_identity.get("agent_run_id") if isinstance(request.agent_identity, dict) else None,
-                    "scheduler_run_id": request.run_id if request.generated_by == "scheduler" else None,
-                    "trace_id": request.trace_id,
-                    "policy_decision": request.policy_decision,
-                    "generated_for": day.isoformat(),
-                    "week": week_label,
-                    "source_refs": _source_refs(sources),
-                    "input_summary": _input_summary(
-                        sources=sources,
-                        memories=memories,
-                        open_loops=open_loops,
-                        artifacts=artifacts,
-                    ),
-                    "candidate_memory_ids": [str(row.get("id")) for row in candidate_memories],
-                    **request.metadata_json,
-                },
+                "prompt_hash": prompt_hash,
+                "model_info_json": model_info_json,
+                "metadata_json": metadata,
             },
             actor_type=request.generated_by,
         )
@@ -385,6 +450,7 @@ class VNextBrainService:
                 "candidate_memory_count": len(candidate_memories),
                 "agent_identity": request.agent_identity,
                 "policy_decision": request.policy_decision,
+                "generation_mode": request.generation_mode,
             },
         )
         if request.generated_by == "agent" and request.actor_id is not None:
@@ -400,6 +466,47 @@ class VNextBrainService:
                 payload={"workflow": "weekly_synthesis", "agent_identity": request.agent_identity},
             )
         return artifact
+
+    def _model_backed_artifact(
+        self,
+        *,
+        request: BrainArtifactRequest,
+        workflow_type: str,
+        title: str,
+        deterministic_markdown: str,
+        context_rows: list[JsonObject],
+        source_refs: list[str],
+    ):
+        route = resolve_model_route(
+            ModelRoutingRequest(
+                workflow_type=workflow_type,
+                generation_mode=request.generation_mode,
+                domains=request.domains,
+                sensitivity_allowed=request.sensitivity_allowed,
+                agent_identity=request.agent_identity,
+                brain_charter=_brain_charter(self.store),
+                requested_route_mode=request.model_route_mode,
+                requested_provider=request.model_provider,
+                requested_model=request.model,
+                allow_cloud_private=request.allow_cloud_private,
+            )
+        )
+        return build_model_backed_artifact(
+            ModelBackedRequest(
+                workflow_type=workflow_type,
+                title=title,
+                deterministic_markdown=deterministic_markdown,
+                context_rows=tuple(context_rows),
+                source_refs=tuple(source_refs),
+                trace_id=request.trace_id,
+                route=route,
+                temperature=request.model_temperature,
+                config={
+                    "agent_id": request.actor_id,
+                    "generated_by": request.generated_by,
+                },
+            )
+        )
 
     def _load_inputs(
         self,

@@ -213,6 +213,28 @@ def test_contradiction_report_filters_sensitivity_and_distinguishes_nuance() -> 
     assert nuanced[0]["recommended_action"] == "request more info"
 
 
+def test_contradiction_report_model_backed_mode_records_source_grounded_metadata() -> None:
+    store = _seed_store()
+
+    artifact = VNextContradictionService(store).generate_contradiction_report(
+        ContradictionFinderRequest(
+            domains=("project",),
+            max_contradictions=2,
+            generation_mode="model_backed",
+            model_route_mode="local_only",
+        )
+    )
+
+    assert artifact["status"] == "needs_review"
+    assert artifact["metadata_json"]["generation_mode"] == "model_backed"
+    assert artifact["metadata_json"]["candidate_edge_ids"] == ["edge-1", "edge-2"]
+    assert artifact["model_info_json"]["provider"] == "deterministic_local"
+    assert artifact["prompt_hash"].startswith("sha256:")
+    assert "## Facts" in artifact["content_markdown"]
+    assert "## Contradictions Considered" in artifact["content_markdown"]
+    assert "source:source-1" in artifact["content_markdown"]
+
+
 def test_belief_review_and_state_history() -> None:
     store = _seed_store()
     service = VNextContradictionService(store)

@@ -39,7 +39,7 @@ Alice vNext is the next release candidate for the true second-brain product. It 
 - **Alice Brain**: user-facing second-brain workflows such as daily briefs, weekly syntheses, context packs, contradiction reports, project updates, open loops, and reviewable artifacts.
 - **Alice Agent Memory**: CLI, API, and MCP surfaces that let agents capture, retrieve, resume, explain, generate context, propose memory, and trigger governed workflows without owning the memory store.
 
-The vNext preview currently includes deterministic source capture, retrieval/context packs, queue/artifact workflows, daily and weekly brain artifacts, connection/contradiction/project/open-loop workflows, synthetic evals, deterministic connector payload ingestion, agent identity/policy auditing, a governed local scheduler with due scans, a local scheduler daemon, policy telemetry, and a live/fixture-backed `/vnext` operator workspace.
+The vNext preview currently includes deterministic source capture, retrieval/context packs, queue/artifact workflows, daily and weekly brain artifacts, connection/contradiction/project/open-loop workflows, model-backed source-grounded synthesis, human artifact quality ratings, deterministic-vs-model comparison controls, synthetic evals, deterministic connector payload ingestion, agent identity/policy auditing, a governed local scheduler with due scans, a local scheduler daemon, policy telemetry, and a live/fixture-backed `/vnext` operator workspace.
 
 Start with:
 
@@ -55,6 +55,7 @@ Start with:
 - [vNext preview tag plan](docs/release/v0.5.1-vnext-preview-tag-plan.md)
 - [Agentic control plane CTO summary](docs/vnext-agentic-control-plane-cto-summary.md)
 - [Local runtime CTO summary](docs/vnext-local-runtime-cto-summary.md)
+- [Model-backed intelligence CTO summary](docs/vnext-model-backed-intelligence-cto-summary.md)
 
 ## Release Boundary (`v0.5.1`)
 
@@ -398,6 +399,7 @@ Deferred beyond `v0.5.1`:
 - [vNext Security and Privacy](docs/vnext/security-privacy.md)
 - [Agentic Control Plane CTO Summary](docs/vnext-agentic-control-plane-cto-summary.md)
 - [Local Runtime CTO Summary](docs/vnext-local-runtime-cto-summary.md)
+- [Model-Backed Intelligence CTO Summary](docs/vnext-model-backed-intelligence-cto-summary.md)
 - [Quickstart](docs/quickstart/local-setup-and-first-result.md)
 - [Architecture](ARCHITECTURE.md)
 - [MCP](docs/integrations/mcp.md)

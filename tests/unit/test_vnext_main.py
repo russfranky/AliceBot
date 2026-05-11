@@ -20,6 +20,7 @@ class FakeVNextStore:
         self.provenance_links: list[dict[str, object]] = []
         self.tasks: list[dict[str, object]] = []
         self.artifacts: dict[str, dict[str, object]] = {}
+        self.quality_ratings: list[dict[str, object]] = []
         self.edges: dict[str, dict[str, object]] = {}
         self.beliefs: dict[str, dict[str, object]] = {}
         self.projects: dict[str, dict[str, object]] = {}
@@ -213,6 +214,24 @@ class FakeVNextStore:
         artifact = self.artifacts[artifact_id]
         artifact["status"] = status
         return artifact
+
+    def create_artifact_quality_rating(self, rating: dict[str, object], **_kwargs) -> dict[str, object]:
+        row = {**rating, "id": f"quality-{len(self.quality_ratings) + 1}"}
+        self.quality_ratings.append(row)
+        return row
+
+    def list_artifact_quality_ratings(
+        self,
+        *,
+        artifact_id: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, object]]:
+        rows = [
+            row
+            for row in self.quality_ratings
+            if artifact_id is None or row.get("artifact_id") == artifact_id
+        ]
+        return rows[:limit]
 
     def get_project(self, project_id: str) -> dict[str, object] | None:
         return self.projects.get(project_id)
@@ -724,6 +743,36 @@ def test_vnext_queue_and_artifact_endpoints(monkeypatch, tmp_path) -> None:
     )
     assert review_response.status_code == 200
     assert json.loads(review_response.body)["status"] == "accepted"
+
+    quality_response = main_module.rate_vnext_artifact_quality(
+        main_module.UUID(artifact_id),
+        main_module.VNextArtifactQualityRatingRequest(
+            user_id=user_id,
+            reviewer_id="reviewer-1",
+            usefulness=4,
+            accuracy=5,
+            source_grounding=5,
+            novel_connections=3,
+            actionability=4,
+            hallucination_risk=1,
+            verbosity="right_sized",
+            comments="Useful and grounded.",
+        ),
+    )
+    quality_payload = json.loads(quality_response.body)
+    export_quality_response = main_module.list_vnext_quality_evals(
+        user_id=user_id,
+        artifact_id=main_module.UUID(artifact_id),
+        limit=10,
+    )
+    export_quality_payload = json.loads(export_quality_response.body)
+
+    assert quality_response.status_code == 201
+    assert quality_payload["artifact_id"] == artifact_id
+    assert quality_payload["usefulness"] == 4
+    assert export_quality_response.status_code == 200
+    assert export_quality_payload["count"] == 1
+    assert export_quality_payload["items"][0]["artifact_id"] == artifact_id
 
     export_response = main_module.export_vnext_artifact(
         main_module.UUID(artifact_id),

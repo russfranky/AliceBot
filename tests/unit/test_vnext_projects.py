@@ -224,6 +224,29 @@ def test_project_update_candidate_creates_reviewable_artifact_and_candidate_memo
     assert store.events[-1]["event_type"] == "project.update_candidate_created"
 
 
+def test_project_update_candidate_model_backed_mode_is_review_only_and_source_grounded() -> None:
+    store = _seed_store()
+
+    artifact = VNextProjectService(store).generate_project_update_candidate(
+        ProjectAutomationRequest(
+            project_id="project-1",
+            domains=("project",),
+            generation_mode="model_backed",
+            model_route_mode="local_only",
+        )
+    )
+
+    assert artifact["status"] == "needs_review"
+    assert store.memories["memory-2"]["status"] == "candidate"
+    assert artifact["metadata_json"]["workflow_type"] == "project_update_scan"
+    assert artifact["metadata_json"]["generation_mode"] == "model_backed"
+    assert artifact["model_info_json"]["provider"] == "deterministic_local"
+    assert artifact["prompt_hash"].startswith("sha256:")
+    assert "## Facts" in artifact["content_markdown"]
+    assert "## Open Questions" in artifact["content_markdown"]
+    assert "source:source-1" in artifact["content_markdown"]
+
+
 def test_accepting_project_update_updates_project_promotes_memory_and_appends_revision() -> None:
     store = _seed_store()
     service = VNextProjectService(store)

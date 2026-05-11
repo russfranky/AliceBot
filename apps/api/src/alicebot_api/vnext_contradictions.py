@@ -5,6 +5,12 @@ import re
 from typing import Protocol
 
 from alicebot_api.vnext_event_log import append_event
+from alicebot_api.vnext_model_intelligence import (
+    ModelBackedRequest,
+    ModelRoutingRequest,
+    build_model_backed_artifact,
+    resolve_model_route,
+)
 from alicebot_api.vnext_repositories import JsonObject
 
 
@@ -116,6 +122,12 @@ class ContradictionFinderRequest:
     agent_identity: JsonObject | None = None
     policy_decision: JsonObject | None = None
     metadata_json: JsonObject = field(default_factory=dict)
+    generation_mode: str = "deterministic"
+    model_route_mode: str | None = None
+    model_provider: str | None = None
+    model: str | None = None
+    model_temperature: float = 0.2
+    allow_cloud_private: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +166,10 @@ def _validate_request(request: ContradictionFinderRequest) -> None:
         raise VNextContradictionValidationError("max_contradictions must be between 1 and 50")
     if not request.sensitivity_allowed:
         raise VNextContradictionValidationError("sensitivity_allowed must not be empty")
+    if request.generation_mode not in {"deterministic", "model_backed"}:
+        raise VNextContradictionValidationError("generation_mode must be deterministic or model_backed")
+    if request.model_temperature < 0.0 or request.model_temperature > 2.0:
+        raise VNextContradictionValidationError("model_temperature must be between 0.0 and 2.0")
 
 
 def _text(row: JsonObject) -> str:
@@ -272,6 +288,14 @@ def _report_markdown(records: list[JsonObject], edge_ids: list[str]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _brain_charter(store: VNextContradictionStore) -> JsonObject | None:
+    getter = getattr(store, "get_brain_charter", None)
+    if not callable(getter):
+        return None
+    charter = getter()
+    return charter if isinstance(charter, dict) else None
+
+
 class VNextContradictionService:
     def __init__(self, store: VNextContradictionStore) -> None:
         self.store = store
@@ -357,39 +381,81 @@ class VNextContradictionService:
         source_ids = [str(source.get("id")) for source in sources if source.get("id") is not None]
         memory_ids = [str(memory.get("id")) for memory in memories if memory.get("id") is not None]
         belief_ids = [str(belief.get("id")) for belief in beliefs if belief.get("id") is not None]
+        source_refs = [f"source:{source_id}" for source_id in source_ids]
+        content = _report_markdown(records, edge_ids)
+        metadata = {
+            "workflow": "contradiction_finder",
+            "workflow_type": "contradiction_report",
+            "candidate_edge_ids": edge_ids,
+            "contradictions": records,
+            "source_ids": source_ids,
+            "memory_ids": memory_ids,
+            "belief_ids": belief_ids,
+            "source_refs": source_refs,
+            "input_counts": {
+                "sources": len(sources),
+                "memories": len(memories),
+                "beliefs": len(beliefs),
+            },
+            "generated_by": request.generated_by,
+            "agent_identity": request.agent_identity,
+            "agent_id": request.actor_id if request.generated_by == "agent" else None,
+            "agent_run_id": request.run_id if request.generated_by == "agent" else None,
+            "scheduler_run_id": request.run_id if request.generated_by == "scheduler" else None,
+            "trace_id": request.trace_id,
+            "policy_decision": request.policy_decision,
+            "review_status": "needs_review",
+            "generation_mode": request.generation_mode,
+            **request.metadata_json,
+        }
+        prompt_hash: str | None = None
+        model_info_json: JsonObject | None = None
+        if request.generation_mode == "model_backed":
+            route = resolve_model_route(
+                ModelRoutingRequest(
+                    workflow_type="contradiction_report",
+                    generation_mode="model_backed",
+                    domains=request.domains,
+                    sensitivity_allowed=request.sensitivity_allowed,
+                    agent_identity=request.agent_identity,
+                    brain_charter=_brain_charter(self.store),
+                    requested_route_mode=request.model_route_mode,
+                    requested_provider=request.model_provider,
+                    requested_model=request.model,
+                    allow_cloud_private=request.allow_cloud_private,
+                )
+            )
+            model_artifact = build_model_backed_artifact(
+                ModelBackedRequest(
+                    workflow_type="contradiction_report",
+                    title="Contradiction Report",
+                    deterministic_markdown=content,
+                    context_rows=tuple([*sources, *memories, *beliefs]),
+                    source_refs=tuple(source_refs),
+                    contradictions=tuple(records),
+                    open_questions=("Which belief should be challenged, superseded, or left unchanged?",),
+                    trace_id=request.trace_id,
+                    route=route,
+                    temperature=request.model_temperature,
+                    config={"generated_by": request.generated_by, "agent_id": request.actor_id},
+                )
+            )
+            content = model_artifact.content_markdown
+            prompt_hash = model_artifact.prompt_hash
+            model_info_json = model_artifact.model_info
+            metadata = {**metadata, **model_artifact.metadata}
         artifact = self.store.create_artifact(
             {
                 "artifact_type": "contradiction_report",
                 "title": "Contradiction Report",
-                "content_markdown": _report_markdown(records, edge_ids),
+                "content_markdown": content,
                 "status": "needs_review",
                 "domain": request.domains[0] if len(request.domains) == 1 else "unknown",
                 "sensitivity": self._highest_sensitivity([*sources, *memories, *beliefs]),
                 "generated_by": request.generated_by if request.generated_by != "system" else "vnext_contradiction_finder",
-                "metadata_json": {
-                    "workflow": "contradiction_finder",
-                    "workflow_type": "contradiction_report",
-                    "candidate_edge_ids": edge_ids,
-                    "contradictions": records,
-                    "source_ids": source_ids,
-                    "memory_ids": memory_ids,
-                    "belief_ids": belief_ids,
-                    "source_refs": [f"source:{source_id}" for source_id in source_ids],
-                    "input_counts": {
-                        "sources": len(sources),
-                        "memories": len(memories),
-                        "beliefs": len(beliefs),
-                    },
-                    "generated_by": request.generated_by,
-                    "agent_identity": request.agent_identity,
-                    "agent_id": request.actor_id if request.generated_by == "agent" else None,
-                    "agent_run_id": request.run_id if request.generated_by == "agent" else None,
-                    "scheduler_run_id": request.run_id if request.generated_by == "scheduler" else None,
-                    "trace_id": request.trace_id,
-                    "policy_decision": request.policy_decision,
-                    "review_status": "needs_review",
-                    **request.metadata_json,
-                },
+                "prompt_hash": prompt_hash,
+                "model_info_json": model_info_json,
+                "metadata_json": metadata,
             }
         )
         append_event(
@@ -407,6 +473,7 @@ class VNextContradictionService:
                 "artifact_type": "contradiction_report",
                 "candidate_edge_count": len(edge_ids),
                 "policy_decision": request.policy_decision,
+                "generation_mode": request.generation_mode,
             },
         )
         return artifact

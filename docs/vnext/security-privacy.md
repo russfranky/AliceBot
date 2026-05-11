@@ -9,6 +9,8 @@ Alice vNext is built around private, correctable, inspectable continuity. This d
 - Sensitive connector defaults are conservative: most new sources default to `private` or stricter.
 - Generated artifacts inherit sensitivity from selected inputs.
 - Prompt-injection content from sources is data, not policy.
+- Model-backed workflows default private, confidential, highly sensitive, sacred, and regulated content to local-only or disabled routing unless an explicit policy configuration allows otherwise.
+- Model-backed artifacts remain review-only and do not auto-promote trusted memory.
 
 ## Connector Safety
 
@@ -51,6 +53,8 @@ Disallowed public demo material:
 - Inspect new fixtures for secrets and personal data.
 - Inspect new connector write paths for raw-evidence preservation and failure isolation.
 - Confirm no generated artifacts are auto-promoted to trusted memory.
+- Confirm model-backed artifacts include source references, prompt/context hashes, provider metadata, and source-grounded fact/inference/recommendation/uncertainty sections.
+- Confirm `alicebot vnext smoke model-backed` passes for at least one scheduled Postgres-backed model-backed workflow.
 - Confirm docs do not claim live connector behavior that is not shipped.
 
 ## Reporting

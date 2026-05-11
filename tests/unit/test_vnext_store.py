@@ -232,6 +232,50 @@ def test_list_artifacts_applies_type_domain_sensitivity_and_limit_filters() -> N
     )
 
 
+def test_artifact_quality_ratings_insert_and_export_json_safe_payloads() -> None:
+    artifact_id = str(uuid4())
+    rating_id = str(uuid4())
+    cursor = RecordingCursor(
+        fetchone_results=[
+            {"id": rating_id, "artifact_id": artifact_id, "reviewer_id": "samir"},
+            _event_row(artifact_id),
+        ],
+        fetchall_result=[{"id": rating_id, "artifact_id": artifact_id, "usefulness": 5}],
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    created = store.create_artifact_quality_rating(
+        {
+            "id": rating_id,
+            "artifact_id": artifact_id,
+            "reviewer_id": "samir",
+            "usefulness": 5,
+            "accuracy": 4,
+            "source_grounding": 5,
+            "novel_connections": 3,
+            "actionability": 4,
+            "hallucination_risk": 1,
+            "verbosity": "right_sized",
+            "missed_context": "Needs one more source.",
+            "comments": "Useful artifact.",
+            "metadata_json": {"prompt_hash": "sha256:test"},
+        }
+    )
+    rows = store.list_artifact_quality_ratings(artifact_id=artifact_id, limit=10)
+
+    assert created["id"] == rating_id
+    assert rows == [{"id": rating_id, "artifact_id": artifact_id, "usefulness": 5}]
+    assert _event_log_insert_count(cursor) == 1
+    insert_query, insert_params = cursor.executed[0]
+    assert "INSERT INTO artifact_quality_ratings" in insert_query
+    assert insert_params is not None
+    assert isinstance(insert_params[-1], Jsonb)
+    assert insert_params[-1].obj == {"prompt_hash": "sha256:test"}
+    list_query, list_params = cursor.executed[2]
+    assert "FROM artifact_quality_ratings" in list_query
+    assert list_params == (artifact_id, artifact_id, 10)
+
+
 def test_list_beliefs_joins_memory_domain_sensitivity_filters() -> None:
     belief_id = str(uuid4())
     memory_id = str(uuid4())

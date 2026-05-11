@@ -6,6 +6,12 @@ from typing import Protocol
 from uuid import uuid4
 
 from alicebot_api.vnext_event_log import append_event
+from alicebot_api.vnext_model_intelligence import (
+    ModelBackedRequest,
+    ModelRoutingRequest,
+    build_model_backed_artifact,
+    resolve_model_route,
+)
 from alicebot_api.vnext_repositories import JsonObject
 
 
@@ -115,6 +121,12 @@ class ProjectAutomationRequest:
     agent_identity: JsonObject | None = None
     policy_decision: JsonObject | None = None
     metadata_json: JsonObject = field(default_factory=dict)
+    generation_mode: str = "deterministic"
+    model_route_mode: str | None = None
+    model_provider: str | None = None
+    model: str | None = None
+    model_temperature: float = 0.2
+    allow_cloud_private: bool = False
 
 
 def _validate_request(request: ProjectAutomationRequest) -> None:
@@ -122,6 +134,10 @@ def _validate_request(request: ProjectAutomationRequest) -> None:
         raise VNextProjectValidationError("max_items must be between 1 and 50")
     if not request.sensitivity_allowed:
         raise VNextProjectValidationError("sensitivity_allowed must not be empty")
+    if request.generation_mode not in {"deterministic", "model_backed"}:
+        raise VNextProjectValidationError("generation_mode must be deterministic or model_backed")
+    if request.model_temperature < 0.0 or request.model_temperature > 2.0:
+        raise VNextProjectValidationError("model_temperature must be between 0.0 and 2.0")
 
 
 def _text(row: JsonObject) -> str:
@@ -168,6 +184,14 @@ def _highest_sensitivity(rows: list[JsonObject]) -> str:
 
 def _source_ids(rows: list[JsonObject]) -> list[str]:
     return [str(row.get("id")) for row in rows if row.get("id") is not None]
+
+
+def _brain_charter(store: VNextProjectStore) -> JsonObject | None:
+    getter = getattr(store, "get_brain_charter", None)
+    if not callable(getter):
+        return None
+    charter = getter()
+    return charter if isinstance(charter, dict) else None
 
 
 def _detect_project_change(project: JsonObject, sources: list[JsonObject], memories: list[JsonObject]) -> str:
@@ -311,23 +335,28 @@ class VNextProjectService:
             },
             actor_type=request.generated_by,
         )
+        content, prompt_hash, model_info_json, model_metadata = self._project_update_content(
+            request=request,
+            project=project,
+            change=change,
+            suggested_current_state=suggested_current_state,
+            sources=sources,
+            memories=memories,
+        )
         artifact = self.store.create_artifact(
             {
                 "artifact_type": "project_update",
                 "title": f"Project Update Candidate - {_title(project)}",
-                "content_markdown": _project_update_markdown(
-                    project=project,
-                    change=change,
-                    suggested_current_state=suggested_current_state,
-                    sources=sources,
-                    memories=memories,
-                ),
+                "content_markdown": content,
                 "status": "needs_review",
                 "domain": project.get("domain", "project"),
                 "sensitivity": _highest_sensitivity([project, *sources, *memories]),
                 "generated_by": request.generated_by if request.generated_by != "system" else "vnext_project_auto_updater",
+                "prompt_hash": prompt_hash,
+                "model_info_json": model_info_json,
                 "metadata_json": {
                     "workflow": "project_auto_update",
+                    "workflow_type": "project_update_scan",
                     "project_id": project.get("id"),
                     "candidate_memory_id": candidate_memory.get("id"),
                     "suggested_current_state": suggested_current_state,
@@ -341,6 +370,7 @@ class VNextProjectService:
                     "trace_id": request.trace_id,
                     "policy_decision": request.policy_decision,
                     **request.metadata_json,
+                    **model_metadata,
                 },
             },
             actor_type=request.generated_by,
@@ -360,9 +390,66 @@ class VNextProjectService:
                 "source_ids": _source_ids(sources),
                 "agent_identity": request.agent_identity,
                 "policy_decision": request.policy_decision,
+                "generation_mode": request.generation_mode,
             },
         )
         return artifact
+
+    def _project_update_content(
+        self,
+        *,
+        request: ProjectAutomationRequest,
+        project: JsonObject,
+        change: str,
+        suggested_current_state: str,
+        sources: list[JsonObject],
+        memories: list[JsonObject],
+    ) -> tuple[str, str | None, JsonObject | None, JsonObject]:
+        content = _project_update_markdown(
+            project=project,
+            change=change,
+            suggested_current_state=suggested_current_state,
+            sources=sources,
+            memories=memories,
+        )
+        metadata: JsonObject = {"generation_mode": request.generation_mode}
+        if request.generation_mode != "model_backed":
+            return content, None, None, metadata
+        source_refs = [f"source:{source_id}" for source_id in _source_ids(sources)]
+        route = resolve_model_route(
+            ModelRoutingRequest(
+                workflow_type="project_update_scan",
+                generation_mode="model_backed",
+                domains=request.domains,
+                sensitivity_allowed=request.sensitivity_allowed,
+                agent_identity=request.agent_identity,
+                brain_charter=_brain_charter(self.store),
+                requested_route_mode=request.model_route_mode,
+                requested_provider=request.model_provider,
+                requested_model=request.model,
+                allow_cloud_private=request.allow_cloud_private,
+            )
+        )
+        model_artifact = build_model_backed_artifact(
+            ModelBackedRequest(
+                workflow_type="project_update_scan",
+                title=f"Project Update Candidate - {_title(project)}",
+                deterministic_markdown=content,
+                context_rows=tuple([project, *sources, *memories]),
+                source_refs=tuple(source_refs),
+                open_questions=("Should this project state update be accepted, edited, or rejected?",),
+                trace_id=request.trace_id,
+                route=route,
+                temperature=request.model_temperature,
+                config={"generated_by": request.generated_by, "agent_id": request.actor_id},
+            )
+        )
+        return (
+            model_artifact.content_markdown,
+            model_artifact.prompt_hash,
+            model_artifact.model_info,
+            {**metadata, **model_artifact.metadata},
+        )
 
     def extract_open_loops(self, request: ProjectAutomationRequest | None = None) -> list[JsonObject]:
         request = request or ProjectAutomationRequest()

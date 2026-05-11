@@ -18,6 +18,7 @@ const EXPECTED_SURFACES = [
   "Weekly Synthesis",
   "Queue",
   "Generated",
+  "Model Comparison",
   "Memory Review",
   "Projects",
   "People",

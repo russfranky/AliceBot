@@ -5,6 +5,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import type {
   ApiSource,
   JsonObject,
+  VNextArtifactQualityEvalRecord,
   VNextArtifactRecord,
   VNextBeliefRecord,
   VNextBrainCharterRecord,
@@ -31,6 +32,7 @@ import {
   generateVNextWeeklySynthesis,
   getVNextWorkspace,
   patchVNextSchedulerWorkflow,
+  rateVNextArtifactQuality,
   reviewVNextArtifact,
   reviewVNextMemory,
   reviewVNextOpenLoop,
@@ -119,6 +121,7 @@ type WorkspaceView = {
   beliefs: VNextBeliefRecord[];
   tasks: VNextTaskRecord[];
   recentEvents: VNextEventRecord[];
+  qualityEvals: VNextArtifactQualityEvalRecord[];
   agentActivity: NonNullable<VNextWorkspacePayload["agent_activity"]>;
   policyTelemetry: VNextPolicyTelemetrySummary;
   scheduler: VNextSchedulerStatus;
@@ -139,6 +142,7 @@ const SURFACES = [
   "Weekly Synthesis",
   "Queue",
   "Generated",
+  "Model Comparison",
   "Memory Review",
   "Projects",
   "People",
@@ -241,6 +245,7 @@ function createSummary(view: Omit<WorkspaceView, "summary">): WorkspaceSummary {
     event_count: view.recentEvents.length,
     agent_count: view.agentActivity.agents.length,
     scheduler_enabled_count: view.scheduler.enabled_count,
+    quality_eval_count: view.qualityEvals.length,
     memory_status_counts: memoryStatusCounts,
     artifact_status_counts: artifactStatusCounts,
     open_loop_status_counts: openLoopStatusCounts,
@@ -394,7 +399,32 @@ const FIXTURE_ARTIFACTS: VNextArtifactRecord[] = [
     domain: "project",
     sensitivity: "private",
     generated_by: "vnext_daily_brief",
-    metadata_json: { workflow: "daily_brief", source_ids: ["source-fixture-1"] },
+    metadata_json: { workflow: "daily_brief", source_ids: ["source-fixture-1"], generation_mode: "deterministic" },
+  },
+  {
+    id: "artifact-fixture-model-daily",
+    artifact_type: "daily_brief",
+    title: "Daily Brief - model-backed comparison",
+    content_markdown:
+      "# Daily Brief - model-backed comparison\n\n## Facts\n- Launch owner is unresolved. [source:source-fixture-1]\n\n## Inferences\n- Legal review and ownership are coupled.\n\n## Recommendations\n- Resolve the owner before expanding launch scope.\n\n## Uncertainties\n- Vendor legal timing is still unknown.\n\n## Source References\n- source:source-fixture-1\n\n## Contradictions Considered\n- No explicit contradiction candidates were supplied.\n\n## Open Questions\n- Who owns the launch checklist?",
+    status: "needs_review",
+    domain: "project",
+    sensitivity: "private",
+    generated_by: "vnext_daily_brief",
+    prompt_hash: "sha256:fixture-daily-prompt",
+    model_info_json: {
+      provider: "deterministic_local",
+      model: "alice-vnext-grounded-synthesizer-v1",
+      prompt_hash: "sha256:fixture-daily-prompt",
+      input_context_hash: "sha256:fixture-daily-context",
+      policy_mode: "local_only_restricted_safe_default",
+    },
+    metadata_json: {
+      workflow: "daily_brief",
+      source_refs: ["source:source-fixture-1"],
+      generation_mode: "model_backed",
+      model_routing: { route_mode: "local_only", policy_mode: "local_only_restricted_safe_default" },
+    },
   },
   {
     id: "artifact-fixture-2",
@@ -406,7 +436,84 @@ const FIXTURE_ARTIFACTS: VNextArtifactRecord[] = [
     domain: "professional",
     sensitivity: "internal",
     generated_by: "vnext_weekly_synthesis",
-    metadata_json: { workflow: "weekly_synthesis" },
+    metadata_json: { workflow: "weekly_synthesis", generation_mode: "deterministic" },
+  },
+  {
+    id: "artifact-fixture-connection-deterministic",
+    artifact_type: "connection_report",
+    title: "Connection Report - deterministic",
+    content_markdown: "# Connection Report\n\n## Candidate Connections\n- Launch owner and legal review share release risk.",
+    status: "needs_review",
+    domain: "project",
+    sensitivity: "private",
+    generated_by: "vnext_connection_finder",
+    metadata_json: { workflow_type: "connection_report", generation_mode: "deterministic", source_refs: ["source:source-fixture-1"] },
+  },
+  {
+    id: "artifact-fixture-connection-model",
+    artifact_type: "connection_report",
+    title: "Connection Report - model-backed",
+    content_markdown:
+      "# Connection Report - model-backed\n\n## Facts\n- Launch owner is unresolved. [source:source-fixture-1]\n\n## Inferences\n- The blocker pattern spans legal review and launch ownership.\n\n## Recommendations\n- Accept the candidate edge only after confirming source evidence.\n\n## Uncertainties\n- The legal owner may already be assigned elsewhere.\n\n## Source References\n- source:source-fixture-1\n\n## Contradictions Considered\n- No explicit contradiction candidates were supplied.\n\n## Open Questions\n- Is this a dependency edge or only a shared theme?",
+    status: "needs_review",
+    domain: "project",
+    sensitivity: "private",
+    generated_by: "vnext_connection_finder",
+    model_info_json: {
+      provider: "deterministic_local",
+      model: "alice-vnext-grounded-synthesizer-v1",
+      prompt_hash: "sha256:fixture-connection-prompt",
+      input_context_hash: "sha256:fixture-connection-context",
+      policy_mode: "local_only_restricted_safe_default",
+    },
+    metadata_json: { workflow_type: "connection_report", generation_mode: "model_backed", source_refs: ["source:source-fixture-1"] },
+  },
+  {
+    id: "artifact-fixture-contradiction-deterministic",
+    artifact_type: "contradiction_report",
+    title: "Contradiction Report - deterministic",
+    content_markdown: "# Contradiction Report\n\n## Candidate Contradictions\n- Older ownership memory conflicts with newer unresolved-owner note.",
+    status: "needs_review",
+    domain: "project",
+    sensitivity: "private",
+    generated_by: "vnext_contradiction_finder",
+    metadata_json: { workflow_type: "contradiction_report", generation_mode: "deterministic", source_refs: ["source:source-fixture-1"] },
+  },
+  {
+    id: "artifact-fixture-contradiction-model",
+    artifact_type: "contradiction_report",
+    title: "Contradiction Report - model-backed",
+    content_markdown:
+      "# Contradiction Report - model-backed\n\n## Facts\n- A newer note says ownership is unresolved. [source:source-fixture-1]\n\n## Inferences\n- The active belief may be stale rather than false.\n\n## Recommendations\n- Challenge the belief and request confirmation.\n\n## Uncertainties\n- The source may refer to a different checklist.\n\n## Source References\n- source:source-fixture-1\n\n## Contradictions Considered\n- Older ownership claim versus newer unresolved-owner note.\n\n## Open Questions\n- Which checklist does each source reference?",
+    status: "needs_review",
+    domain: "project",
+    sensitivity: "private",
+    generated_by: "vnext_contradiction_finder",
+    model_info_json: {
+      provider: "deterministic_local",
+      model: "alice-vnext-grounded-synthesizer-v1",
+      prompt_hash: "sha256:fixture-contradiction-prompt",
+      input_context_hash: "sha256:fixture-contradiction-context",
+      policy_mode: "local_only_restricted_safe_default",
+    },
+    metadata_json: { workflow_type: "contradiction_report", generation_mode: "model_backed", source_refs: ["source:source-fixture-1"] },
+  },
+];
+
+const FIXTURE_QUALITY_EVALS: VNextArtifactQualityEvalRecord[] = [
+  {
+    id: "quality-fixture-1",
+    artifact_id: "artifact-fixture-model-daily",
+    reviewer_id: "demo-reviewer",
+    usefulness: 4,
+    accuracy: 4,
+    source_grounding: 5,
+    novel_connections: 3,
+    actionability: 4,
+    hallucination_risk: 1,
+    verbosity: "right_sized",
+    comments: "Model-backed brief separates facts from recommendations.",
+    created_at: "2026-05-11T09:00:00Z",
   },
 ];
 
@@ -671,6 +778,7 @@ function fixtureWorkspace(): WorkspaceView {
     beliefs: FIXTURE_BELIEFS,
     tasks: [],
     recentEvents: FIXTURE_EVENTS,
+    qualityEvals: FIXTURE_QUALITY_EVALS,
     agentActivity: FIXTURE_AGENT_ACTIVITY,
     policyTelemetry: FIXTURE_POLICY_TELEMETRY,
     scheduler: FIXTURE_SCHEDULER,
@@ -695,6 +803,7 @@ function emptyWorkspace(): WorkspaceView {
     beliefs: [],
     tasks: [],
     recentEvents: [],
+    qualityEvals: [],
     agentActivity: EMPTY_AGENT_ACTIVITY,
     policyTelemetry: EMPTY_POLICY_TELEMETRY,
     scheduler: EMPTY_SCHEDULER,
@@ -716,6 +825,7 @@ function workspaceFromPayload(payload: VNextWorkspacePayload): WorkspaceView {
     beliefs: payload.beliefs,
     tasks: payload.tasks,
     recentEvents: payload.recent_events,
+    qualityEvals: payload.quality_evals ?? [],
     agentActivity: payload.agent_activity ?? EMPTY_AGENT_ACTIVITY,
     policyTelemetry: payload.policy_telemetry ?? EMPTY_POLICY_TELEMETRY,
     scheduler: payload.scheduler ?? EMPTY_SCHEDULER,
@@ -792,6 +902,32 @@ function pushBoundedLog(message: string, previous: string[]) {
 function latestArtifact(artifacts: VNextArtifactRecord[], artifactType: string) {
   return artifacts.find((artifact) => artifact.artifact_type === artifactType) ?? null;
 }
+
+function artifactGenerationMode(artifact: VNextArtifactRecord) {
+  const metadata = asRecord(artifact.metadata_json);
+  return textValue(metadata.generation_mode) || "deterministic";
+}
+
+function artifactModelLabel(artifact: VNextArtifactRecord) {
+  const modelInfo = asRecord(artifact.model_info_json);
+  const provider = textValue(modelInfo.provider) || textValue(asRecord(artifact.metadata_json).model_provider);
+  const model = textValue(modelInfo.model) || textValue(asRecord(artifact.metadata_json).model);
+  return provider || model ? `${provider || "provider"} / ${model || "model"}` : "No model metadata";
+}
+
+function latestArtifactByMode(artifacts: VNextArtifactRecord[], artifactType: string, generationMode: string) {
+  return (
+    artifacts.find(
+      (artifact) => artifact.artifact_type === artifactType && artifactGenerationMode(artifact) === generationMode,
+    ) ?? null
+  );
+}
+
+const COMPARISON_ARTIFACT_TYPES = [
+  { artifactType: "daily_brief", label: "Daily Brief" },
+  { artifactType: "connection_report", label: "Connection Report" },
+  { artifactType: "contradiction_report", label: "Contradiction Report" },
+];
 
 function scheduleValue(workflow: VNextSchedulerStatus["workflows"][number], key: string, fallback: string) {
   const schedule = asRecord(workflow.schedule_json);
@@ -889,6 +1025,18 @@ export function VNextBrainWorkspace({
   const [schedulerDrafts, setSchedulerDrafts] = useState<
     Record<string, { timeOfDay: string; dayOfWeek: string; timezone: string }>
   >({});
+  const [generationMode, setGenerationMode] = useState<"deterministic" | "model_backed">("deterministic");
+  const [qualityArtifactId, setQualityArtifactId] = useState("");
+  const [qualityScores, setQualityScores] = useState({
+    usefulness: 4,
+    accuracy: 4,
+    source_grounding: 4,
+    novel_connections: 3,
+    actionability: 4,
+    hallucination_risk: 1,
+  });
+  const [qualityVerbosity, setQualityVerbosity] = useState("right_sized");
+  const [qualityComments, setQualityComments] = useState("");
 
   const dailyArtifact = latestArtifact(workspace.artifacts, "daily_brief");
   const weeklyArtifact = latestArtifact(workspace.artifacts, "weekly_synthesis");
@@ -1264,12 +1412,25 @@ export function VNextBrainWorkspace({
             : kind === "weekly"
               ? "Weekly Synthesis - Demo"
               : "Project Update Candidate - Demo",
-        content_markdown: `# ${kind} demo artifact\n\nGenerated from fixture workspace state.`,
+        content_markdown:
+          generationMode === "model_backed"
+            ? `# ${kind} demo artifact\n\n## Facts\n- Demo source evidence is selected.\n\n## Inferences\n- The workspace has enough context to synthesize a reviewable artifact.\n\n## Recommendations\n- Keep the artifact in review.\n\n## Uncertainties\n- Live source coverage may differ from fixture data.\n\n## Source References\n- source:demo\n\n## Contradictions Considered\n- No explicit contradiction candidates were supplied.\n\n## Open Questions\n- Which source should be reviewed next?`
+            : `# ${kind} demo artifact\n\nGenerated from fixture workspace state.`,
         status: "needs_review",
         domain: defaultDomain,
         sensitivity: defaultSensitivity,
         generated_by: "vnext_demo_workspace",
-        metadata_json: { workflow: artifactType, project_id: selectedProjectId },
+        model_info_json:
+          generationMode === "model_backed"
+            ? {
+                provider: "deterministic_local",
+                model: "alice-vnext-grounded-synthesizer-v1",
+                prompt_hash: "sha256:demo-prompt",
+                input_context_hash: "sha256:demo-context",
+                policy_mode: "local_only_default",
+              }
+            : null,
+        metadata_json: { workflow: artifactType, project_id: selectedProjectId, generation_mode: generationMode },
       };
       updateFixtureWorkspace(
         (previous) => {
@@ -1291,6 +1452,9 @@ export function VNextBrainWorkspace({
             sensitivity_allowed: ["public", "internal", "private", "unknown"],
             discover_open_loops: true,
             create_candidate_memories: true,
+            generation_mode: generationMode,
+            model_route_mode: "local_only",
+            model_provider: "deterministic_local",
           },
         };
         if (kind === "daily") {
@@ -1301,7 +1465,12 @@ export function VNextBrainWorkspace({
           await generateVNextProjectUpdate(apiBaseUrl, {
             user_id: userId,
             scope: { project_id: selectedProjectId || undefined, domains: [defaultDomain] },
-            options: { sensitivity_allowed: ["public", "internal", "private", "unknown"] },
+            options: {
+              sensitivity_allowed: ["public", "internal", "private", "unknown"],
+              generation_mode: generationMode,
+              model_route_mode: "local_only",
+              model_provider: "deterministic_local",
+            },
           });
         }
       },
@@ -1349,7 +1518,18 @@ export function VNextBrainWorkspace({
                     generated_by: "scheduler",
                     source_refs: [],
                     review_status: "needs_review",
+                    generation_mode: generationMode,
                   },
+                  model_info_json:
+                    generationMode === "model_backed"
+                      ? {
+                          provider: "deterministic_local",
+                          model: "alice-vnext-grounded-synthesizer-v1",
+                          prompt_hash: "sha256:scheduler-demo-prompt",
+                          input_context_hash: "sha256:scheduler-demo-context",
+                          policy_mode: "local_only_default",
+                        }
+                      : null,
                 }
               : null;
           const nextRun =
@@ -1417,7 +1597,12 @@ export function VNextBrainWorkspace({
           await runVNextSchedulerWorkflowNow(apiBaseUrl, workflow.workflow_type, {
             user_id: userId,
             scope: { domains: [defaultDomain] },
-            options: { sensitivity_allowed: ["public", "internal", "private", "unknown"] },
+            options: {
+              sensitivity_allowed: ["public", "internal", "private", "unknown"],
+              generation_mode: generationMode,
+              model_route_mode: "local_only",
+              model_provider: "deterministic_local",
+            },
           });
           return;
         }
@@ -1427,6 +1612,14 @@ export function VNextBrainWorkspace({
           paused: action === "pause" ? true : action === "resume" ? false : undefined,
           schedule_json: action === "update_schedule" ? scheduleJson : undefined,
           timezone: action === "update_schedule" ? draft.timezone : undefined,
+          model_options:
+            action === "update_schedule" || action === "enable"
+              ? {
+                  generation_mode: generationMode,
+                  model_route_mode: "local_only",
+                  model_provider: "deterministic_local",
+                }
+              : undefined,
         });
       },
       `Scheduler action applied: ${action}.`,
@@ -1517,6 +1710,47 @@ export function VNextBrainWorkspace({
         await reviewVNextArtifact(apiBaseUrl, artifact.id, { user_id: userId, action });
       },
       `Artifact action applied: ${action}.`,
+    );
+  }
+
+  async function handleQualityRating(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const artifactId = qualityArtifactId || workspace.artifacts[0]?.id || "";
+    if (!artifactId) {
+      setStatusTone("danger");
+      setStatusText("Quality rating needs a generated artifact.");
+      return;
+    }
+    if (!liveModeReady || !apiBaseUrl || !userId) {
+      const nextEval: VNextArtifactQualityEvalRecord = {
+        id: `quality-demo-${workspace.qualityEvals.length + 1}`,
+        artifact_id: artifactId,
+        reviewer_id: "demo-reviewer",
+        ...qualityScores,
+        verbosity: qualityVerbosity,
+        comments: qualityComments || null,
+        created_at: new Date().toISOString(),
+      };
+      updateFixtureWorkspace(
+        (previous) => {
+          const view = { ...previous, qualityEvals: [nextEval, ...previous.qualityEvals] };
+          return { ...view, summary: createSummary(view) };
+        },
+        "Demo artifact quality rating saved.",
+      );
+      return;
+    }
+    await runLiveAction(
+      "Saving artifact quality rating...",
+      async () => {
+        await rateVNextArtifactQuality(apiBaseUrl, artifactId, {
+          user_id: userId,
+          ...qualityScores,
+          verbosity: qualityVerbosity,
+          comments: qualityComments || undefined,
+        });
+      },
+      "Artifact quality rating saved.",
     );
   }
 
@@ -1743,6 +1977,17 @@ export function VNextBrainWorkspace({
               <span className="meta-pill">Domain: {domainLabel(defaultDomain)}</span>
               <span className="meta-pill">Sensitivity: {sensitivityLabel(defaultSensitivity)}</span>
             </div>
+            <div className="form-field">
+              <label htmlFor="vnext-generation-mode">Generation mode</label>
+              <select
+                id="vnext-generation-mode"
+                value={generationMode}
+                onChange={(event) => setGenerationMode(event.target.value as "deterministic" | "model_backed")}
+              >
+                <option value="deterministic">Deterministic</option>
+                <option value="model_backed">Model-backed local</option>
+              </select>
+            </div>
           </div>
         </SectionCard>
       </div>
@@ -1903,6 +2148,10 @@ export function VNextBrainWorkspace({
                     <span className="meta-pill">Domain: {domainLabel(asDomain(artifact.domain))}</span>
                     <span className="meta-pill">Sensitivity: {sensitivityLabel(asSensitivity(artifact.sensitivity))}</span>
                     <span className="meta-pill">Generated by: {artifact.generated_by}</span>
+                    <span className="meta-pill">Mode: {artifactGenerationMode(artifact)}</span>
+                    {artifactGenerationMode(artifact) === "model_backed" ? (
+                      <span className="meta-pill">Model: {artifactModelLabel(artifact)}</span>
+                    ) : null}
                   </div>
                   <div className="vnext-review-actions">
                     {(["review", "accept", "reject", "promote", "archive"] as const).map((action) => (
@@ -1922,6 +2171,106 @@ export function VNextBrainWorkspace({
             ) : (
               <EmptyState title="No generated artifacts" description="Generate a daily brief, weekly synthesis, or project update to create reviewable artifacts." />
             )}
+          </div>
+          <form className="detail-stack" onSubmit={handleQualityRating}>
+            <div className="form-field-group form-field-group--two-up">
+              <div className="form-field">
+                <label htmlFor="vnext-quality-artifact">Quality artifact</label>
+                <select
+                  id="vnext-quality-artifact"
+                  value={qualityArtifactId || workspace.artifacts[0]?.id || ""}
+                  onChange={(event) => setQualityArtifactId(event.target.value)}
+                >
+                  {workspace.artifacts.map((artifact) => (
+                    <option key={artifact.id} value={artifact.id}>
+                      {artifact.title}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="form-field">
+                <label htmlFor="vnext-quality-verbosity">Depth</label>
+                <select
+                  id="vnext-quality-verbosity"
+                  value={qualityVerbosity}
+                  onChange={(event) => setQualityVerbosity(event.target.value)}
+                >
+                  <option value="too_shallow">Too shallow</option>
+                  <option value="right_sized">Right sized</option>
+                  <option value="too_verbose">Too verbose</option>
+                  <option value="unknown">Unknown</option>
+                </select>
+              </div>
+            </div>
+            <div className="form-field-group form-field-group--three-up">
+              {(["usefulness", "accuracy", "source_grounding", "novel_connections", "actionability", "hallucination_risk"] as const).map((field) => (
+                <div className="form-field" key={field}>
+                  <label htmlFor={`vnext-quality-${field}`}>{field.replace(/_/g, " ")}</label>
+                  <input
+                    id={`vnext-quality-${field}`}
+                    type="number"
+                    min={1}
+                    max={5}
+                    value={qualityScores[field]}
+                    onChange={(event) =>
+                      setQualityScores((previous) => ({
+                        ...previous,
+                        [field]: Number(event.target.value),
+                      }))
+                    }
+                  />
+                </div>
+              ))}
+            </div>
+            <div className="form-field">
+              <label htmlFor="vnext-quality-comments">Comments</label>
+              <textarea
+                id="vnext-quality-comments"
+                value={qualityComments}
+                onChange={(event) => setQualityComments(event.target.value)}
+              />
+            </div>
+            <button type="submit" className="button" disabled={Boolean(pendingAction) || workspace.artifacts.length === 0}>
+              Save quality rating
+            </button>
+            <p className="muted-copy">{workspace.qualityEvals.length} quality rating(s) recorded.</p>
+          </form>
+        </SectionCard>
+      </div>
+
+      <div id="vnext-model-comparison" className="content-grid content-grid--wide">
+        <SectionCard
+          eyebrow="Comparison"
+          title="Deterministic vs model-backed"
+          description="Daily brief, connection report, and contradiction report can be reviewed side by side before any artifact is promoted."
+        >
+          <div className="list-rows">
+            {COMPARISON_ARTIFACT_TYPES.map(({ artifactType, label }) => {
+              const deterministic = latestArtifactByMode(workspace.artifacts, artifactType, "deterministic");
+              const modelBacked = latestArtifactByMode(workspace.artifacts, artifactType, "model_backed");
+              return (
+                <article key={artifactType} className="list-row">
+                  <div className="list-row__topline">
+                    <h3 className="list-row__title">{label}</h3>
+                    <StatusBadge status={modelBacked ? "active" : "requires_review"} label={modelBacked ? "Comparable" : "Needs model-backed run"} />
+                  </div>
+                  <div className="key-value-grid">
+                    <div>
+                      <dt>Deterministic</dt>
+                      <dd>{deterministic ? artifactExcerpt(deterministic) : "No deterministic artifact yet."}</dd>
+                    </div>
+                    <div>
+                      <dt>Model-backed</dt>
+                      <dd>{modelBacked ? artifactExcerpt(modelBacked) : "No model-backed artifact yet."}</dd>
+                    </div>
+                  </div>
+                  <div className="list-row__meta">
+                    <span className="meta-pill">Deterministic: {deterministic?.id ?? "none"}</span>
+                    <span className="meta-pill">Model-backed: {modelBacked?.id ?? "none"}</span>
+                  </div>
+                </article>
+              );
+            })}
           </div>
         </SectionCard>
       </div>

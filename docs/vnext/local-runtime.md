@@ -24,6 +24,7 @@ alicebot vnext scheduler runs
 alicebot vnext scheduler failures
 alicebot vnext agents policy-telemetry
 alicebot vnext smoke local-runtime
+alicebot vnext smoke model-backed
 ```
 
 Useful options:
@@ -43,6 +44,7 @@ Useful options:
 - Daily Brief and Weekly Synthesis scheduled runs still produce reviewable generated artifacts.
 - Connection Report, Contradiction Report, Open Loop Review, and Project Update Scan now produce deterministic reviewable artifacts from scheduled runs.
 - Scheduled artifacts include scheduler trace metadata: `generated_by`, `workflow_type`, `scheduler_run_id`, `trace_id`, `source_refs`, `domain`, `sensitivity`, and `review_status`.
+- Scheduled workflows can run with `--generation-mode deterministic` or `--generation-mode model_backed`. Model-backed scheduled runs store prompt hashes, input context hashes, provider/model metadata, source-grounded sections, and routing policy.
 - Generated artifacts and agent proposals are not auto-promoted into trusted memory.
 
 ## Operator Visibility
@@ -56,6 +58,8 @@ The API exposes the same local runtime posture through:
 - `GET /v0/vnext/scheduler/failures`
 - `POST /v0/vnext/scheduler/run-due`
 - `GET /v0/vnext/agents/policy-telemetry`
+
+Scheduler workflow configuration can also carry `model_options` so due scans run model-backed workflows only when policy and routing allow them.
 
 ## macOS launchd
 
@@ -84,6 +88,9 @@ The local runtime smoke is Postgres-backed:
 
 ```bash
 alicebot vnext smoke local-runtime
+alicebot vnext smoke model-backed
 ```
 
 It seeds a small local-runtime fixture, marks all six scheduler workflows due, runs the foreground daemon once, and checks that each workflow produces a reviewable artifact with scheduler metadata.
+
+The model-backed smoke seeds a scheduled model-backed workflow and verifies that the due scan creates a reviewable artifact with local-only routing, provider metadata, source references, and the required grounded output sections.

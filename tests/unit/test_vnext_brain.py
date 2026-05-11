@@ -215,6 +215,49 @@ def test_weekly_synthesis_can_skip_candidate_memory_creation() -> None:
     assert len(store.memories) == 1
 
 
+def test_daily_brief_model_backed_mode_stores_provider_metadata_and_review_only_artifact() -> None:
+    store = _seed_store()
+
+    artifact = VNextBrainService(store).generate_daily_brief(
+        BrainArtifactRequest(
+            generated_for="2026-05-10",
+            domains=("project",),
+            generation_mode="model_backed",
+            model_route_mode="local_only",
+        )
+    )
+
+    assert artifact["status"] == "needs_review"
+    assert artifact["prompt_hash"].startswith("sha256:")
+    assert artifact["model_info_json"]["provider"] == "deterministic_local"
+    assert artifact["model_info_json"]["input_context_hash"].startswith("sha256:")
+    assert artifact["metadata_json"]["generation_mode"] == "model_backed"
+    assert artifact["metadata_json"]["model_routing"]["route_mode"] == "local_only"
+    assert "## Facts" in artifact["content_markdown"]
+    assert "## Recommendations" in artifact["content_markdown"]
+    assert "## Source References" in artifact["content_markdown"]
+    assert "source:source-1" in artifact["content_markdown"]
+
+
+def test_weekly_synthesis_model_backed_mode_keeps_candidate_memory_reviewable() -> None:
+    store = _seed_store()
+
+    artifact = VNextBrainService(store).generate_weekly_synthesis(
+        BrainArtifactRequest(
+            generated_for="2026-05-10",
+            domains=("project",),
+            generation_mode="model_backed",
+            model_route_mode="local_only",
+        )
+    )
+
+    assert artifact["status"] == "needs_review"
+    assert artifact["metadata_json"]["generation_mode"] == "model_backed"
+    assert artifact["model_info_json"]["provider"] == "deterministic_local"
+    assert store.memories[-1]["status"] == "candidate"
+    assert "## Uncertainties" in artifact["content_markdown"]
+
+
 def test_brain_request_validation_rejects_bad_dates_and_limits() -> None:
     service = VNextBrainService(InMemoryVNextBrainStore())
 

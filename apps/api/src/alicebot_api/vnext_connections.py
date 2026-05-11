@@ -5,6 +5,12 @@ import re
 from typing import Protocol
 
 from alicebot_api.vnext_event_log import append_event
+from alicebot_api.vnext_model_intelligence import (
+    ModelBackedRequest,
+    ModelRoutingRequest,
+    build_model_backed_artifact,
+    resolve_model_route,
+)
 from alicebot_api.vnext_repositories import JsonObject
 
 
@@ -99,6 +105,12 @@ class ConnectionFinderRequest:
     agent_identity: JsonObject | None = None
     policy_decision: JsonObject | None = None
     metadata_json: JsonObject = field(default_factory=dict)
+    generation_mode: str = "deterministic"
+    model_route_mode: str | None = None
+    model_provider: str | None = None
+    model: str | None = None
+    model_temperature: float = 0.2
+    allow_cloud_private: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +142,10 @@ def _validate_request(request: ConnectionFinderRequest) -> None:
         raise VNextConnectionValidationError("max_connections must be between 1 and 50")
     if not request.sensitivity_allowed:
         raise VNextConnectionValidationError("sensitivity_allowed must not be empty")
+    if request.generation_mode not in {"deterministic", "model_backed"}:
+        raise VNextConnectionValidationError("generation_mode must be deterministic or model_backed")
+    if request.model_temperature < 0.0 or request.model_temperature > 2.0:
+        raise VNextConnectionValidationError("model_temperature must be between 0.0 and 2.0")
     if request.auto_accept_threshold is not None and (
         request.auto_accept_threshold < 0.0 or request.auto_accept_threshold > 1.0
     ):
@@ -284,6 +300,14 @@ def _report_markdown(connections: list[JsonObject], edge_ids: list[str]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _brain_charter(store: VNextConnectionStore) -> JsonObject | None:
+    getter = getattr(store, "get_brain_charter", None)
+    if not callable(getter):
+        return None
+    charter = getter()
+    return charter if isinstance(charter, dict) else None
+
+
 class VNextConnectionService:
     def __init__(self, store: VNextConnectionStore) -> None:
         self.store = store
@@ -360,34 +384,75 @@ class VNextConnectionService:
 
         source_ids = [str(source.get("id")) for source in sources if source.get("id") is not None]
         memory_ids = [str(memory.get("id")) for memory in memories if memory.get("id") is not None]
+        source_refs = [f"source:{source_id}" for source_id in source_ids]
+        content = _report_markdown(connection_records, edge_ids)
+        metadata = {
+            "workflow": "connection_finder",
+            "workflow_type": "connection_report",
+            "candidate_edge_ids": edge_ids,
+            "connections": connection_records,
+            "source_ids": source_ids,
+            "memory_ids": memory_ids,
+            "source_refs": source_refs,
+            "input_counts": {"sources": len(sources), "memories": len(memories)},
+            "generated_by": request.generated_by,
+            "agent_identity": request.agent_identity,
+            "agent_id": request.actor_id if request.generated_by == "agent" else None,
+            "agent_run_id": request.run_id if request.generated_by == "agent" else None,
+            "scheduler_run_id": request.run_id if request.generated_by == "scheduler" else None,
+            "trace_id": request.trace_id,
+            "policy_decision": request.policy_decision,
+            "review_status": "needs_review",
+            "generation_mode": request.generation_mode,
+            **request.metadata_json,
+        }
+        prompt_hash: str | None = None
+        model_info_json: JsonObject | None = None
+        if request.generation_mode == "model_backed":
+            route = resolve_model_route(
+                ModelRoutingRequest(
+                    workflow_type="connection_report",
+                    generation_mode="model_backed",
+                    domains=request.domains,
+                    sensitivity_allowed=request.sensitivity_allowed,
+                    agent_identity=request.agent_identity,
+                    brain_charter=_brain_charter(self.store),
+                    requested_route_mode=request.model_route_mode,
+                    requested_provider=request.model_provider,
+                    requested_model=request.model,
+                    allow_cloud_private=request.allow_cloud_private,
+                )
+            )
+            model_artifact = build_model_backed_artifact(
+                ModelBackedRequest(
+                    workflow_type="connection_report",
+                    title="Connection Report",
+                    deterministic_markdown=content,
+                    context_rows=tuple([*sources, *memories, *connection_records]),
+                    source_refs=tuple(source_refs),
+                    open_questions=("Which candidate edge is worth accepting into the graph?",),
+                    trace_id=request.trace_id,
+                    route=route,
+                    temperature=request.model_temperature,
+                    config={"generated_by": request.generated_by, "agent_id": request.actor_id},
+                )
+            )
+            content = model_artifact.content_markdown
+            prompt_hash = model_artifact.prompt_hash
+            model_info_json = model_artifact.model_info
+            metadata = {**metadata, **model_artifact.metadata}
         artifact = self.store.create_artifact(
             {
                 "artifact_type": "connection_report",
                 "title": "Connection Report",
-                "content_markdown": _report_markdown(connection_records, edge_ids),
+                "content_markdown": content,
                 "status": "needs_review",
                 "domain": request.domains[0] if len(request.domains) == 1 else "unknown",
                 "sensitivity": self._highest_sensitivity([*sources, *memories]),
                 "generated_by": request.generated_by if request.generated_by != "system" else "vnext_connection_finder",
-                "metadata_json": {
-                    "workflow": "connection_finder",
-                    "workflow_type": "connection_report",
-                    "candidate_edge_ids": edge_ids,
-                    "connections": connection_records,
-                    "source_ids": source_ids,
-                    "memory_ids": memory_ids,
-                    "source_refs": [f"source:{source_id}" for source_id in source_ids],
-                    "input_counts": {"sources": len(sources), "memories": len(memories)},
-                    "generated_by": request.generated_by,
-                    "agent_identity": request.agent_identity,
-                    "agent_id": request.actor_id if request.generated_by == "agent" else None,
-                    "agent_run_id": request.run_id if request.generated_by == "agent" else None,
-                    "scheduler_run_id": request.run_id if request.generated_by == "scheduler" else None,
-                    "trace_id": request.trace_id,
-                    "policy_decision": request.policy_decision,
-                    "review_status": "needs_review",
-                    **request.metadata_json,
-                },
+                "prompt_hash": prompt_hash,
+                "model_info_json": model_info_json,
+                "metadata_json": metadata,
             }
         )
         append_event(
@@ -405,6 +470,7 @@ class VNextConnectionService:
                 "artifact_type": "connection_report",
                 "candidate_edge_count": len(edge_ids),
                 "policy_decision": request.policy_decision,
+                "generation_mode": request.generation_mode,
             },
         )
         return artifact

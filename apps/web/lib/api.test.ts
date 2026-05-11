@@ -36,6 +36,7 @@ import {
   getTaskSteps,
   getVNextBrainCharter,
   getVNextPolicyTelemetry,
+  getVNextQualityEvals,
   getVNextSchedulerFailures,
   getVNextWorkspace,
   getThreadDetail,
@@ -77,6 +78,7 @@ import {
   hasLiveApiConfig,
   isLocalApiBaseUrl,
   pageModeLabel,
+  rateVNextArtifactQuality,
   resolveApproval,
   reviewVNextArtifact,
   reviewVNextMemory,
@@ -3645,6 +3647,17 @@ describe("api helpers", () => {
       user_id: "user-1",
       action: "archive",
     });
+    await rateVNextArtifactQuality("https://api.example.com", "artifact-1", {
+      user_id: "user-1",
+      usefulness: 4,
+      accuracy: 5,
+      source_grounding: 5,
+      novel_connections: 3,
+      actionability: 4,
+      hallucination_risk: 1,
+      verbosity: "right_sized",
+      comments: "Useful and grounded.",
+    });
     await reviewVNextMemory("https://api.example.com", "memory-1", {
       user_id: "user-1",
       action: "assign_project",
@@ -3688,6 +3701,7 @@ describe("api helpers", () => {
       options: { sensitivity_allowed: ["public", "private"] },
     });
     await runVNextSchedulerDue("https://api.example.com", { user_id: "user-1", limit: 10 });
+    await getVNextQualityEvals("https://api.example.com", "user-1", { artifactId: "artifact-1", limit: 5 });
     await getVNextPolicyTelemetry("https://api.example.com", "user-1");
 
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
@@ -3697,6 +3711,7 @@ describe("api helpers", () => {
       "https://api.example.com/v0/vnext/artifacts/generate/daily-brief",
       "https://api.example.com/v0/vnext/artifacts/generate/weekly-synthesis",
       "https://api.example.com/v0/vnext/artifacts/artifact-1/review",
+      "https://api.example.com/v0/vnext/artifacts/artifact-1/quality-ratings",
       "https://api.example.com/v0/vnext/memories/memory-1/review",
       "https://api.example.com/v0/vnext/projects",
       "https://api.example.com/v0/vnext/projects/update-candidates",
@@ -3707,27 +3722,28 @@ describe("api helpers", () => {
       "https://api.example.com/v0/vnext/scheduler/failures?user_id=user-1&limit=5",
       "https://api.example.com/v0/vnext/scheduler/workflows/daily_brief/run-now",
       "https://api.example.com/v0/vnext/scheduler/run-due",
+      "https://api.example.com/v0/vnext/quality-evals?user_id=user-1&limit=5&artifact_id=artifact-1",
       "https://api.example.com/v0/vnext/agents/policy-telemetry?user_id=user-1",
     ]);
     expect(fetchMock.mock.calls[1]?.[1]).toEqual(
       expect.objectContaining({ method: "POST" }),
     );
-    expect(fetchMock.mock.calls[12]?.[1]).toEqual(
+    expect(fetchMock.mock.calls[13]?.[1]).toEqual(
       expect.objectContaining({ method: "PUT" }),
-    );
-    expect(fetchMock.mock.calls[14]?.[1]).toEqual(
-      expect.objectContaining({ method: "POST" }),
     );
     expect(fetchMock.mock.calls[15]?.[1]).toEqual(
       expect.objectContaining({ method: "POST" }),
     );
-    expect(JSON.parse(String(fetchMock.mock.calls[6]?.[1]?.body))).toEqual({
+    expect(fetchMock.mock.calls[16]?.[1]).toEqual(
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[7]?.[1]?.body))).toEqual({
       user_id: "user-1",
       action: "assign_project",
       project_id: "project-1",
       reason: "Project review",
     });
-    expect(JSON.parse(String(fetchMock.mock.calls[10]?.[1]?.body))).toEqual({
+    expect(JSON.parse(String(fetchMock.mock.calls[11]?.[1]?.body))).toEqual({
       user_id: "user-1",
       action: "snooze",
       due_at: "2026-05-12T09:00:00Z",

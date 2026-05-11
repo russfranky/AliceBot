@@ -175,6 +175,16 @@ _REVIEW_APPLY_TO_CORRECTION_ACTION = {
 }
 _CONTEXT_PACK_ASSEMBLY_VERSION_V0 = "alice_context_pack_v0"
 _PREFETCH_CONTEXT_ASSEMBLY_VERSION_V0 = "alice_prefetch_context_v0"
+_MODEL_GENERATION_MODES = ("deterministic", "model_backed")
+_MODEL_ROUTE_MODES = ("local_only", "cloud_allowed", "cloud_requires_approval", "model_disabled")
+_MODEL_GENERATION_SCHEMA_PROPERTIES: dict[str, object] = {
+    "generation_mode": {"type": "string", "enum": list(_MODEL_GENERATION_MODES)},
+    "model_route_mode": {"type": "string", "enum": list(_MODEL_ROUTE_MODES)},
+    "model_provider": {"type": "string"},
+    "model": {"type": "string"},
+    "model_temperature": {"type": "number", "minimum": 0.0, "maximum": 2.0},
+    "allow_cloud_private": {"type": "boolean"},
+}
 
 
 class MCPToolError(ValueError):
@@ -533,6 +543,30 @@ def _parse_bool(arguments: Mapping[str, object], *, key: str, default: bool = Fa
         if normalized in {"false", "0", "no"}:
             return False
     raise MCPToolError(f"{key} must be a boolean")
+
+
+def _parse_model_generation_kwargs(arguments: Mapping[str, object]) -> JsonObject:
+    generation_mode = _parse_optional_text(arguments, "generation_mode") or "deterministic"
+    if generation_mode not in _MODEL_GENERATION_MODES:
+        raise MCPToolError("generation_mode must be deterministic or model_backed")
+    route_mode = _parse_optional_text(arguments, "model_route_mode")
+    if route_mode is not None and route_mode not in _MODEL_ROUTE_MODES:
+        raise MCPToolError(
+            "model_route_mode must be local_only, cloud_allowed, cloud_requires_approval, or model_disabled"
+        )
+    temperature = _parse_optional_float(arguments, "model_temperature")
+    if temperature is None:
+        temperature = 0.2
+    if temperature < 0.0 or temperature > 2.0:
+        raise MCPToolError("model_temperature must be between 0.0 and 2.0")
+    return {
+        "generation_mode": generation_mode,
+        "model_route_mode": route_mode,
+        "model_provider": _parse_optional_text(arguments, "model_provider"),
+        "model": _parse_optional_text(arguments, "model"),
+        "model_temperature": temperature,
+        "allow_cloud_private": _parse_bool(arguments, key="allow_cloud_private", default=False),
+    }
 
 
 def _parse_review_status(
@@ -1654,6 +1688,7 @@ def _brain_artifact_request_from_arguments(arguments: Mapping[str, object]) -> B
         artifact_limit=_parse_int(arguments, key="artifact_limit", default=4, minimum=1, maximum=50),
         discover_open_loops=_parse_bool(arguments, key="discover_open_loops", default=True),
         create_candidate_memories=_parse_bool(arguments, key="create_candidate_memories", default=True),
+        **_parse_model_generation_kwargs(arguments),
     )
 
 
@@ -1681,6 +1716,7 @@ def _connection_request_from_arguments(arguments: Mapping[str, object]) -> Conne
         sensitivity_allowed=sensitivity_allowed,
         max_connections=_parse_int(arguments, key="max_connections", default=8, minimum=1, maximum=50),
         auto_accept_threshold=auto_accept_threshold,
+        **_parse_model_generation_kwargs(arguments),
     )
 
 
@@ -1700,6 +1736,12 @@ def _handle_alice_generate_connections(context: MCPRuntimeContext, arguments: Ma
         sensitivity_allowed=decision.effective_sensitivity_allowed,
         max_connections=request.max_connections,
         auto_accept_threshold=request.auto_accept_threshold,
+        generation_mode=request.generation_mode,
+        model_route_mode=request.model_route_mode,
+        model_provider=request.model_provider,
+        model=request.model,
+        model_temperature=request.model_temperature,
+        allow_cloud_private=request.allow_cloud_private,
     )
     with _vnext_store_context(context) as store:
         return VNextConnectionService(store).generate_connection_report(request)
@@ -1732,6 +1774,7 @@ def _contradiction_request_from_arguments(arguments: Mapping[str, object]) -> Co
         domains=_parse_string_list(arguments, "domains"),
         sensitivity_allowed=sensitivity_allowed,
         max_contradictions=_parse_int(arguments, key="max_contradictions", default=8, minimum=1, maximum=50),
+        **_parse_model_generation_kwargs(arguments),
     )
 
 
@@ -1750,6 +1793,12 @@ def _handle_alice_generate_contradictions(context: MCPRuntimeContext, arguments:
         domains=decision.effective_domains,
         sensitivity_allowed=decision.effective_sensitivity_allowed,
         max_contradictions=request.max_contradictions,
+        generation_mode=request.generation_mode,
+        model_route_mode=request.model_route_mode,
+        model_provider=request.model_provider,
+        model=request.model,
+        model_temperature=request.model_temperature,
+        allow_cloud_private=request.allow_cloud_private,
     )
     with _vnext_store_context(context) as store:
         return VNextContradictionService(store).generate_contradiction_report(request)
@@ -1785,12 +1834,55 @@ def _project_request_from_arguments(arguments: Mapping[str, object]) -> ProjectA
         project_id=_parse_optional_text(arguments, "project_id"),
         person_id=_parse_optional_text(arguments, "person_id"),
         max_items=_parse_int(arguments, key="max_items", default=8, minimum=1, maximum=50),
+        **_parse_model_generation_kwargs(arguments),
     )
 
 
 def _handle_alice_project_update_candidate(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    request = _project_request_from_arguments(arguments)
+    identity = _agent_identity_from_arguments(arguments)
+    blocked_decision: PolicyDecision | None = None
+    payload: JsonObject | None = None
     with _vnext_store_context(context) as store:
-        return VNextProjectService(store).generate_project_update_candidate(_project_request_from_arguments(arguments))
+        actor_type, actor_id, decision = _policy_checked(
+            store,
+            identity=identity,
+            action="artifact.generate",
+            domains=request.domains,
+            sensitivity_allowed=request.sensitivity_allowed,
+            project_scope=_parse_string_list(arguments, "project_scope") or _parse_string_list(arguments, "projects"),
+            workflow_type="project_update_scan",
+        )
+        if decision.decision == "blocked":
+            blocked_decision = decision
+        else:
+            payload = VNextProjectService(store).generate_project_update_candidate(
+                ProjectAutomationRequest(
+                    domains=decision.effective_domains,
+                    sensitivity_allowed=decision.effective_sensitivity_allowed,
+                    project_id=request.project_id,
+                    person_id=request.person_id,
+                    max_items=request.max_items,
+                    generated_by=actor_type,
+                    actor_id=actor_id,
+                    trace_id=_parse_optional_text(arguments, "trace_id") or decision.trace_id,
+                    run_id=identity.agent_run_id if identity is not None else None,
+                    agent_identity=identity.to_record() if identity is not None else None,
+                    policy_decision=decision.to_record(),
+                    metadata_json=agent_metadata(identity, decision),
+                    generation_mode=request.generation_mode,
+                    model_route_mode=request.model_route_mode,
+                    model_provider=request.model_provider,
+                    model=request.model,
+                    model_temperature=request.model_temperature,
+                    allow_cloud_private=request.allow_cloud_private,
+                )
+            )
+    if blocked_decision is not None:
+        _raise_mcp_policy_blocked(blocked_decision)
+    if payload is None:
+        raise MCPToolError("vNext project update candidate generation did not complete")
+    return payload
 
 
 def _handle_alice_project_update_review(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
@@ -1932,6 +2024,15 @@ def _handle_alice_vnext_generate_artifact(context: MCPRuntimeContext, arguments:
         return _handle_alice_generate_connections(context, arguments)
     if workflow_type in {"contradiction_report", "contradictions"}:
         return _handle_alice_generate_contradictions(context, arguments)
+    if workflow_type in {"open_loop_review", "project_update_scan"}:
+        scheduler_arguments = dict(arguments)
+        scheduler_arguments["workflow_type"] = workflow_type
+        return _handle_alice_vnext_scheduler_run_now(context, scheduler_arguments)
+    if workflow_type not in {"daily_brief", "weekly_synthesis"}:
+        raise MCPToolError(
+            "workflow_type must be daily_brief, weekly_synthesis, connection_report, "
+            "contradiction_report, open_loop_review, or project_update_scan"
+        )
     identity = _agent_identity_from_arguments(arguments)
     sensitivity_allowed = _parse_string_list(arguments, "sensitivity_allowed") or (
         "public",
@@ -1939,6 +2040,7 @@ def _handle_alice_vnext_generate_artifact(context: MCPRuntimeContext, arguments:
         "private",
         "unknown",
     )
+    generation_kwargs = _parse_model_generation_kwargs(arguments)
     blocked_decision: PolicyDecision | None = None
     payload: JsonObject | None = None
     with _vnext_store_context(context) as store:
@@ -1970,6 +2072,7 @@ def _handle_alice_vnext_generate_artifact(context: MCPRuntimeContext, arguments:
                 agent_identity=identity.to_record() if identity is not None else None,
                 policy_decision=decision.to_record(),
                 metadata_json=agent_metadata(identity, decision),
+                **generation_kwargs,
             )
             service = VNextBrainService(store)
             payload = (
@@ -2133,6 +2236,7 @@ def _handle_alice_vnext_scheduler_run_now(context: MCPRuntimeContext, arguments:
         "private",
         "unknown",
     )
+    generation_kwargs = _parse_model_generation_kwargs(arguments)
     blocked_decision: PolicyDecision | None = None
     payload: JsonObject | None = None
     with _vnext_store_context(context) as store:
@@ -2157,6 +2261,7 @@ def _handle_alice_vnext_scheduler_run_now(context: MCPRuntimeContext, arguments:
                     triggered_by="agent" if identity is not None else "user",
                     agent_identity=identity,
                     policy_decision=decision,
+                    options=generation_kwargs,
                 )
             )
     if blocked_decision is not None:
@@ -2931,6 +3036,7 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
                 "artifact_limit": {"type": "integer", "minimum": 1, "maximum": 50},
                 "discover_open_loops": {"type": "boolean"},
                 "create_candidate_memories": {"type": "boolean"},
+                **_MODEL_GENERATION_SCHEMA_PROPERTIES,
             },
         },
     },
@@ -2950,6 +3056,7 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
                 "artifact_limit": {"type": "integer", "minimum": 1, "maximum": 50},
                 "discover_open_loops": {"type": "boolean"},
                 "create_candidate_memories": {"type": "boolean"},
+                **_MODEL_GENERATION_SCHEMA_PROPERTIES,
             },
         },
     },
@@ -2965,6 +3072,7 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
                 "sensitivity_allowed": {"type": "array", "items": {"type": "string"}},
                 "max_connections": {"type": "integer", "minimum": 1, "maximum": 50},
                 "auto_accept_threshold": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                **_MODEL_GENERATION_SCHEMA_PROPERTIES,
             },
         },
     },
@@ -3004,6 +3112,7 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
                 "domains": {"type": "array", "items": {"type": "string"}},
                 "sensitivity_allowed": {"type": "array", "items": {"type": "string"}},
                 "max_contradictions": {"type": "integer", "minimum": 1, "maximum": 50},
+                **_MODEL_GENERATION_SCHEMA_PROPERTIES,
             },
         },
     },
@@ -3045,6 +3154,7 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
                 "domains": {"type": "array", "items": {"type": "string"}},
                 "sensitivity_allowed": {"type": "array", "items": {"type": "string"}},
                 "max_items": {"type": "integer", "minimum": 1, "maximum": 50},
+                **_MODEL_GENERATION_SCHEMA_PROPERTIES,
             },
         },
     },
@@ -3146,6 +3256,7 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
                 "workflow_type": {"type": "string"},
                 "generated_for": {"type": "string"},
                 "max_items": {"type": "integer", "minimum": 1, "maximum": 50},
+                **_MODEL_GENERATION_SCHEMA_PROPERTIES,
             },
         ),
     },
@@ -3185,12 +3296,22 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
     {
         "name": "alice_vnext_find_connections",
         "description": "Generate a vNext connection report.",
-        "inputSchema": _vnext_agent_tool_schema({"max_connections": {"type": "integer", "minimum": 1, "maximum": 50}}),
+        "inputSchema": _vnext_agent_tool_schema(
+            {
+                "max_connections": {"type": "integer", "minimum": 1, "maximum": 50},
+                **_MODEL_GENERATION_SCHEMA_PROPERTIES,
+            }
+        ),
     },
     {
         "name": "alice_vnext_find_contradictions",
         "description": "Generate a vNext contradiction report.",
-        "inputSchema": _vnext_agent_tool_schema({"max_contradictions": {"type": "integer", "minimum": 1, "maximum": 50}}),
+        "inputSchema": _vnext_agent_tool_schema(
+            {
+                "max_contradictions": {"type": "integer", "minimum": 1, "maximum": 50},
+                **_MODEL_GENERATION_SCHEMA_PROPERTIES,
+            }
+        ),
     },
     {
         "name": "alice_vnext_propose_memory",
@@ -3248,6 +3369,7 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
             {
                 "workflow_type": {"type": "string"},
                 "generated_for": {"type": "string"},
+                **_MODEL_GENERATION_SCHEMA_PROPERTIES,
             },
             required=["workflow_type"],
         ),

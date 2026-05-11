@@ -69,6 +69,8 @@ MCP uses the same local runtime scope as CLI:
 
 The `alice_vnext_*` tools carry the agentic control-plane contract. Agent callers can include `agent_id`, `agent_type`, `agent_run_id`, `task_id`, `project_scope`, `permission_profile`, domain filters, and sensitivity filters. Policy decisions are logged, restricted requests are filtered or blocked, memory writes stay proposal/review-only, and scheduler actions create governed run records with trace IDs.
 
+Model-backed artifact tools also accept `generation_mode`, `model_route_mode`, `model_provider`, `model`, `model_temperature`, and `allow_cloud_private`. Supported generation modes are `deterministic` and `model_backed`; supported route modes are `local_only`, `cloud_allowed`, `cloud_requires_approval`, and `model_disabled`. Agent-triggered model-backed generation is policy checked before a workflow runs, and private/highly sensitive scopes remain local-only or disabled unless explicitly configured.
+
 ## Example: Claude Desktop MCP Config
 
 ```json

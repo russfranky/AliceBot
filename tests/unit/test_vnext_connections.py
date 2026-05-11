@@ -177,6 +177,28 @@ def test_connection_report_filters_sensitivity_and_can_auto_accept_high_confiden
     assert store.edges["edge-1"]["metadata_json"]["candidate"] is False
 
 
+def test_connection_report_model_backed_mode_preserves_candidate_edges_and_metadata() -> None:
+    store = _seed_store()
+
+    artifact = VNextConnectionService(store).generate_connection_report(
+        ConnectionFinderRequest(
+            domains=("project",),
+            max_connections=2,
+            generation_mode="model_backed",
+            model_route_mode="local_only",
+        )
+    )
+
+    assert artifact["status"] == "needs_review"
+    assert artifact["metadata_json"]["generation_mode"] == "model_backed"
+    assert artifact["metadata_json"]["candidate_edge_ids"] == ["edge-1", "edge-2"]
+    assert artifact["model_info_json"]["provider"] == "deterministic_local"
+    assert artifact["prompt_hash"].startswith("sha256:")
+    assert "## Inferences" in artifact["content_markdown"]
+    assert "## Source References" in artifact["content_markdown"]
+    assert "source:source-1" in artifact["content_markdown"]
+
+
 def test_connection_edge_review_and_graph_neighborhood() -> None:
     store = _seed_store()
     service = VNextConnectionService(store)

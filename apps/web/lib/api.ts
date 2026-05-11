@@ -221,6 +221,23 @@ export type VNextArtifactRecord = VNextRow & {
   artifact_type: string;
   content_markdown: string;
   generated_by: string;
+  prompt_hash?: string | null;
+  model_info_json?: JsonObject | null;
+  metadata_json?: JsonObject;
+};
+
+export type VNextArtifactQualityEvalRecord = VNextRow & {
+  artifact_id: string;
+  reviewer_id?: string | null;
+  usefulness?: number | null;
+  accuracy?: number | null;
+  source_grounding?: number | null;
+  novel_connections?: number | null;
+  actionability?: number | null;
+  hallucination_risk?: number | null;
+  verbosity: string;
+  missed_context?: string | null;
+  comments?: string | null;
   metadata_json?: JsonObject;
 };
 
@@ -417,6 +434,7 @@ export type VNextWorkspacePayload = {
     event_count: number;
     agent_count?: number;
     scheduler_enabled_count?: number;
+    quality_eval_count?: number;
     memory_status_counts: Record<string, number>;
     artifact_status_counts: Record<string, number>;
     open_loop_status_counts: Record<string, number>;
@@ -431,6 +449,7 @@ export type VNextWorkspacePayload = {
   beliefs: VNextBeliefRecord[];
   tasks: VNextTaskRecord[];
   recent_events: VNextEventRecord[];
+  quality_evals?: VNextArtifactQualityEvalRecord[];
   agent_activity?: VNextAgentActivity;
   policy_telemetry?: VNextPolicyTelemetrySummary;
   scheduler?: VNextSchedulerStatus;
@@ -4009,6 +4028,53 @@ export function reviewVNextArtifact(
   });
 }
 
+export function rateVNextArtifactQuality(
+  apiBaseUrl: string,
+  artifactId: string,
+  payload: {
+    user_id: string;
+    reviewer_id?: string | null;
+    usefulness?: number | null;
+    accuracy?: number | null;
+    source_grounding?: number | null;
+    novel_connections?: number | null;
+    actionability?: number | null;
+    hallucination_risk?: number | null;
+    verbosity?: string;
+    missed_context?: string | null;
+    comments?: string | null;
+  },
+) {
+  return requestJson<VNextArtifactQualityEvalRecord>(
+    apiBaseUrl,
+    `/v0/vnext/artifacts/${artifactId}/quality-ratings`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export function getVNextQualityEvals(
+  apiBaseUrl: string,
+  userId: string,
+  options: { artifactId?: string; limit?: number } = {},
+) {
+  const query: Record<string, string> = {
+    user_id: userId,
+    limit: String(options.limit ?? 100),
+  };
+  if (options.artifactId) {
+    query.artifact_id = options.artifactId;
+  }
+  return requestJson<{ items: VNextArtifactQualityEvalRecord[]; count: number }>(
+    apiBaseUrl,
+    "/v0/vnext/quality-evals",
+    undefined,
+    query,
+  );
+}
+
 export function reviewVNextMemory(
   apiBaseUrl: string,
   memoryId: string,
@@ -4118,6 +4184,7 @@ export function patchVNextSchedulerWorkflow(
     paused?: boolean;
     schedule_json?: JsonObject;
     timezone?: string;
+    model_options?: JsonObject;
   },
 ) {
   return requestJson<{ workflow: VNextSchedulerWorkflowRecord; policy_decision: VNextPolicyDecisionRecord }>(

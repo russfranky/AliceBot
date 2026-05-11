@@ -115,6 +115,7 @@ class FakeVNextMCPStore:
         self.artifacts: dict[str, dict[str, object]] = {}
         self.open_loops: list[dict[str, object]] = []
         self.edges: dict[str, dict[str, object]] = {}
+        self.agent_identities: dict[str, dict[str, object]] = {}
         self.projects: dict[str, dict[str, object]] = {
             "project-1": {
                 "id": "project-1",
@@ -143,6 +144,10 @@ class FakeVNextMCPStore:
     def append_event(self, event: dict[str, object]) -> dict[str, object]:
         self.events.append(event)
         return event
+
+    def upsert_agent_identity(self, identity: dict[str, object], **_kwargs) -> dict[str, object]:
+        self.agent_identities[str(identity["agent_id"])] = identity
+        return identity
 
     def create_artifact(self, artifact: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**artifact, "id": f"artifact-{len(self.artifacts) + 1}"}
@@ -449,6 +454,45 @@ def test_alice_generate_daily_and_weekly_brief_mcp_tools(monkeypatch) -> None:
     assert weekly_payload["artifact_type"] == "weekly_synthesis"
     assert weekly_payload["metadata_json"]["candidate_memory_ids"] == ["memory-2"]
     assert store.events[-1]["event_type"] == "artifact.generated"
+
+
+def test_alice_vnext_generate_artifact_supports_model_backed_agent_options(monkeypatch) -> None:
+    store = FakeVNextMCPStore()
+
+    @contextmanager
+    def fake_vnext_store_context(_context):
+        yield store
+
+    monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fake_vnext_store_context)
+    context = MCPRuntimeContext(
+        database_url="postgresql://localhost/alicebot",
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+
+    payload = call_mcp_tool(
+        context,
+        name="alice_vnext_generate_artifact",
+        arguments={
+            "workflow_type": "daily_brief",
+            "generated_for": "2026-05-10",
+            "domains": ["project"],
+            "sensitivity_allowed": ["public", "internal", "private"],
+            "generation_mode": "model_backed",
+            "model_route_mode": "local_only",
+            "agent_id": "hermes",
+            "permission_profile": "trusted_local_agent",
+            "agent_run_id": "run-1",
+        },
+    )
+
+    assert payload["artifact_type"] == "daily_brief"
+    assert payload["status"] == "needs_review"
+    assert payload["prompt_hash"]
+    assert payload["model_info_json"]["provider"] == "deterministic_local"
+    assert payload["metadata_json"]["generation_mode"] == "model_backed"
+    assert payload["metadata_json"]["agent_id"] == "hermes"
+    assert payload["metadata_json"]["policy_decision"]["decision"] == "allowed"
+    assert "source:source-1" in payload["metadata_json"]["source_refs"]
 
 
 def test_alice_generate_connections_and_graph_mcp_tools(monkeypatch) -> None:

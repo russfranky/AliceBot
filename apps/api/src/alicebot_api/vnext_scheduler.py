@@ -11,6 +11,13 @@ from alicebot_api.vnext_brain import BrainArtifactRequest, VNextBrainService
 from alicebot_api.vnext_connections import ConnectionFinderRequest, VNextConnectionService
 from alicebot_api.vnext_contradictions import ContradictionFinderRequest, VNextContradictionService
 from alicebot_api.vnext_event_log import append_event
+from alicebot_api.vnext_model_intelligence import (
+    MODEL_ROUTE_MODES,
+    ModelBackedRequest,
+    ModelRoutingRequest,
+    build_model_backed_artifact,
+    resolve_model_route,
+)
 from alicebot_api.vnext_projects import ProjectAutomationRequest, VNextProjectService, VNextProjectValidationError
 from alicebot_api.vnext_repositories import JsonObject
 
@@ -260,6 +267,7 @@ class VNextSchedulerService:
         paused: bool | None = None,
         schedule_json: JsonObject | None = None,
         timezone: str | None = None,
+        metadata_json: JsonObject | None = None,
         actor_type: str = "user",
     ) -> JsonObject:
         current = self._ensure_workflow(workflow_type)
@@ -283,6 +291,7 @@ class VNextSchedulerService:
                 "timezone": next_timezone,
                 "next_run_at": next_run_at,
                 "last_error": None,
+                **({"metadata_json": metadata_json} if metadata_json is not None else {}),
             },
             actor_type=actor_type,
         )
@@ -341,6 +350,8 @@ class VNextSchedulerService:
                     payload={"workflow_type": workflow_type, "scheduled_for": next_run_at.isoformat()},
                 )
                 continue
+            workflow_metadata = workflow.get("metadata_json") if isinstance(workflow.get("metadata_json"), dict) else {}
+            workflow_options = workflow_metadata.get("model_options") if isinstance(workflow_metadata.get("model_options"), dict) else {}
             result = self.run_now(
                 SchedulerRunRequest(
                     workflow_type=workflow_type,
@@ -349,6 +360,7 @@ class VNextSchedulerService:
                     agent_identity=agent_identity,
                     policy_decision=policy_decision,
                     options={
+                        **workflow_options,
                         "scheduled_for": next_run_at.isoformat(),
                         "due_scan_checked_at": checked_at.isoformat(),
                     },
@@ -385,7 +397,11 @@ class VNextSchedulerService:
                 "trace_id": trace_id,
                 "policy_decision_json": request.policy_decision.to_record() if request.policy_decision else {},
                 "agent_identity_json": request.agent_identity.to_record() if request.agent_identity else {},
-                "metadata_json": {"manual_run": request.triggered_by != "scheduler"},
+                "metadata_json": {
+                    "manual_run": request.triggered_by != "scheduler",
+                    "options": request.options,
+                    "generation_mode": self._generation_mode(request),
+                },
             },
             actor_type=actor_type,
         )
@@ -458,6 +474,7 @@ class VNextSchedulerService:
         )
 
     def _run_workflow(self, request: SchedulerRunRequest, *, scheduler_run_id: str, trace_id: str) -> JsonObject:
+        generation_kwargs = self._generation_kwargs(request)
         metadata = {
             "generated_by": "scheduler",
             "workflow": request.workflow_type,
@@ -467,6 +484,7 @@ class VNextSchedulerService:
             "policy_decision": request.policy_decision.to_record() if request.policy_decision else None,
             "agent_identity": request.agent_identity.to_record() if request.agent_identity else None,
             "review_status": "needs_review",
+            "generation_mode": generation_kwargs["generation_mode"],
         }
         brain_request = BrainArtifactRequest(
             domains=request.domains,
@@ -478,6 +496,7 @@ class VNextSchedulerService:
             trace_id=trace_id,
             run_id=scheduler_run_id,
             metadata_json=metadata,
+            **generation_kwargs,
         )
         brain = VNextBrainService(self.store)
         if request.workflow_type == "daily_brief":
@@ -495,6 +514,7 @@ class VNextSchedulerService:
                     agent_identity=request.agent_identity.to_record() if request.agent_identity else None,
                     policy_decision=request.policy_decision.to_record() if request.policy_decision else None,
                     metadata_json=metadata,
+                    **generation_kwargs,
                 )
             )
         if request.workflow_type == "contradiction_report":
@@ -508,6 +528,7 @@ class VNextSchedulerService:
                     agent_identity=request.agent_identity.to_record() if request.agent_identity else None,
                     policy_decision=request.policy_decision.to_record() if request.policy_decision else None,
                     metadata_json=metadata,
+                    **generation_kwargs,
                 )
             )
         if request.workflow_type == "open_loop_review":
@@ -577,6 +598,42 @@ class VNextSchedulerService:
             "source_refs": source_refs,
             "input_counts": {"open_loops": len(loops)},
         }
+        prompt_hash: str | None = None
+        model_info_json: JsonObject | None = None
+        if self._generation_mode(request) == "model_backed":
+            generation_kwargs = self._generation_kwargs(request)
+            route = resolve_model_route(
+                ModelRoutingRequest(
+                    workflow_type="open_loop_review",
+                    generation_mode="model_backed",
+                    domains=request.domains,
+                    sensitivity_allowed=request.sensitivity_allowed,
+                    agent_identity=request.agent_identity.to_record() if request.agent_identity else None,
+                    brain_charter=self._brain_charter(),
+                    requested_route_mode=generation_kwargs.get("model_route_mode") if isinstance(generation_kwargs.get("model_route_mode"), str) else None,
+                    requested_provider=generation_kwargs.get("model_provider") if isinstance(generation_kwargs.get("model_provider"), str) else None,
+                    requested_model=generation_kwargs.get("model") if isinstance(generation_kwargs.get("model"), str) else None,
+                    allow_cloud_private=bool(generation_kwargs.get("allow_cloud_private")),
+                )
+            )
+            model_artifact = build_model_backed_artifact(
+                ModelBackedRequest(
+                    workflow_type="open_loop_review",
+                    title=f"Open Loop Review - {request.generated_for or datetime.now(UTC).date().isoformat()}",
+                    deterministic_markdown=content,
+                    context_rows=tuple(loops),
+                    source_refs=tuple(source_refs),
+                    open_questions=("Which open loop should be closed, snoozed, edited, or escalated first?",),
+                    trace_id=str(metadata.get("trace_id")) if metadata.get("trace_id") is not None else None,
+                    route=route,
+                    temperature=float(generation_kwargs.get("model_temperature", 0.2)),
+                    config={"generated_by": "scheduler"},
+                )
+            )
+            content = model_artifact.content_markdown
+            prompt_hash = model_artifact.prompt_hash
+            model_info_json = model_artifact.model_info
+            enriched_metadata = {**enriched_metadata, **model_artifact.metadata}
         return self.store.create_artifact(
             {
                 "artifact_type": "open_loop_report",
@@ -586,6 +643,8 @@ class VNextSchedulerService:
                 "domain": request.domains[0] if len(request.domains) == 1 else "unknown",
                 "sensitivity": self._highest_sensitivity(loops),
                 "generated_by": "scheduler",
+                "prompt_hash": prompt_hash,
+                "model_info_json": model_info_json,
                 "metadata_json": enriched_metadata,
             },
             actor_type="scheduler",
@@ -610,6 +669,7 @@ class VNextSchedulerService:
                         run_id=str(metadata.get("scheduler_run_id")) if metadata.get("scheduler_run_id") is not None else None,
                         policy_decision=metadata.get("policy_decision") if isinstance(metadata.get("policy_decision"), dict) else None,
                         metadata_json={**metadata, "workflow_type": "project_update_scan", "review_status": "needs_review"},
+                        **self._generation_kwargs(request),
                     )
                 )
             except VNextProjectValidationError:
@@ -623,6 +683,49 @@ class VNextSchedulerService:
                 "This review artifact records the scan without creating or promoting trusted memory.",
             ]
         )
+        enriched_metadata = {
+            **metadata,
+            "workflow": "project_update_scan",
+            "source_refs": [],
+            "project_ids": [],
+            "input_counts": {"projects": 0},
+        }
+        prompt_hash: str | None = None
+        model_info_json: JsonObject | None = None
+        if self._generation_mode(request) == "model_backed":
+            generation_kwargs = self._generation_kwargs(request)
+            route = resolve_model_route(
+                ModelRoutingRequest(
+                    workflow_type="project_update_scan",
+                    generation_mode="model_backed",
+                    domains=request.domains,
+                    sensitivity_allowed=request.sensitivity_allowed,
+                    agent_identity=request.agent_identity.to_record() if request.agent_identity else None,
+                    brain_charter=self._brain_charter(),
+                    requested_route_mode=generation_kwargs.get("model_route_mode") if isinstance(generation_kwargs.get("model_route_mode"), str) else None,
+                    requested_provider=generation_kwargs.get("model_provider") if isinstance(generation_kwargs.get("model_provider"), str) else None,
+                    requested_model=generation_kwargs.get("model") if isinstance(generation_kwargs.get("model"), str) else None,
+                    allow_cloud_private=bool(generation_kwargs.get("allow_cloud_private")),
+                )
+            )
+            model_artifact = build_model_backed_artifact(
+                ModelBackedRequest(
+                    workflow_type="project_update_scan",
+                    title=f"Project Update Scan - {request.generated_for or datetime.now(UTC).date().isoformat()}",
+                    deterministic_markdown=content,
+                    context_rows=(),
+                    source_refs=(),
+                    open_questions=("Which project scope should be checked next?",),
+                    trace_id=str(metadata.get("trace_id")) if metadata.get("trace_id") is not None else None,
+                    route=route,
+                    temperature=float(generation_kwargs.get("model_temperature", 0.2)),
+                    config={"generated_by": "scheduler"},
+                )
+            )
+            content = model_artifact.content_markdown
+            prompt_hash = model_artifact.prompt_hash
+            model_info_json = model_artifact.model_info
+            enriched_metadata = {**enriched_metadata, **model_artifact.metadata}
         return self.store.create_artifact(
             {
                 "artifact_type": "project_update",
@@ -632,16 +735,45 @@ class VNextSchedulerService:
                 "domain": request.domains[0] if len(request.domains) == 1 else "project",
                 "sensitivity": "unknown",
                 "generated_by": "scheduler",
-                "metadata_json": {
-                    **metadata,
-                    "workflow": "project_update_scan",
-                    "source_refs": [],
-                    "project_ids": [],
-                    "input_counts": {"projects": 0},
-                },
+                "prompt_hash": prompt_hash,
+                "model_info_json": model_info_json,
+                "metadata_json": enriched_metadata,
             },
             actor_type="scheduler",
         )
+
+    def _generation_mode(self, request: SchedulerRunRequest) -> str:
+        value = request.options.get("generation_mode")
+        return value if value in {"deterministic", "model_backed"} else "deterministic"
+
+    def _generation_kwargs(self, request: SchedulerRunRequest) -> JsonObject:
+        options = request.options
+        route_mode = options.get("model_route_mode")
+        temperature = (
+            float(options.get("model_temperature"))
+            if isinstance(options.get("model_temperature"), (int, float))
+            and not isinstance(options.get("model_temperature"), bool)
+            else 0.2
+        )
+        if temperature < 0.0 or temperature > 2.0:
+            temperature = 0.2
+        return {
+            "generation_mode": self._generation_mode(request),
+            "model_route_mode": route_mode if isinstance(route_mode, str) and route_mode in MODEL_ROUTE_MODES else None,
+            "model_provider": options.get("model_provider") if isinstance(options.get("model_provider"), str) else None,
+            "model": options.get("model") if isinstance(options.get("model"), str) else None,
+            "model_temperature": temperature,
+            "allow_cloud_private": bool(options.get("allow_cloud_private"))
+            if isinstance(options.get("allow_cloud_private"), bool)
+            else False,
+        }
+
+    def _brain_charter(self) -> JsonObject | None:
+        getter = getattr(self.store, "get_brain_charter", None)
+        if not callable(getter):
+            return None
+        charter = getter()
+        return charter if isinstance(charter, dict) else None
 
     def _next_run_after(self, workflow: JsonObject) -> str | None:
         workflow_type = str(workflow["workflow_type"])

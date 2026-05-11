@@ -1334,6 +1334,21 @@ class VNextArtifactReviewRequest(VNextAgentRequest):
     action: str = Field(min_length=1, max_length=40)
 
 
+class VNextArtifactQualityRatingRequest(VNextAgentRequest):
+    user_id: UUID
+    reviewer_id: str | None = Field(default=None, min_length=1, max_length=120)
+    usefulness: int | None = Field(default=None, ge=1, le=5)
+    accuracy: int | None = Field(default=None, ge=1, le=5)
+    source_grounding: int | None = Field(default=None, ge=1, le=5)
+    novel_connections: int | None = Field(default=None, ge=1, le=5)
+    actionability: int | None = Field(default=None, ge=1, le=5)
+    hallucination_risk: int | None = Field(default=None, ge=1, le=5)
+    verbosity: str = Field(default="unknown", min_length=1, max_length=40)
+    missed_context: str | None = Field(default=None, min_length=1, max_length=4000)
+    comments: str | None = Field(default=None, min_length=1, max_length=4000)
+    metadata_json: dict[str, object] = Field(default_factory=dict)
+
+
 class VNextGraphEdgeReviewRequest(VNextAgentRequest):
     user_id: UUID
     action: str = Field(min_length=1, max_length=40)
@@ -1384,6 +1399,7 @@ class VNextSchedulerWorkflowPatchRequest(VNextAgentRequest):
     paused: bool | None = None
     schedule_json: dict[str, object] | None = None
     timezone: str | None = Field(default=None, min_length=1, max_length=120)
+    model_options: dict[str, object] = Field(default_factory=dict)
 
 
 class VNextSchedulerRunNowRequest(VNextAgentRequest):
@@ -1439,6 +1455,26 @@ def _vnext_float(mapping: dict[str, object], key: str) -> float | None:
     if isinstance(value, (int, float)):
         return float(value)
     return None
+
+
+def _vnext_model_generation_options(options: dict[str, object]) -> dict[str, object]:
+    generation_mode = options.get("generation_mode")
+    route_mode = options.get("model_route_mode")
+    provider = options.get("model_provider")
+    model = options.get("model")
+    temperature = _vnext_float(options, "model_temperature")
+    if temperature is None or temperature < 0.0 or temperature > 2.0:
+        temperature = 0.2
+    return {
+        "generation_mode": generation_mode if generation_mode in {"deterministic", "model_backed"} else "deterministic",
+        "model_route_mode": route_mode
+        if route_mode in {"local_only", "cloud_allowed", "cloud_requires_approval", "model_disabled"}
+        else None,
+        "model_provider": provider if isinstance(provider, str) else None,
+        "model": model if isinstance(model, str) else None,
+        "model_temperature": temperature,
+        "allow_cloud_private": _vnext_bool(options, "allow_cloud_private", False),
+    }
 
 
 def _vnext_slug(value: str) -> str:
@@ -1531,6 +1567,7 @@ def _vnext_workspace_payload(store: PostgresVNextStore) -> dict[str, object]:
         if str(memory.get("status")) in {"candidate", "needs_review", "private_only", "accepted", "rejected"}
     ][:30]
     artifacts = store.list_artifacts(sensitivity_allowed=sensitivity_allowed, limit=30)
+    quality_evals = store.list_artifact_quality_ratings(limit=50)
     projects = store.list_projects(status=None, sensitivity_allowed=sensitivity_allowed, limit=20)
     open_loops = store.list_open_loops(status=None, sensitivity_allowed=sensitivity_allowed, limit=30)
     people = store.list_people(sensitivity_allowed=sensitivity_allowed, limit=12)
@@ -1567,11 +1604,13 @@ def _vnext_workspace_payload(store: PostgresVNextStore) -> dict[str, object]:
             "scheduler_enabled_count": int(scheduler_status["enabled_count"]),
             "memory_status_counts": _vnext_status_counts(memories),
             "artifact_status_counts": _vnext_status_counts(artifacts),
+            "quality_eval_count": len(quality_evals),
             "open_loop_status_counts": _vnext_status_counts(open_loops),
         },
         "sources": sources,
         "review_memories": review_memories,
         "artifacts": artifacts,
+        "quality_evals": quality_evals,
         "projects": projects,
         "project_dashboards": project_dashboards,
         "open_loops": open_loops,
@@ -1635,29 +1674,60 @@ def _vnext_brain_artifact_request(
         agent_identity=identity.to_record() if identity is not None else None,
         policy_decision=decision.to_record() if decision is not None else None,
         metadata_json=agent_metadata(identity, decision),
+        **_vnext_model_generation_options(options),
     )
 
 
-def _vnext_connection_request(request: VNextConnectionReportGenerateRequest) -> ConnectionFinderRequest:
+def _vnext_connection_request(
+    request: VNextConnectionReportGenerateRequest,
+    *,
+    identity: AgentIdentity | None = None,
+    decision: PolicyDecision | None = None,
+) -> ConnectionFinderRequest:
     options = request.options
+    actor_type, actor_id = _vnext_agent_actor(identity, fallback="system")
     return ConnectionFinderRequest(
         query=request.query,
-        domains=_vnext_string_list(request.scope, "domains"),
-        sensitivity_allowed=_vnext_string_list(options, "sensitivity_allowed")
-        or ("public", "internal", "private", "unknown"),
+        domains=decision.effective_domains if decision is not None else _vnext_string_list(request.scope, "domains"),
+        sensitivity_allowed=decision.effective_sensitivity_allowed
+        if decision is not None
+        else _vnext_string_list(options, "sensitivity_allowed") or ("public", "internal", "private", "unknown"),
         max_connections=_vnext_int(options, "max_connections", 8),
         auto_accept_threshold=_vnext_float(options, "auto_accept_threshold"),
+        generated_by=actor_type,
+        actor_id=actor_id,
+        trace_id=request.trace_id,
+        run_id=identity.agent_run_id if identity is not None else None,
+        agent_identity=identity.to_record() if identity is not None else None,
+        policy_decision=decision.to_record() if decision is not None else None,
+        metadata_json=agent_metadata(identity, decision),
+        **_vnext_model_generation_options(options),
     )
 
 
-def _vnext_contradiction_request(request: VNextContradictionReportGenerateRequest) -> ContradictionFinderRequest:
+def _vnext_contradiction_request(
+    request: VNextContradictionReportGenerateRequest,
+    *,
+    identity: AgentIdentity | None = None,
+    decision: PolicyDecision | None = None,
+) -> ContradictionFinderRequest:
     options = request.options
+    actor_type, actor_id = _vnext_agent_actor(identity, fallback="system")
     return ContradictionFinderRequest(
         query=request.query,
-        domains=_vnext_string_list(request.scope, "domains"),
-        sensitivity_allowed=_vnext_string_list(options, "sensitivity_allowed")
-        or ("public", "internal", "private", "unknown"),
+        domains=decision.effective_domains if decision is not None else _vnext_string_list(request.scope, "domains"),
+        sensitivity_allowed=decision.effective_sensitivity_allowed
+        if decision is not None
+        else _vnext_string_list(options, "sensitivity_allowed") or ("public", "internal", "private", "unknown"),
         max_contradictions=_vnext_int(options, "max_contradictions", 8),
+        generated_by=actor_type,
+        actor_id=actor_id,
+        trace_id=request.trace_id,
+        run_id=identity.agent_run_id if identity is not None else None,
+        agent_identity=identity.to_record() if identity is not None else None,
+        policy_decision=decision.to_record() if decision is not None else None,
+        metadata_json=agent_metadata(identity, decision),
+        **_vnext_model_generation_options(options),
     )
 
 
@@ -1687,6 +1757,7 @@ def _vnext_project_automation_request(
         agent_identity=identity.to_record() if identity is not None else None,
         policy_decision=decision.to_record() if decision is not None else None,
         metadata_json=agent_metadata(identity, decision),
+        **_vnext_model_generation_options(options),
     )
 
 
@@ -6438,14 +6509,39 @@ def generate_vnext_weekly_synthesis(request: VNextBrainArtifactGenerateRequest) 
 @app.post("/v0/vnext/artifacts/generate/connections")
 def generate_vnext_connection_report(request: VNextConnectionReportGenerateRequest) -> JSONResponse:
     settings = get_settings()
+    try:
+        identity = _vnext_agent_identity(request)
+    except AgentIdentityValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
-            payload = VNextConnectionService(PostgresVNextStore(conn)).generate_connection_report(
-                _vnext_connection_request(request)
+            store = PostgresVNextStore(conn)
+            requested_domains = _vnext_string_list(request.scope, "domains")
+            requested_sensitivity = _vnext_string_list(request.options, "sensitivity_allowed") or (
+                "public",
+                "internal",
+                "private",
+                "unknown",
+            )
+            decision = _vnext_policy_checked(
+                store=store,
+                identity=identity,
+                action="artifact.generate",
+                domains=requested_domains,
+                sensitivity_allowed=requested_sensitivity,
+                project_scope=tuple(request.project_scope) or _vnext_string_list(request.scope, "projects"),
+                workflow_type="connection_report",
+            )
+            if decision.decision == "blocked":
+                return _vnext_permission_response(decision)
+            payload = VNextConnectionService(store).generate_connection_report(
+                _vnext_connection_request(request, identity=identity, decision=decision)
             )
     except VNextConnectionValidationError:
         return _vnext_public_error_response(status_code=400, detail="vNext connection report request is invalid")
+    except AgentPolicyBlockedError as exc:
+        return _vnext_permission_response(exc.decision)
 
     return JSONResponse(
         status_code=201,
@@ -6456,14 +6552,39 @@ def generate_vnext_connection_report(request: VNextConnectionReportGenerateReque
 @app.post("/v0/vnext/artifacts/generate/contradictions")
 def generate_vnext_contradiction_report(request: VNextContradictionReportGenerateRequest) -> JSONResponse:
     settings = get_settings()
+    try:
+        identity = _vnext_agent_identity(request)
+    except AgentIdentityValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
-            payload = VNextContradictionService(PostgresVNextStore(conn)).generate_contradiction_report(
-                _vnext_contradiction_request(request)
+            store = PostgresVNextStore(conn)
+            requested_domains = _vnext_string_list(request.scope, "domains")
+            requested_sensitivity = _vnext_string_list(request.options, "sensitivity_allowed") or (
+                "public",
+                "internal",
+                "private",
+                "unknown",
+            )
+            decision = _vnext_policy_checked(
+                store=store,
+                identity=identity,
+                action="artifact.generate",
+                domains=requested_domains,
+                sensitivity_allowed=requested_sensitivity,
+                project_scope=tuple(request.project_scope) or _vnext_string_list(request.scope, "projects"),
+                workflow_type="contradiction_report",
+            )
+            if decision.decision == "blocked":
+                return _vnext_permission_response(decision)
+            payload = VNextContradictionService(store).generate_contradiction_report(
+                _vnext_contradiction_request(request, identity=identity, decision=decision)
             )
     except VNextContradictionValidationError:
         return _vnext_public_error_response(status_code=400, detail="vNext contradiction report request is invalid")
+    except AgentPolicyBlockedError as exc:
+        return _vnext_permission_response(exc.decision)
 
     return JSONResponse(
         status_code=201,
@@ -6600,6 +6721,98 @@ def review_vnext_artifact(artifact_id: UUID, request: VNextArtifactReviewRequest
     return JSONResponse(
         status_code=200,
         content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/vnext/artifacts/{artifact_id}/quality-ratings")
+def rate_vnext_artifact_quality(artifact_id: UUID, request: VNextArtifactQualityRatingRequest) -> JSONResponse:
+    settings = get_settings()
+    verbosity = request.verbosity.strip().casefold()
+    if verbosity not in {"too_shallow", "right_sized", "too_verbose", "unknown"}:
+        return _vnext_public_error_response(status_code=400, detail="vNext artifact quality verbosity is invalid")
+    try:
+        identity = _vnext_agent_identity(request)
+    except AgentIdentityValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            store = PostgresVNextStore(conn)
+            existing = store.get_artifact(str(artifact_id))
+            if existing is None:
+                return _vnext_public_error_response(status_code=404, detail="vNext artifact was not found")
+            decision = _vnext_policy_checked(
+                store=store,
+                identity=identity,
+                action="artifact.review",
+                target_type="artifact",
+                target_id=str(artifact_id),
+            )
+            if decision.decision == "blocked":
+                return _vnext_permission_response(decision)
+            actor_type, actor_id = _vnext_agent_actor(identity, fallback="user")
+            payload = store.create_artifact_quality_rating(
+                {
+                    "artifact_id": str(artifact_id),
+                    "reviewer_id": request.reviewer_id or actor_id,
+                    "usefulness": request.usefulness,
+                    "accuracy": request.accuracy,
+                    "source_grounding": request.source_grounding,
+                    "novel_connections": request.novel_connections,
+                    "actionability": request.actionability,
+                    "hallucination_risk": request.hallucination_risk,
+                    "verbosity": verbosity,
+                    "missed_context": request.missed_context,
+                    "comments": request.comments,
+                    "metadata_json": {
+                        **request.metadata_json,
+                        "artifact_type": existing.get("artifact_type"),
+                        "generation_mode": (existing.get("metadata_json") or {}).get("generation_mode")
+                        if isinstance(existing.get("metadata_json"), dict)
+                        else None,
+                        "agent_identity": identity.to_record() if identity is not None else None,
+                        "policy_decision": decision.to_record(),
+                    },
+                },
+                actor_type=actor_type,
+            )
+    except AgentPolicyBlockedError as exc:
+        return _vnext_permission_response(exc.decision)
+
+    return JSONResponse(status_code=201, content=jsonable_encoder(payload))
+
+
+@app.get("/v0/vnext/quality-evals")
+def list_vnext_quality_evals(user_id: UUID, artifact_id: UUID | None = None, limit: int = 100) -> JSONResponse:
+    settings = get_settings()
+    bounded_limit = max(1, min(limit, 200))
+    with user_connection(settings.database_url, user_id) as conn:
+        rows = PostgresVNextStore(conn).list_artifact_quality_ratings(
+            artifact_id=str(artifact_id) if artifact_id is not None else None,
+            limit=bounded_limit,
+        )
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(
+            {
+                "items": rows,
+                "count": len(rows),
+                "order": ["created_at_desc", "id_desc"],
+                "export": {
+                    "format": "json",
+                    "rating_fields": [
+                        "usefulness",
+                        "accuracy",
+                        "source_grounding",
+                        "novel_connections",
+                        "actionability",
+                        "hallucination_risk",
+                        "verbosity",
+                        "missed_context",
+                    ],
+                },
+            }
+        ),
     )
 
 
@@ -6936,6 +7149,9 @@ def patch_vnext_scheduler_workflow(workflow_type: str, request: VNextSchedulerWo
                 paused=request.paused,
                 schedule_json=request.schedule_json,
                 timezone=request.timezone,
+                metadata_json={"model_options": _vnext_model_generation_options(request.model_options)}
+                if request.model_options
+                else None,
                 actor_type=actor_type,
             )
     except VNextSchedulerValidationError as exc:

@@ -14,6 +14,7 @@ Core owns durable state and policy boundaries:
 - `provenance_links` connect memories, artifacts, graph edges, projects, and open loops back to source chunks.
 - `event_log` records append-only system events for mutation, connector sync, artifact generation, and review.
 - `brain_charters` store the user-editable operating agreement for a brain.
+- `artifact_quality_ratings` store human review scores and comments for generated artifacts.
 - `agent_identities`, `scheduler_workflows`, and `scheduler_runs` persist governed agent and schedule state across restarts.
 
 ### Alice Brain
@@ -29,7 +30,9 @@ Brain workflows generate reviewable outputs from Core:
 - open-loop extraction and review
 - generated artifacts with Markdown export
 
-Generated artifacts are not trusted memory by default. Promotion stays explicit and reviewable.
+Each synthesis workflow can run in deterministic mode or model-backed mode. Model-backed artifacts store provider, model, routing, policy mode, prompt hash, input context hash, trace ID, source references, and grounded sections for facts, inferences, recommendations, uncertainties, contradictions considered, and open questions.
+
+Generated artifacts are not trusted memory by default. Promotion stays explicit and reviewable. Model-backed project updates, weekly insights, connections, and contradictions create only candidate memories or graph edges until a human accepts them.
 
 ### Alice Agent Memory
 
@@ -49,10 +52,24 @@ Agents can request context, submit tasks, generate artifacts, propose memory, an
 1. Raw input arrives from manual capture, import, or connector payload.
 2. Core stores the raw evidence, content hash, connector metadata, domain, sensitivity, and timestamps.
 3. Capture splits text into chunks and proposes candidate memories.
-4. Brain workflows retrieve allowed evidence and generate reviewable artifacts.
+4. Brain workflows retrieve allowed evidence and generate reviewable deterministic or model-backed artifacts.
 5. Review actions accept, edit, reject, supersede, close, snooze, or promote.
-6. Event log records write paths for audit and replay.
-7. Agent and scheduler actions add agent identity, policy decision, run ID, trace ID, target ID, and workflow metadata where applicable.
+6. Quality review actions rate artifacts for usefulness, accuracy, source grounding, novelty, actionability, hallucination risk, verbosity, missed context, and comments.
+7. Event log records write paths for audit and replay.
+8. Agent and scheduler actions add agent identity, policy decision, run ID, trace ID, target ID, and workflow metadata where applicable.
+
+## Model Routing
+
+Alice Brain uses a provider abstraction for chat/completion, structured extraction, summarization, classification, and embeddings where a workflow needs them. The first shipped providers are deterministic local, disabled/no-model, and an OpenAI Responses-compatible cloud path.
+
+Routing modes are:
+
+- `local_only`
+- `cloud_allowed`
+- `cloud_requires_approval`
+- `model_disabled`
+
+Private, confidential, highly sensitive, sacred, and regulated scopes default to local-only or disabled unless the caller explicitly enables a permitted private cloud path. Public, internal, and professional scopes are configurable. Routing decisions are stored with the artifact and are also visible in scheduler and agent metadata when relevant.
 
 ## Agentic Control Plane
 
@@ -81,7 +98,7 @@ The local scheduler owns disabled-by-default workflow configuration for:
 - `open_loop_review`
 - `project_update_scan`
 
-Daily Brief and Weekly Synthesis are the primary runnable workflows. Local due scans run enabled, unpaused workflows whose `next_run_at` has arrived, then advance the next run timestamp. Other workflow types have persistent configuration, policy-checked control paths, run history, and generated report artifacts. Scheduler runs record status, trace ID, triggering actor, policy decision, agent identity when present, output artifact ID, and failure details.
+Daily Brief and Weekly Synthesis are the primary runnable workflows. Local due scans run enabled, unpaused workflows whose `next_run_at` has arrived, then advance the next run timestamp. Other workflow types have persistent configuration, policy-checked control paths, run history, and generated report artifacts. Scheduler runs record status, trace ID, triggering actor, policy decision, generation mode, agent identity when present, output artifact ID, and failure details.
 
 ## Connector Boundary
 
@@ -99,9 +116,10 @@ Each connector preserves raw evidence in source metadata, applies conservative d
 ## Security Model
 
 - Local-first by default.
-- No cloud model call is required by the deterministic vNext seed.
+- No cloud model call is required by the deterministic vNext seed or local-only model-backed mode.
+- Model routing prevents private and highly sensitive content from leaving local mode unless explicitly configured.
 - Connectors do not execute source instructions.
-- Prompt-injection eval cases are quarantined and cannot trigger tool writes.
+- Prompt-injection eval cases are quarantined and cannot trigger tool writes. Model prompts mark source content as untrusted context and instruct providers not to execute embedded source instructions.
 - Sensitive domains and sensitivities are filtered before context-pack assembly.
 - Generated artifacts inherit the highest selected source sensitivity.
 - Agents cannot bypass domain/sensitivity filters, review-required workflows, scheduler policy checks, Brain Charter constraints, or the no-auto-promotion rule.

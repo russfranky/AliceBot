@@ -232,6 +232,24 @@ ARTIFACT_COLUMNS = """
                   metadata_json
                 """
 
+QUALITY_RATING_COLUMNS = """
+                  id,
+                  user_id,
+                  artifact_id,
+                  reviewer_id,
+                  usefulness,
+                  accuracy,
+                  source_grounding,
+                  novel_connections,
+                  actionability,
+                  hallucination_risk,
+                  verbosity,
+                  missed_context,
+                  comments,
+                  created_at,
+                  metadata_json
+                """
+
 TASK_COLUMNS = """
                   id,
                   user_id,
@@ -2041,6 +2059,91 @@ class PostgresVNextStore:
             payload={"operation": "update_status", "status": status},
         )
         return row
+
+    def create_artifact_quality_rating(self, rating: JsonObject, *, actor_type: str = "user") -> VNextRow:
+        row = self._fetch_one(
+            "create_artifact_quality_rating",
+            f"""
+                INSERT INTO artifact_quality_ratings (
+                  id,
+                  user_id,
+                  artifact_id,
+                  reviewer_id,
+                  usefulness,
+                  accuracy,
+                  source_grounding,
+                  novel_connections,
+                  actionability,
+                  hallucination_risk,
+                  verbosity,
+                  missed_context,
+                  comments,
+                  metadata_json
+                )
+                VALUES (
+                  COALESCE(%s::uuid, gen_random_uuid()),
+                  app.current_user_id(),
+                  %s::uuid,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s
+                )
+                RETURNING {QUALITY_RATING_COLUMNS}
+                """,
+            (
+                rating.get("id"),
+                rating["artifact_id"],
+                rating.get("reviewer_id"),
+                rating.get("usefulness"),
+                rating.get("accuracy"),
+                rating.get("source_grounding"),
+                rating.get("novel_connections"),
+                rating.get("actionability"),
+                rating.get("hallucination_risk"),
+                rating.get("verbosity"),
+                rating.get("missed_context"),
+                rating.get("comments"),
+                _json_object(rating.get("metadata_json")),
+            ),
+        )
+        self._append_mutation_event(
+            event_type="artifact.quality_rated",
+            actor_type=actor_type,
+            target_type="artifact",
+            target_id=row["artifact_id"],
+            payload={
+                "operation": "create_quality_rating",
+                "quality_rating_id": str(row["id"]),
+                "artifact_id": str(row["artifact_id"]),
+                "reviewer_id": row.get("reviewer_id"),
+            },
+        )
+        return row
+
+    def list_artifact_quality_ratings(
+        self,
+        *,
+        artifact_id: str | None = None,
+        limit: int = 100,
+    ) -> list[VNextRow]:
+        return self._fetch_all(
+            f"""
+                SELECT {QUALITY_RATING_COLUMNS}
+                FROM artifact_quality_ratings
+                WHERE (%s::uuid IS NULL OR artifact_id = %s::uuid)
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """,
+            (artifact_id, artifact_id, limit),
+        )
 
     def create_task(self, task: JsonObject, *, actor_type: str = "system") -> VNextRow:
         row = self._fetch_one(

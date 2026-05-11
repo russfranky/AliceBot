@@ -19,6 +19,8 @@ Use this checklist before cutting a vNext preview tag or public announcement. Do
 - [x] Connector settings are visible in the UI.
 - [x] Connector payload ingestion preserves raw evidence, default domain/sensitivity, and cursor posture.
 - [x] Generated artifacts remain reviewable and are not auto-promoted to trusted memory.
+- [x] Model-backed artifacts remain source-grounded, policy-routed, and reviewable.
+- [x] Human artifact quality ratings can be created and exported.
 
 ## Verification
 
@@ -30,6 +32,7 @@ Use this checklist before cutting a vNext preview tag or public announcement. Do
 - [x] `git diff --check`
 - [x] `./.venv/bin/python -c 'from alicebot_api.cli import main; raise SystemExit(main(["eval", "run", "--suite", "all"]))'`
 - [x] Real Postgres vNext CLI/API/MCP smoke check.
+- [x] Real Postgres scheduled model-backed workflow smoke check.
 
 ## Security and Privacy
 
@@ -53,11 +56,13 @@ Use this checklist before cutting a vNext preview tag or public announcement. Do
 Current evidence recorded on 2026-05-11:
 
 - Real Postgres vNext smoke passed for source capture, connector ingest, scoped and unscoped context packs, daily brief generation, project update review, open-loop close, API context packs, API project dashboard, MCP context pack, and MCP project dashboard.
-- `./.venv/bin/python -m pytest tests/unit -q`: `1057 passed`.
-- `pnpm --dir apps/web test`: `205 passed`.
+- Real Postgres scheduled model-backed smoke passed for local routing, provider metadata, review status, source refs, and grounded output sections.
+- `./.venv/bin/python -m pytest tests/unit -q`: `1096 passed`.
+- `./.venv/bin/python -m pytest tests/integration -q`: `370 passed`.
+- `pnpm --dir apps/web test`: `207 passed`.
 - `pnpm --dir apps/web lint`: passed.
 - `pnpm --dir apps/web build`: passed and built `/vnext`.
 - `python3 scripts/check_control_doc_truth.py`: passed.
-- `./.venv/bin/python -c 'from alicebot_api.cli import main; raise SystemExit(main(["eval", "run", "--suite", "all"]))'`: `170/170` cases, zero critical privacy leaks, zero prompt-injection tool writes.
+- `alicebot eval run --suite all`: `170/170` cases, zero critical privacy leaks, zero prompt-injection tool writes.
 - `git diff --check`: clean.
 - GitHub Security Scans on merged `main` passed for CodeQL JavaScript, CodeQL Python, and Gitleaks.
