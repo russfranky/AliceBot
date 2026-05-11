@@ -30,15 +30,15 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
         required_markers=(
             "`v0.5.1`: released",
             "Phase 14 is shipped.",
-            "No post-Phase-14 execution sprint is active yet.",
+            "Alice vNext Sprint 1 - Architecture Foundation and Schema is active.",
         ),
     ),
     ControlDocTruthRule(
         relative_path=".ai/active/SPRINT_PACKET.md",
         required_markers=(
-            "Phase 14 Closeout + `v0.5.1` Release",
+            "Alice vNext Sprint 1 - Architecture Foundation and Schema",
             "`v0.5.1` is the current public release boundary.",
-            "release-closeout",
+            "feature-foundation",
         ),
     ),
     ControlDocTruthRule(
@@ -53,7 +53,7 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
         required_markers=(
             "`v0.5.1` is the latest published tag.",
             "Phase 14 is shipped.",
-            "No post-Phase-14 build sprint is active yet.",
+            "Alice vNext Sprint 1 - Architecture Foundation and Schema is active.",
         ),
     ),
     ControlDocTruthRule(

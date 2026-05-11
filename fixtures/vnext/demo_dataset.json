@@ -1,0 +1,82 @@
+{
+  "dataset_id": "alice-vnext-demo-2026-05",
+  "description": "Synthetic vNext demo data for public preview docs and walkthroughs.",
+  "people": [
+    {
+      "id": "person-demo-priya",
+      "name": "Priya Demo",
+      "relationship_type": "review_owner",
+      "sensitivity": "internal"
+    },
+    {
+      "id": "person-demo-morgan",
+      "name": "Morgan Demo",
+      "relationship_type": "launch_owner_candidate",
+      "sensitivity": "private"
+    }
+  ],
+  "projects": [
+    {
+      "id": "project-demo-launch",
+      "name": "Alice vNext Launch Demo",
+      "status": "active",
+      "domain": "project",
+      "sensitivity": "private"
+    }
+  ],
+  "sources": [
+    {
+      "source_type": "manual_text",
+      "title": "Launch review note",
+      "raw_text": "Decision: Keep the vNext preview local-first until connector auth is reviewed.\nTODO: confirm launch checklist owner.\nFact: Generated artifacts must stay reviewable before memory promotion.",
+      "domain": "project",
+      "sensitivity": "private"
+    },
+    {
+      "source_type": "manual_text",
+      "title": "Connector privacy note",
+      "raw_text": "Fact: Connector demo payloads must use synthetic data and example.test URLs.",
+      "domain": "project",
+      "sensitivity": "internal"
+    }
+  ],
+  "connector_payloads": {
+    "browser_clipper": {
+      "items": [
+        {
+          "external_id": "demo-browser-clip-1",
+          "cursor": "1",
+          "title": "Synthetic connector note",
+          "url": "https://example.test/alice-vnext-demo",
+          "text": "Fact: Alice vNext connector payloads preserve raw evidence and cursor metadata."
+        }
+      ]
+    },
+    "telegram": {
+      "items": [
+        {
+          "update_id": 7001,
+          "message": {
+            "message_id": 7101,
+            "date": 1778400000,
+            "chat": {
+              "id": 9001001,
+              "type": "private"
+            },
+            "from": {
+              "id": 8001001,
+              "username": "demo_user"
+            },
+            "text": "Fact: Telegram demo capture uses synthetic identifiers only."
+          }
+        }
+      ]
+    }
+  },
+  "expected_daily_brief_signals": [
+    "local-first preview boundary",
+    "launch checklist owner open loop",
+    "reviewable generated artifacts",
+    "synthetic connector data"
+  ]
+}

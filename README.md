@@ -17,6 +17,9 @@ Alice helps agents **remember what matters, resume interrupted work, explain why
 
 `v0.5.1` is the current **pre-1.0 public release**.
 
+This working tree also contains the Alice vNext public-preview seed described in
+[docs/vnext/README.md](docs/vnext/README.md). vNext is not tagged as the current public release yet.
+
 Most assistants are still good only in the moment. They can answer the current prompt, but they struggle to preserve decisions, track open loops, recover context across sessions, and stay aligned after memory corrections.
 
 Alice fixes that.
@@ -26,6 +29,26 @@ It provides a **local-first memory and continuity engine** for capture, recall, 
 **Bring your own models, keep one continuity layer.**
 
 **Works across local, self-hosted, enterprise, and external-agent workflows via CLI, MCP, provider runtime, OpenClaw import, and Hermes integration.**
+
+## Alice vNext Preview
+
+Alice vNext is the next release candidate for the true second-brain product. It is organized into three layers:
+
+- **Alice Core**: local-first storage, provenance, policy, event logging, revisions, graph objects, sources, and connector evidence.
+- **Alice Brain**: user-facing second-brain workflows such as daily briefs, weekly syntheses, context packs, contradiction reports, project updates, open loops, and reviewable artifacts.
+- **Alice Agent Memory**: CLI, API, and MCP surfaces that let agents capture, retrieve, resume, explain, and generate context without owning the memory store.
+
+The vNext preview currently includes deterministic source capture, retrieval/context packs, queue/artifact workflows, daily and weekly brain artifacts, connection/contradiction/project/open-loop workflows, synthetic evals, deterministic connector payload ingestion, and a fixture-backed `/vnext` workspace.
+
+Start with:
+
+- [vNext overview](docs/vnext/README.md)
+- [vNext quickstart](docs/vnext/quickstart.md)
+- [vNext architecture](docs/vnext/architecture.md)
+- [vNext security and privacy](docs/vnext/security-privacy.md)
+- [Example ALICE.md](docs/vnext/ALICE.example.md)
+- [vNext demo video script](docs/vnext/demo-video-script.md)
+- [vNext release checklist](docs/release/vnext-public-release-checklist.md)
 
 ## Release Boundary (`v0.5.1`)
 
@@ -362,6 +385,10 @@ Deferred beyond `v0.5.1`:
 
 ## Docs
 
+- [vNext Preview](docs/vnext/README.md)
+- [vNext Quickstart](docs/vnext/quickstart.md)
+- [vNext Architecture](docs/vnext/architecture.md)
+- [vNext Security and Privacy](docs/vnext/security-privacy.md)
 - [Quickstart](docs/quickstart/local-setup-and-first-result.md)
 - [Architecture](ARCHITECTURE.md)
 - [MCP](docs/integrations/mcp.md)

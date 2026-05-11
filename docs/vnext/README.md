@@ -1,0 +1,35 @@
+# Alice vNext Public Preview
+
+Alice vNext is the next public wedge for Alice as a true second brain: a local-first memory kernel, reviewable generated briefs, connector-backed evidence capture, and agent-facing context packs.
+
+This preview is not a hosted launch. It is a repo-local, deterministic release candidate built around the vNext memory-kernel schema and the fixture-safe workflows shipped in this branch.
+
+## Product Shape
+
+Alice vNext has three layers:
+
+- **Alice Core**: the local-first persistence, provenance, policy, and event-log substrate. Core owns sources, chunks, memories, revisions, graph edges, projects, open loops, artifacts, evals, and connector evidence.
+- **Alice Brain**: the user-facing second-brain workflows on top of Core. Brain generates daily briefs, weekly syntheses, context packs, contradiction reports, connection reports, project updates, and reviewable artifacts.
+- **Alice Agent Memory**: the agent integration layer. Agent Memory exposes continuity through CLI, API, and MCP so external agents can capture, retrieve, resume, explain, and generate context without owning the memory database.
+
+## Preview Surfaces
+
+- Source capture: manual text, local text/Markdown files, Markdown folders, ChatGPT exports.
+- Retrieval: deterministic context packs with domain/sensitivity filters and provenance.
+- Brain workflows: daily brief, weekly synthesis, connection report, contradiction report, project update, open-loop review.
+- Connectors: deterministic Telegram, browser clipper, PDF, DOCX, CSV, screenshot OCR, and voice transcript payload ingestion.
+- UI: fixture-backed `/vnext` workspace for review, Ask Alice, briefs, queue, projects, beliefs, graph, connectors, and privacy settings.
+- Evals: synthetic corpus and baseline metrics for recall, temporal reasoning, contradictions, provenance, privacy, open loops, and prompt injection.
+
+## Start Here
+
+1. Follow [vNext quickstart](quickstart.md).
+2. Review [architecture](architecture.md).
+3. Review [security and privacy](security-privacy.md).
+4. Use [example ALICE.md](ALICE.example.md) as the first Brain Charter.
+5. Use [demo script](demo-video-script.md) for a short walkthrough.
+6. Use [release checklist](../release/vnext-public-release-checklist.md) before publishing or tagging.
+
+## Launch Boundary
+
+The public preview should prove that a technical user can install Alice locally and generate a first daily brief in under 20 minutes. It should not claim live connector polling, cloud sync, hosted SLA, or automatic promotion of generated artifacts into trusted memory.
