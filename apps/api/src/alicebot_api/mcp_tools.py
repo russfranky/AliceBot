@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from alicebot_api.continuity_capture import (
     ContinuityCaptureValidationError,
@@ -124,11 +124,23 @@ from alicebot_api.task_briefing import (
     compile_and_persist_task_brief,
     get_persisted_task_brief,
 )
+from alicebot_api.vnext_agent_control import (
+    AgentIdentity,
+    AgentIdentityValidationError,
+    PolicyDecision,
+    agent_metadata,
+    append_policy_events,
+    evaluate_agent_policy,
+)
 from alicebot_api.vnext_brain import BrainArtifactRequest, VNextBrainService
+from alicebot_api.vnext_capture import VNextCaptureService
 from alicebot_api.vnext_connections import ConnectionFinderRequest, VNextConnectionService
 from alicebot_api.vnext_contradictions import ContradictionFinderRequest, VNextContradictionService
+from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_projects import ProjectAutomationRequest, VNextProjectService
+from alicebot_api.vnext_queue import QueueTaskRequest, VNextQueueService
 from alicebot_api.vnext_retrieval import VNextRetrievalRequest, VNextRetrievalService
+from alicebot_api.vnext_scheduler import SchedulerRunRequest, VNextSchedulerService
 from alicebot_api.vnext_json import json_safe
 from alicebot_api.vnext_store import PostgresVNextStore
 
@@ -311,6 +323,86 @@ def _parse_string_list(arguments: Mapping[str, object], key: str) -> tuple[str, 
         if normalized:
             output.append(normalized)
     return tuple(output)
+
+
+def _agent_identity_from_arguments(arguments: Mapping[str, object]) -> AgentIdentity | None:
+    try:
+        return AgentIdentity.from_payload(arguments)
+    except AgentIdentityValidationError as exc:
+        raise MCPToolError(str(exc)) from exc
+
+
+def _policy_checked(
+    store: PostgresVNextStore,
+    *,
+    identity: AgentIdentity | None,
+    action: str,
+    domains: tuple[str, ...] = (),
+    sensitivity_allowed: tuple[str, ...] = ("public", "internal", "private", "unknown"),
+    project_scope: tuple[str, ...] = (),
+    workflow_type: str | None = None,
+    write_policy: str | None = None,
+) -> tuple[str, str | None, object]:
+    if identity is not None:
+        store.upsert_agent_identity(
+            {
+                "agent_id": identity.agent_id,
+                "agent_type": identity.agent_type,
+                "permission_profile": identity.permission_profile,
+                "project_scope_json": list(identity.project_scope),
+                "metadata_json": {"last_agent_run_id": identity.agent_run_id, "last_task_id": identity.task_id},
+            },
+            actor_type="agent",
+        )
+    decision = evaluate_agent_policy(
+        identity=identity,
+        action=action,
+        domains=domains,
+        sensitivity_allowed=sensitivity_allowed,
+        project_scope=project_scope,
+        workflow_type=workflow_type,
+        write_policy=write_policy,
+    )
+    append_policy_events(store, identity=identity, decision=decision)
+    return ("agent", identity.agent_id, decision) if identity is not None else ("system", None, decision)
+
+
+def _raise_mcp_policy_blocked(decision: PolicyDecision) -> None:
+    raise MCPToolError(f"agent policy blocked: {', '.join(decision.reasons) or decision.action}")
+
+
+def _mcp_agent_policy_preflight(
+    context: MCPRuntimeContext,
+    arguments: Mapping[str, object],
+    *,
+    action: str,
+    domains: tuple[str, ...] = (),
+    sensitivity_allowed: tuple[str, ...] = ("public", "internal", "private", "unknown"),
+    project_scope: tuple[str, ...] = (),
+    workflow_type: str | None = None,
+    write_policy: str | None = None,
+) -> PolicyDecision:
+    identity = _agent_identity_from_arguments(arguments)
+    blocked_decision: PolicyDecision | None = None
+    decision: PolicyDecision | None = None
+    with _vnext_store_context(context) as store:
+        _actor_type, _actor_id, decision = _policy_checked(
+            store,
+            identity=identity,
+            action=action,
+            domains=domains,
+            sensitivity_allowed=sensitivity_allowed,
+            project_scope=project_scope,
+            workflow_type=workflow_type,
+            write_policy=write_policy,
+        )
+        if decision.decision == "blocked":
+            blocked_decision = decision
+    if blocked_decision is not None:
+        _raise_mcp_policy_blocked(blocked_decision)
+    if decision is None:
+        raise MCPToolError("agent policy preflight did not complete")
+    return decision
 
 
 def _parse_task_brief_request(arguments: Mapping[str, object], *, mode_key: str = "mode") -> TaskBriefCompileRequestInput:
@@ -1071,6 +1163,15 @@ def _handle_alice_recent_decisions(context: MCPRuntimeContext, arguments: Mappin
         minimum=1,
         maximum=MAX_CONTINUITY_RECALL_LIMIT,
     )
+    _mcp_agent_policy_preflight(
+        context,
+        arguments,
+        action="recent_decisions.lookup",
+        domains=_parse_string_list(arguments, "domains"),
+        sensitivity_allowed=_parse_string_list(arguments, "sensitivity_allowed")
+        or ("public", "internal", "private", "unknown"),
+        project_scope=_parse_string_list(arguments, "project_scope"),
+    )
     return _recent_decisions_payload(context, arguments=arguments, limit=limit)
 
 
@@ -1081,6 +1182,15 @@ def _handle_alice_recent_changes(context: MCPRuntimeContext, arguments: Mapping[
         default=DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
         minimum=0,
         maximum=MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+    )
+    _mcp_agent_policy_preflight(
+        context,
+        arguments,
+        action="recent_changes.lookup",
+        domains=_parse_string_list(arguments, "domains"),
+        sensitivity_allowed=_parse_string_list(arguments, "sensitivity_allowed")
+        or ("public", "internal", "private", "unknown"),
+        project_scope=_parse_string_list(arguments, "project_scope"),
     )
 
     with _store_context(context) as store:
@@ -1484,22 +1594,47 @@ def _handle_alice_vnext_context_pack(context: MCPRuntimeContext, arguments: Mapp
         "private",
         "unknown",
     )
+    identity = _agent_identity_from_arguments(arguments)
 
+    blocked_decision: PolicyDecision | None = None
+    payload: JsonObject | None = None
     with _vnext_store_context(context) as store:
-        return VNextRetrievalService(store).compile_context_pack(
-            VNextRetrievalRequest(
-                query=_parse_required_text(arguments, "query"),
-                domains=_parse_string_list(arguments, "domains"),
-                projects=_parse_string_list(arguments, "projects"),
-                people=_parse_string_list(arguments, "people"),
-                time_window=_parse_optional_text(arguments, "time_window") or "all",
-                sensitivity_allowed=sensitivity_allowed,
-                include_sources=_parse_bool(arguments, key="include_sources", default=True),
-                include_contradictions=_parse_bool(arguments, key="include_contradictions", default=True),
-                max_items=max_items,
-                max_tokens=max_tokens,
-            )
+        actor_type, actor_id, decision = _policy_checked(
+            store,
+            identity=identity,
+            action="context_pack.request",
+            domains=_parse_string_list(arguments, "domains"),
+            sensitivity_allowed=sensitivity_allowed,
+            project_scope=_parse_string_list(arguments, "project_scope") or _parse_string_list(arguments, "projects"),
         )
+        if decision.decision == "blocked":
+            blocked_decision = decision
+        else:
+            payload = VNextRetrievalService(store).compile_context_pack(
+                VNextRetrievalRequest(
+                    query=_parse_required_text(arguments, "query"),
+                    domains=decision.effective_domains,
+                    projects=_parse_string_list(arguments, "projects"),
+                    people=_parse_string_list(arguments, "people"),
+                    time_window=_parse_optional_text(arguments, "time_window") or "all",
+                    sensitivity_allowed=decision.effective_sensitivity_allowed,
+                    include_sources=_parse_bool(arguments, key="include_sources", default=True),
+                    include_contradictions=_parse_bool(arguments, key="include_contradictions", default=True),
+                    max_items=max_items,
+                    max_tokens=max_tokens,
+                    actor_type=actor_type,
+                    actor_id=actor_id,
+                    agent_identity=identity.to_record() if identity is not None else None,
+                    policy_decision=decision.to_record(),
+                    trace_id=_parse_optional_text(arguments, "trace_id") or decision.trace_id,
+                    run_id=identity.agent_run_id if identity is not None else None,
+                )
+            )
+    if blocked_decision is not None:
+        _raise_mcp_policy_blocked(blocked_decision)
+    if payload is None:
+        raise MCPToolError("vNext context-pack request did not complete")
+    return payload
 
 
 def _brain_artifact_request_from_arguments(arguments: Mapping[str, object]) -> BrainArtifactRequest:
@@ -1550,8 +1685,24 @@ def _connection_request_from_arguments(arguments: Mapping[str, object]) -> Conne
 
 
 def _handle_alice_generate_connections(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    request = _connection_request_from_arguments(arguments)
+    decision = _mcp_agent_policy_preflight(
+        context,
+        arguments,
+        action="artifact.generate",
+        domains=request.domains,
+        sensitivity_allowed=request.sensitivity_allowed,
+        project_scope=_parse_string_list(arguments, "project_scope") or _parse_string_list(arguments, "projects"),
+    )
+    request = ConnectionFinderRequest(
+        query=request.query,
+        domains=decision.effective_domains,
+        sensitivity_allowed=decision.effective_sensitivity_allowed,
+        max_connections=request.max_connections,
+        auto_accept_threshold=request.auto_accept_threshold,
+    )
     with _vnext_store_context(context) as store:
-        return VNextConnectionService(store).generate_connection_report(_connection_request_from_arguments(arguments))
+        return VNextConnectionService(store).generate_connection_report(request)
 
 
 def _handle_alice_graph_edge_review(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
@@ -1585,10 +1736,23 @@ def _contradiction_request_from_arguments(arguments: Mapping[str, object]) -> Co
 
 
 def _handle_alice_generate_contradictions(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    request = _contradiction_request_from_arguments(arguments)
+    decision = _mcp_agent_policy_preflight(
+        context,
+        arguments,
+        action="artifact.generate",
+        domains=request.domains,
+        sensitivity_allowed=request.sensitivity_allowed,
+        project_scope=_parse_string_list(arguments, "project_scope") or _parse_string_list(arguments, "projects"),
+    )
+    request = ContradictionFinderRequest(
+        query=request.query,
+        domains=decision.effective_domains,
+        sensitivity_allowed=decision.effective_sensitivity_allowed,
+        max_contradictions=request.max_contradictions,
+    )
     with _vnext_store_context(context) as store:
-        return VNextContradictionService(store).generate_contradiction_report(
-            _contradiction_request_from_arguments(arguments)
-        )
+        return VNextContradictionService(store).generate_contradiction_report(request)
 
 
 def _handle_alice_belief_review(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
@@ -1645,10 +1809,17 @@ def _handle_alice_project_dashboard(context: MCPRuntimeContext, arguments: Mappi
         "private",
         "unknown",
     )
+    decision = _mcp_agent_policy_preflight(
+        context,
+        arguments,
+        action="project.dashboard",
+        sensitivity_allowed=sensitivity_allowed,
+        project_scope=_parse_string_list(arguments, "project_scope"),
+    )
     with _vnext_store_context(context) as store:
         return VNextProjectService(store).project_dashboard(
             project_id=_parse_required_text(arguments, "project_id"),
-            sensitivity_allowed=sensitivity_allowed,
+            sensitivity_allowed=decision.effective_sensitivity_allowed,
         )
 
 
@@ -1669,6 +1840,415 @@ def _handle_alice_open_loop_review(context: MCPRuntimeContext, arguments: Mappin
             priority=_parse_optional_text(arguments, "priority"),
             resolution_note=_parse_optional_text(arguments, "resolution_note"),
         )
+
+
+def _handle_alice_vnext_capture(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    identity = _agent_identity_from_arguments(arguments)
+    domain = _parse_optional_text(arguments, "domain") or "unknown"
+    sensitivity = _parse_optional_text(arguments, "sensitivity") or "unknown"
+    blocked_decision: PolicyDecision | None = None
+    payload: JsonObject | None = None
+    with _vnext_store_context(context) as store:
+        actor_type, actor_id, decision = _policy_checked(
+            store,
+            identity=identity,
+            action="source.capture",
+            domains=(domain,),
+            sensitivity_allowed=(sensitivity,),
+            project_scope=_parse_string_list(arguments, "project_scope"),
+        )
+        if decision.decision == "blocked":
+            blocked_decision = decision
+        else:
+            payload = VNextCaptureService(
+                store,
+                actor_type=actor_type,
+                actor_id=actor_id,
+                trace_id=_parse_optional_text(arguments, "trace_id") or decision.trace_id,
+                run_id=identity.agent_run_id if identity is not None else None,
+                agent_identity=identity.to_record() if identity is not None else None,
+                policy_decision=decision.to_record(),
+            ).capture_text(
+                _parse_required_text(arguments, "raw_text"),
+                title=_parse_optional_text(arguments, "title"),
+                domain=domain,
+                sensitivity=sensitivity,
+            ).to_record()
+    if blocked_decision is not None:
+        _raise_mcp_policy_blocked(blocked_decision)
+    if payload is None:
+        raise MCPToolError("vNext source capture did not complete")
+    return payload
+
+
+def _handle_alice_vnext_queue_task(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    identity = _agent_identity_from_arguments(arguments)
+    domain = _parse_optional_text(arguments, "domain") or "unknown"
+    sensitivity = _parse_optional_text(arguments, "sensitivity") or "unknown"
+    write_policy = _parse_optional_text(arguments, "write_policy") or "proposal_only"
+    blocked_decision: PolicyDecision | None = None
+    payload: JsonObject | None = None
+    with _vnext_store_context(context) as store:
+        actor_type, actor_id, decision = _policy_checked(
+            store,
+            identity=identity,
+            action="queue_task.create",
+            domains=(domain,),
+            sensitivity_allowed=(sensitivity,),
+            project_scope=_parse_string_list(arguments, "project_scope"),
+            write_policy=write_policy,
+        )
+        if decision.decision == "blocked":
+            blocked_decision = decision
+        else:
+            payload = VNextQueueService(store).enqueue_task(
+                QueueTaskRequest(
+                    title=_parse_required_text(arguments, "title"),
+                    task_type=_parse_required_text(arguments, "task_type"),
+                    instructions=_parse_required_text(arguments, "instructions"),
+                    requested_by=identity.agent_id if identity is not None else "mcp",
+                    domain=domain,
+                    sensitivity=sensitivity,
+                    write_policy=write_policy,
+                    scope_json={"project_scope": list(_parse_string_list(arguments, "project_scope"))},
+                    actor_type=actor_type,
+                    actor_id=actor_id,
+                    trace_id=_parse_optional_text(arguments, "trace_id") or decision.trace_id,
+                    run_id=identity.agent_run_id if identity is not None else None,
+                    agent_identity=identity.to_record() if identity is not None else None,
+                    policy_decision=decision.to_record(),
+                )
+            )
+    if blocked_decision is not None:
+        _raise_mcp_policy_blocked(blocked_decision)
+    if payload is None:
+        raise MCPToolError("vNext queue task did not complete")
+    return payload
+
+
+def _handle_alice_vnext_generate_artifact(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    workflow_type = _parse_optional_text(arguments, "workflow_type") or "daily_brief"
+    if workflow_type in {"connection_report", "connections"}:
+        return _handle_alice_generate_connections(context, arguments)
+    if workflow_type in {"contradiction_report", "contradictions"}:
+        return _handle_alice_generate_contradictions(context, arguments)
+    identity = _agent_identity_from_arguments(arguments)
+    sensitivity_allowed = _parse_string_list(arguments, "sensitivity_allowed") or (
+        "public",
+        "internal",
+        "private",
+        "unknown",
+    )
+    blocked_decision: PolicyDecision | None = None
+    payload: JsonObject | None = None
+    with _vnext_store_context(context) as store:
+        actor_type, actor_id, decision = _policy_checked(
+            store,
+            identity=identity,
+            action="artifact.generate",
+            domains=_parse_string_list(arguments, "domains"),
+            sensitivity_allowed=sensitivity_allowed,
+            project_scope=_parse_string_list(arguments, "project_scope") or _parse_string_list(arguments, "projects"),
+        )
+        if decision.decision == "blocked":
+            blocked_decision = decision
+        else:
+            request = BrainArtifactRequest(
+                domains=decision.effective_domains,
+                sensitivity_allowed=decision.effective_sensitivity_allowed,
+                generated_for=_parse_optional_text(arguments, "generated_for"),
+                source_limit=_parse_int(arguments, key="source_limit", default=8, minimum=1, maximum=50),
+                memory_limit=_parse_int(arguments, key="memory_limit", default=8, minimum=1, maximum=50),
+                open_loop_limit=_parse_int(arguments, key="open_loop_limit", default=8, minimum=1, maximum=50),
+                artifact_limit=_parse_int(arguments, key="artifact_limit", default=4, minimum=1, maximum=50),
+                discover_open_loops=_parse_bool(arguments, key="discover_open_loops", default=True),
+                create_candidate_memories=_parse_bool(arguments, key="create_candidate_memories", default=True),
+                generated_by=actor_type,
+                actor_id=actor_id,
+                trace_id=_parse_optional_text(arguments, "trace_id") or decision.trace_id,
+                run_id=identity.agent_run_id if identity is not None else None,
+                agent_identity=identity.to_record() if identity is not None else None,
+                policy_decision=decision.to_record(),
+                metadata_json=agent_metadata(identity, decision),
+            )
+            service = VNextBrainService(store)
+            payload = (
+                service.generate_weekly_synthesis(request)
+                if workflow_type == "weekly_synthesis"
+                else service.generate_daily_brief(request)
+            )
+    if blocked_decision is not None:
+        _raise_mcp_policy_blocked(blocked_decision)
+    if payload is None:
+        raise MCPToolError("vNext artifact generation did not complete")
+    return payload
+
+
+def _handle_alice_vnext_open_loops(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    status = _parse_optional_text(arguments, "status") or "open"
+    sensitivity_allowed = _parse_string_list(arguments, "sensitivity_allowed") or (
+        "public",
+        "internal",
+        "private",
+        "unknown",
+    )
+    decision = _mcp_agent_policy_preflight(
+        context,
+        arguments,
+        action="open_loop.lookup",
+        domains=_parse_string_list(arguments, "domains"),
+        sensitivity_allowed=sensitivity_allowed,
+        project_scope=_parse_string_list(arguments, "project_scope"),
+    )
+    with _vnext_store_context(context) as store:
+        loops = store.list_open_loops(
+            status=status if status != "all" else None,
+            domains=list(decision.effective_domains) or None,
+            sensitivity_allowed=list(decision.effective_sensitivity_allowed),
+            limit=_parse_int(arguments, key="limit", default=20, minimum=1, maximum=100),
+        )
+    return {"items": loops, "count": len(loops)}
+
+
+def _handle_alice_vnext_propose_memory(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    identity = _agent_identity_from_arguments(arguments)
+    if identity is None:
+        raise MCPToolError("agent_id is required for alice_vnext_propose_memory")
+    proposal_type = _parse_optional_text(arguments, "proposal_type") or "candidate_memory"
+    canonical_text = _parse_required_text(arguments, "canonical_text")
+    domain = _parse_optional_text(arguments, "domain") or "unknown"
+    sensitivity = _parse_optional_text(arguments, "sensitivity") or "unknown"
+    blocked_decision: PolicyDecision | None = None
+    memory: JsonObject | None = None
+    decision: PolicyDecision | None = None
+    with _vnext_store_context(context) as store:
+        _actor_type, _actor_id, decision = _policy_checked(
+            store,
+            identity=identity,
+            action="memory.propose",
+            domains=(domain,),
+            sensitivity_allowed=(sensitivity,),
+            project_scope=_parse_string_list(arguments, "project_scope"),
+        )
+        if decision.decision == "blocked":
+            blocked_decision = decision
+        else:
+            proposal_id = _parse_optional_text(arguments, "proposal_id") or str(uuid4())
+            memory = store.create_memory(
+                {
+                    "memory_type": {
+                        "decision": "decision",
+                        "project_update": "project_state",
+                        "belief_update": "belief",
+                        "contradiction": "contradiction",
+                        "artifact_summary": "artifact_summary",
+                        "open_loop": "open_loop",
+                    }.get(proposal_type, "semantic"),
+                    "memory_key": f"agent_proposal.{proposal_type}.{proposal_id}",
+                    "value": {"proposal_type": proposal_type, "text": canonical_text},
+                    "status": "candidate",
+                    "confidence": _parse_optional_float(arguments, "confidence") or 0.5,
+                    "title": _parse_optional_text(arguments, "title") or canonical_text[:120],
+                    "canonical_text": canonical_text,
+                    "summary": canonical_text[:280],
+                    "domain": domain,
+                    "sensitivity": sensitivity,
+                    "metadata_json": {
+                        "proposal_type": proposal_type,
+                        "review_required": True,
+                        **agent_metadata(identity, decision),
+                    },
+                },
+                actor_type="agent",
+            )
+            append_event(
+                store,
+                event_type="agent.memory_proposed",
+                actor_type="agent",
+                actor_id=identity.agent_id,
+                target_type="memory",
+                target_id=str(memory["id"]),
+                trace_id=_parse_optional_text(arguments, "trace_id") or decision.trace_id,
+                run_id=identity.agent_run_id,
+                payload={"proposal_type": proposal_type, "agent_identity": identity.to_record()},
+            )
+    if blocked_decision is not None:
+        _raise_mcp_policy_blocked(blocked_decision)
+    if memory is None or decision is None:
+        raise MCPToolError("vNext memory proposal did not complete")
+    return {"proposal": memory, "policy_decision": decision.to_record(), "review_required": True}
+
+
+def _handle_alice_vnext_review_items(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    with _vnext_store_context(context) as store:
+        items = [
+            row
+            for row in store.list_memories(status=None)
+            if str(row.get("status")) in {"candidate", "needs_review", "private_only"}
+        ][:_parse_int(arguments, key="limit", default=20, minimum=1, maximum=100)]
+    return {"items": items, "count": len(items)}
+
+
+def _handle_alice_vnext_artifact_get(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    artifact_id = _parse_required_text(arguments, "artifact_id")
+    with _vnext_store_context(context) as store:
+        artifact = store.get_artifact(artifact_id)
+    if artifact is None:
+        raise MCPToolError(f"artifact {artifact_id} was not found")
+    return artifact
+
+
+def _handle_alice_vnext_artifact_review(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    identity = _agent_identity_from_arguments(arguments)
+    artifact_id = _parse_required_text(arguments, "artifact_id")
+    blocked_decision: PolicyDecision | None = None
+    payload: JsonObject | None = None
+    with _vnext_store_context(context) as store:
+        _actor_type, _actor_id, decision = _policy_checked(store, identity=identity, action="artifact.review")
+        if decision.decision == "blocked":
+            blocked_decision = decision
+        else:
+            payload = VNextQueueService(store).review_artifact(
+                artifact_id=artifact_id,
+                action=_parse_required_text(arguments, "action"),
+            )
+    if blocked_decision is not None:
+        _raise_mcp_policy_blocked(blocked_decision)
+    if payload is None:
+        raise MCPToolError("vNext artifact review did not complete")
+    return payload
+
+
+def _handle_alice_vnext_scheduler_status(context: MCPRuntimeContext, _arguments: Mapping[str, object]) -> JsonObject:
+    with _vnext_store_context(context) as store:
+        return VNextSchedulerService(store).status()
+
+
+def _handle_alice_vnext_scheduler_run_now(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    identity = _agent_identity_from_arguments(arguments)
+    workflow_type = _parse_required_text(arguments, "workflow_type")
+    sensitivity_allowed = _parse_string_list(arguments, "sensitivity_allowed") or (
+        "public",
+        "internal",
+        "private",
+        "unknown",
+    )
+    blocked_decision: PolicyDecision | None = None
+    payload: JsonObject | None = None
+    with _vnext_store_context(context) as store:
+        _actor_type, _actor_id, decision = _policy_checked(
+            store,
+            identity=identity,
+            action="scheduler.run_now",
+            domains=_parse_string_list(arguments, "domains"),
+            sensitivity_allowed=sensitivity_allowed,
+            project_scope=_parse_string_list(arguments, "project_scope") or _parse_string_list(arguments, "projects"),
+            workflow_type=workflow_type,
+        )
+        if decision.decision == "blocked":
+            blocked_decision = decision
+        else:
+            payload = VNextSchedulerService(store).run_now(
+                SchedulerRunRequest(
+                    workflow_type=workflow_type,
+                    domains=decision.effective_domains,
+                    sensitivity_allowed=decision.effective_sensitivity_allowed,
+                    generated_for=_parse_optional_text(arguments, "generated_for"),
+                    triggered_by="agent" if identity is not None else "user",
+                    agent_identity=identity,
+                    policy_decision=decision,
+                )
+            )
+    if blocked_decision is not None:
+        _raise_mcp_policy_blocked(blocked_decision)
+    if payload is None:
+        raise MCPToolError("vNext scheduler run-now did not complete")
+    return payload
+
+
+def _handle_alice_vnext_scheduler_run_due(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    identity = _agent_identity_from_arguments(arguments)
+    limit_value = arguments.get("limit", 10)
+    if not isinstance(limit_value, int):
+        raise MCPToolError("limit must be an integer")
+    blocked_decision: PolicyDecision | None = None
+    payload: JsonObject | None = None
+    with _vnext_store_context(context) as store:
+        actor_type, _actor_id, decision = _policy_checked(store, identity=identity, action="scheduler.run_due")
+        if decision.decision == "blocked":
+            blocked_decision = decision
+        else:
+            payload = VNextSchedulerService(store).run_due_workflows(
+                limit=limit_value,
+                triggered_by=actor_type if identity is not None else "scheduler",
+                agent_identity=identity,
+                policy_decision=decision,
+            )
+    if blocked_decision is not None:
+        _raise_mcp_policy_blocked(blocked_decision)
+    if payload is None:
+        raise MCPToolError("vNext scheduler run-due did not complete")
+    return payload
+
+
+def _handle_alice_vnext_scheduler_pause(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    identity = _agent_identity_from_arguments(arguments)
+    blocked_decision: PolicyDecision | None = None
+    payload: JsonObject | None = None
+    with _vnext_store_context(context) as store:
+        actor_type, _actor_id, decision = _policy_checked(store, identity=identity, action="scheduler.pause")
+        if decision.decision == "blocked":
+            blocked_decision = decision
+        else:
+            payload = VNextSchedulerService(store).pause_all(actor_type=actor_type)
+    if blocked_decision is not None:
+        _raise_mcp_policy_blocked(blocked_decision)
+    if payload is None:
+        raise MCPToolError("vNext scheduler pause did not complete")
+    return payload
+
+
+def _handle_alice_vnext_scheduler_resume(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    identity = _agent_identity_from_arguments(arguments)
+    blocked_decision: PolicyDecision | None = None
+    payload: JsonObject | None = None
+    with _vnext_store_context(context) as store:
+        actor_type, _actor_id, decision = _policy_checked(store, identity=identity, action="scheduler.resume")
+        if decision.decision == "blocked":
+            blocked_decision = decision
+        else:
+            payload = VNextSchedulerService(store).resume_all(actor_type=actor_type)
+    if blocked_decision is not None:
+        _raise_mcp_policy_blocked(blocked_decision)
+    if payload is None:
+        raise MCPToolError("vNext scheduler resume did not complete")
+    return payload
+
+
+_VNEXT_AGENT_SCHEMA_PROPERTIES: dict[str, object] = {
+    "agent_id": {"type": "string"},
+    "agent_type": {"type": "string"},
+    "agent_run_id": {"type": "string"},
+    "task_id": {"type": "string"},
+    "project_scope": {"type": "array", "items": {"type": "string"}},
+    "permission_profile": {"type": "string"},
+    "trace_id": {"type": "string"},
+    "domains": {"type": "array", "items": {"type": "string"}},
+    "sensitivity_allowed": {"type": "array", "items": {"type": "string"}},
+}
+
+
+def _vnext_agent_tool_schema(
+    properties: dict[str, object] | None = None,
+    *,
+    required: list[str] | None = None,
+) -> dict[str, object]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": required or [],
+        "properties": {**_VNEXT_AGENT_SCHEMA_PROPERTIES, **(properties or {})},
+    }
 
 
 _TOOL_DEFINITIONS: list[dict[str, object]] = [
@@ -2528,6 +3108,165 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
             },
         },
     },
+    {
+        "name": "alice_vnext_capture",
+        "description": "Capture a vNext source with optional agent identity and policy checks.",
+        "inputSchema": _vnext_agent_tool_schema(
+            {
+                "raw_text": {"type": "string"},
+                "title": {"type": "string"},
+                "source_type": {"type": "string"},
+                "domain": {"type": "string"},
+                "sensitivity": {"type": "string"},
+            },
+            required=["raw_text"],
+        ),
+    },
+    {
+        "name": "alice_vnext_queue_task",
+        "description": "Create a vNext queue task with optional agent identity and policy checks.",
+        "inputSchema": _vnext_agent_tool_schema(
+            {
+                "title": {"type": "string"},
+                "task_type": {"type": "string"},
+                "instructions": {"type": "string"},
+                "domain": {"type": "string"},
+                "sensitivity": {"type": "string"},
+                "scheduled_for": {"type": "string"},
+            },
+            required=["title", "task_type", "instructions"],
+        ),
+    },
+    {
+        "name": "alice_vnext_generate_artifact",
+        "description": "Generate a vNext artifact workflow such as daily_brief or weekly_synthesis.",
+        "inputSchema": _vnext_agent_tool_schema(
+            {
+                "artifact_type": {"type": "string"},
+                "workflow_type": {"type": "string"},
+                "generated_for": {"type": "string"},
+                "max_items": {"type": "integer", "minimum": 1, "maximum": 50},
+            },
+        ),
+    },
+    {
+        "name": "alice_vnext_project_dashboard",
+        "description": "Return vNext project dashboard state.",
+        "inputSchema": _vnext_agent_tool_schema({"project_id": {"type": "string"}}, required=["project_id"]),
+    },
+    {
+        "name": "alice_vnext_open_loops",
+        "description": "List vNext open loops with domain and sensitivity filters.",
+        "inputSchema": _vnext_agent_tool_schema(
+            {
+                "title": {"type": "string"},
+                "description": {"type": "string"},
+                "project_id": {"type": "string"},
+                "source_id": {"type": "string"},
+                "status": {"type": "string"},
+                "priority": {"type": "string"},
+                "due_at": {"type": "string"},
+                "domain": {"type": "string"},
+                "sensitivity": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+            },
+        ),
+    },
+    {
+        "name": "alice_vnext_recent_decisions",
+        "description": "Return recent decision context through the existing continuity lookup.",
+        "inputSchema": _vnext_agent_tool_schema({"limit": {"type": "integer", "minimum": 1, "maximum": 50}}),
+    },
+    {
+        "name": "alice_vnext_recent_changes",
+        "description": "Return recent change context through the existing continuity lookup.",
+        "inputSchema": _vnext_agent_tool_schema({"limit": {"type": "integer", "minimum": 1, "maximum": 50}}),
+    },
+    {
+        "name": "alice_vnext_find_connections",
+        "description": "Generate a vNext connection report.",
+        "inputSchema": _vnext_agent_tool_schema({"max_connections": {"type": "integer", "minimum": 1, "maximum": 50}}),
+    },
+    {
+        "name": "alice_vnext_find_contradictions",
+        "description": "Generate a vNext contradiction report.",
+        "inputSchema": _vnext_agent_tool_schema({"max_contradictions": {"type": "integer", "minimum": 1, "maximum": 50}}),
+    },
+    {
+        "name": "alice_vnext_propose_memory",
+        "description": "Submit an agent memory proposal for human review.",
+        "inputSchema": _vnext_agent_tool_schema(
+            {
+                "proposal_type": {"type": "string"},
+                "title": {"type": "string"},
+                "canonical_text": {"type": "string"},
+                "source_refs": {"type": "array", "items": {"type": "string"}},
+                "domain": {"type": "string"},
+                "sensitivity": {"type": "string"},
+                "confidence": {"type": "number"},
+                "rationale": {"type": "string"},
+            },
+            required=["agent_id", "canonical_text"],
+        ),
+    },
+    {
+        "name": "alice_vnext_review_items",
+        "description": "List pending vNext memory review items.",
+        "inputSchema": _vnext_agent_tool_schema(
+            {
+                "status": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+            },
+        ),
+    },
+    {
+        "name": "alice_vnext_artifact_get",
+        "description": "Get one vNext generated artifact.",
+        "inputSchema": _vnext_agent_tool_schema({"artifact_id": {"type": "string"}}, required=["artifact_id"]),
+    },
+    {
+        "name": "alice_vnext_artifact_review",
+        "description": "Review a vNext artifact; agent callers are policy checked.",
+        "inputSchema": _vnext_agent_tool_schema(
+            {
+                "artifact_id": {"type": "string"},
+                "action": {"type": "string"},
+                "reason": {"type": "string"},
+            },
+            required=["artifact_id", "action"],
+        ),
+    },
+    {
+        "name": "alice_vnext_scheduler_status",
+        "description": "Return governed local scheduler status.",
+        "inputSchema": _vnext_agent_tool_schema(),
+    },
+    {
+        "name": "alice_vnext_scheduler_run_now",
+        "description": "Run a governed scheduler workflow now with policy checks.",
+        "inputSchema": _vnext_agent_tool_schema(
+            {
+                "workflow_type": {"type": "string"},
+                "generated_for": {"type": "string"},
+            },
+            required=["workflow_type"],
+        ),
+    },
+    {
+        "name": "alice_vnext_scheduler_run_due",
+        "description": "Run enabled governed scheduler workflows whose next_run_at is due.",
+        "inputSchema": _vnext_agent_tool_schema({"limit": {"type": "integer", "minimum": 1, "maximum": 50}}),
+    },
+    {
+        "name": "alice_vnext_scheduler_pause",
+        "description": "Pause all governed scheduler workflows.",
+        "inputSchema": _vnext_agent_tool_schema(),
+    },
+    {
+        "name": "alice_vnext_scheduler_resume",
+        "description": "Resume all governed scheduler workflows.",
+        "inputSchema": _vnext_agent_tool_schema(),
+    },
 ]
 
 _TOOL_HANDLERS = {
@@ -2578,6 +3317,24 @@ _TOOL_HANDLERS = {
     "alice_project_dashboard": _handle_alice_project_dashboard,
     "alice_open_loop_extract": _handle_alice_open_loop_extract,
     "alice_open_loop_review": _handle_alice_open_loop_review,
+    "alice_vnext_capture": _handle_alice_vnext_capture,
+    "alice_vnext_queue_task": _handle_alice_vnext_queue_task,
+    "alice_vnext_generate_artifact": _handle_alice_vnext_generate_artifact,
+    "alice_vnext_project_dashboard": _handle_alice_project_dashboard,
+    "alice_vnext_open_loops": _handle_alice_vnext_open_loops,
+    "alice_vnext_recent_decisions": _handle_alice_recent_decisions,
+    "alice_vnext_recent_changes": _handle_alice_recent_changes,
+    "alice_vnext_find_connections": _handle_alice_generate_connections,
+    "alice_vnext_find_contradictions": _handle_alice_generate_contradictions,
+    "alice_vnext_propose_memory": _handle_alice_vnext_propose_memory,
+    "alice_vnext_review_items": _handle_alice_vnext_review_items,
+    "alice_vnext_artifact_get": _handle_alice_vnext_artifact_get,
+    "alice_vnext_artifact_review": _handle_alice_vnext_artifact_review,
+    "alice_vnext_scheduler_status": _handle_alice_vnext_scheduler_status,
+    "alice_vnext_scheduler_run_now": _handle_alice_vnext_scheduler_run_now,
+    "alice_vnext_scheduler_run_due": _handle_alice_vnext_scheduler_run_due,
+    "alice_vnext_scheduler_pause": _handle_alice_vnext_scheduler_pause,
+    "alice_vnext_scheduler_resume": _handle_alice_vnext_scheduler_resume,
 }
 
 

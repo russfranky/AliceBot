@@ -64,6 +64,24 @@ def test_mcp_tool_surface_is_adr_aligned_and_deterministic() -> None:
         "alice_project_dashboard",
         "alice_open_loop_extract",
         "alice_open_loop_review",
+        "alice_vnext_capture",
+        "alice_vnext_queue_task",
+        "alice_vnext_generate_artifact",
+        "alice_vnext_project_dashboard",
+        "alice_vnext_open_loops",
+        "alice_vnext_recent_decisions",
+        "alice_vnext_recent_changes",
+        "alice_vnext_find_connections",
+        "alice_vnext_find_contradictions",
+        "alice_vnext_propose_memory",
+        "alice_vnext_review_items",
+        "alice_vnext_artifact_get",
+        "alice_vnext_artifact_review",
+        "alice_vnext_scheduler_status",
+        "alice_vnext_scheduler_run_now",
+        "alice_vnext_scheduler_run_due",
+        "alice_vnext_scheduler_pause",
+        "alice_vnext_scheduler_resume",
     ]
 
     for tool in tools:
@@ -126,7 +144,7 @@ class FakeVNextMCPStore:
         self.events.append(event)
         return event
 
-    def create_artifact(self, artifact: dict[str, object]) -> dict[str, object]:
+    def create_artifact(self, artifact: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**artifact, "id": f"artifact-{len(self.artifacts) + 1}"}
         self.artifacts[str(row["id"])] = row
         return row
@@ -134,39 +152,39 @@ class FakeVNextMCPStore:
     def get_artifact(self, artifact_id: str) -> dict[str, object] | None:
         return self.artifacts.get(artifact_id)
 
-    def update_artifact_status(self, *, artifact_id: str, status: str) -> dict[str, object]:
+    def update_artifact_status(self, *, artifact_id: str, status: str, **_kwargs) -> dict[str, object]:
         artifact = self.artifacts[artifact_id]
         artifact["status"] = status
         return artifact
 
-    def create_memory(self, memory: dict[str, object]) -> dict[str, object]:
+    def create_memory(self, memory: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**memory, "id": f"memory-{len(self.memories) + 2}"}
         self.memories.append(row)
         return row
 
-    def update_memory(self, *, memory_id: str, patch: dict[str, object]) -> dict[str, object]:
+    def update_memory(self, *, memory_id: str, patch: dict[str, object], **_kwargs) -> dict[str, object]:
         for memory in self.memories:
             if memory["id"] == memory_id:
                 memory.update(patch)
                 return memory
         raise AssertionError(memory_id)
 
-    def append_revision(self, revision: dict[str, object]) -> dict[str, object]:
+    def append_revision(self, revision: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**revision, "id": f"revision-{len(self.revisions) + 1}"}
         self.revisions.append(row)
         return row
 
-    def create_open_loop(self, loop: dict[str, object]) -> dict[str, object]:
+    def create_open_loop(self, loop: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**loop, "id": f"loop-{len(self.open_loops) + 1}", "status": loop.get("status", "open")}
         self.open_loops.append(row)
         return row
 
-    def create_edge(self, edge: dict[str, object]) -> dict[str, object]:
+    def create_edge(self, edge: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**edge, "id": f"edge-{len(self.edges) + 1}"}
         self.edges[str(row["id"])] = row
         return row
 
-    def update_edge_status(self, *, edge_id: str, status: str) -> dict[str, object]:
+    def update_edge_status(self, *, edge_id: str, status: str, **_kwargs) -> dict[str, object]:
         edge = self.edges[edge_id]
         metadata = edge.get("metadata_json")
         if not isinstance(metadata, dict):
@@ -227,7 +245,7 @@ class FakeVNextMCPStore:
                 return loop
         return None
 
-    def update_open_loop(self, *, loop_id: str, patch: dict[str, object]) -> dict[str, object]:
+    def update_open_loop(self, *, loop_id: str, patch: dict[str, object], **_kwargs) -> dict[str, object]:
         loop = self.get_open_loop(loop_id)
         if loop is None:
             raise AssertionError(loop_id)
@@ -240,6 +258,7 @@ class FakeVNextMCPStore:
         loop_id: str,
         status: str,
         resolution_note: str | None = None,
+        **_kwargs,
     ) -> dict[str, object]:
         loop = self.update_open_loop(loop_id=loop_id, patch={"status": status})
         if resolution_note is not None:
@@ -257,7 +276,7 @@ class FakeVNextMCPStore:
         limit = kwargs.get("limit", 8)
         return [row for row in self.projects.values() if status is None or row.get("status") == status][:limit]
 
-    def update_project(self, *, project_id: str, patch: dict[str, object]) -> dict[str, object]:
+    def update_project(self, *, project_id: str, patch: dict[str, object], **_kwargs) -> dict[str, object]:
         project = self.projects[project_id]
         project.update(patch)
         return project
@@ -287,6 +306,7 @@ class FakeVNextMCPStore:
         status: str,
         confidence: float | None = None,
         superseded_by: str | None = None,
+        **_kwargs,
     ) -> dict[str, object]:
         belief = self.beliefs[belief_id]
         belief["status"] = status

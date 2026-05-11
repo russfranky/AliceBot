@@ -32,7 +32,7 @@ class FakeVNextStore:
     def get_source_by_content_hash(self, content_hash: str) -> dict[str, object] | None:
         return self.source_by_hash.get(content_hash)
 
-    def create_source(self, source: dict[str, object]) -> dict[str, object]:
+    def create_source(self, source: dict[str, object], **_kwargs) -> dict[str, object]:
         source_id = str(uuid4())
         row = {**source, "id": source_id}
         self.sources[source_id] = row
@@ -45,39 +45,39 @@ class FakeVNextStore:
             return source
         return None
 
-    def delete_source(self, *, source_id: str) -> dict[str, object]:
+    def delete_source(self, *, source_id: str, **_kwargs) -> dict[str, object]:
         source = self.sources[source_id]
         source["deleted_at"] = "now"
         return source
 
-    def create_source_chunk(self, chunk: dict[str, object]) -> dict[str, object]:
+    def create_source_chunk(self, chunk: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**chunk, "id": f"chunk-{len(self.chunks) + 1}"}
         self.chunks.append(row)
         return row
 
-    def create_memory(self, memory: dict[str, object]) -> dict[str, object]:
+    def create_memory(self, memory: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**memory, "id": f"memory-{len(self.memories) + 1}"}
         self.memories.append(row)
         return row
 
-    def update_memory(self, *, memory_id: str, patch: dict[str, object]) -> dict[str, object]:
+    def update_memory(self, *, memory_id: str, patch: dict[str, object], **_kwargs) -> dict[str, object]:
         for memory in self.memories:
             if memory["id"] == memory_id:
                 memory.update(patch)
                 return memory
         raise AssertionError(memory_id)
 
-    def append_revision(self, revision: dict[str, object]) -> dict[str, object]:
+    def append_revision(self, revision: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**revision, "id": f"revision-{len(self.revisions) + 1}"}
         self.revisions.append(row)
         return row
 
-    def create_provenance_link(self, link: dict[str, object]) -> dict[str, object]:
+    def create_provenance_link(self, link: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**link, "id": f"provenance-{len(self.provenance_links) + 1}"}
         self.provenance_links.append(row)
         return row
 
-    def create_open_loop(self, loop: dict[str, object]) -> dict[str, object]:
+    def create_open_loop(self, loop: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**loop, "id": f"loop-{len(self.open_loops) + 1}", "status": loop.get("status", "open")}
         self.open_loops.append(row)
         return row
@@ -130,7 +130,7 @@ class FakeVNextStore:
                 return loop
         return None
 
-    def update_open_loop(self, *, loop_id: str, patch: dict[str, object]) -> dict[str, object]:
+    def update_open_loop(self, *, loop_id: str, patch: dict[str, object], **_kwargs) -> dict[str, object]:
         loop = self.get_open_loop(loop_id)
         if loop is None:
             raise AssertionError(loop_id)
@@ -143,6 +143,7 @@ class FakeVNextStore:
         loop_id: str,
         status: str,
         resolution_note: str | None = None,
+        **_kwargs,
     ) -> dict[str, object]:
         loop = self.update_open_loop(loop_id=loop_id, patch={"status": status})
         if resolution_note is not None:
@@ -156,7 +157,7 @@ class FakeVNextStore:
             if link.get("target_type") == target_type and link.get("target_id") == target_id
         ]
 
-    def create_task(self, task: dict[str, object]) -> dict[str, object]:
+    def create_task(self, task: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**task, "id": str(uuid4()), "status": task.get("status", "pending")}
         self.tasks.append(row)
         return row
@@ -174,6 +175,7 @@ class FakeVNextStore:
         task_id: str,
         status: str,
         details: dict[str, object] | None = None,
+        **_kwargs,
     ) -> dict[str, object]:
         for task in self.tasks:
             if task.get("id") == task_id:
@@ -183,7 +185,7 @@ class FakeVNextStore:
                 return task
         raise AssertionError(task_id)
 
-    def create_artifact(self, artifact: dict[str, object]) -> dict[str, object]:
+    def create_artifact(self, artifact: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**artifact, "id": str(uuid4())}
         self.artifacts[str(row["id"])] = row
         return row
@@ -207,7 +209,7 @@ class FakeVNextStore:
         ]
         return rows[:limit]
 
-    def update_artifact_status(self, *, artifact_id: str, status: str) -> dict[str, object]:
+    def update_artifact_status(self, *, artifact_id: str, status: str, **_kwargs) -> dict[str, object]:
         artifact = self.artifacts[artifact_id]
         artifact["status"] = status
         return artifact
@@ -227,7 +229,7 @@ class FakeVNextStore:
         rows = [row for row in self.projects.values() if status is None or row.get("status") == status]
         return rows[:limit]
 
-    def update_project(self, *, project_id: str, patch: dict[str, object]) -> dict[str, object]:
+    def update_project(self, *, project_id: str, patch: dict[str, object], **_kwargs) -> dict[str, object]:
         project = self.projects[project_id]
         project.update(patch)
         return project

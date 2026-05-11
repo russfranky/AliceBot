@@ -267,10 +267,13 @@ export type VNextTaskRecord = VNextRow & {
 export type VNextEventRecord = VNextRow & {
   event_type: string;
   actor_type: string;
+  actor_id?: string | null;
   target_type?: string | null;
   target_id?: string | null;
   occurred_at: string;
   payload_json?: JsonObject;
+  trace_id?: string | null;
+  run_id?: string | null;
 };
 
 export type VNextBrainCharterRecord = VNextRow & {
@@ -298,6 +301,72 @@ export type VNextProjectDashboard = {
   };
 };
 
+export type VNextAgentIdentityRecord = VNextRow & {
+  agent_id: string;
+  agent_type: string;
+  permission_profile: string;
+  display_name?: string | null;
+  project_scope_json?: unknown[];
+  metadata_json?: JsonObject;
+};
+
+export type VNextPolicyDecisionRecord = {
+  decision: string;
+  action: string;
+  permission_profile: string;
+  reasons: string[];
+  effective_domains: string[];
+  effective_sensitivity_allowed: string[];
+  review_required: boolean;
+  trace_id: string;
+};
+
+export type VNextSchedulerWorkflowRecord = VNextRow & {
+  workflow_type: string;
+  enabled: boolean;
+  paused: boolean;
+  schedule_json?: JsonObject;
+  timezone: string;
+  next_run_at?: string | null;
+  last_run_id?: string | null;
+  last_run_at?: string | null;
+  last_result?: string | null;
+  last_error?: string | null;
+  metadata_json?: JsonObject;
+};
+
+export type VNextSchedulerRunRecord = VNextRow & {
+  workflow_type: string;
+  status: string;
+  triggered_by: string;
+  trace_id: string;
+  started_at: string;
+  finished_at?: string | null;
+  artifact_id?: string | null;
+  error_message?: string | null;
+  policy_decision_json?: JsonObject;
+  agent_identity_json?: JsonObject;
+  metadata_json?: JsonObject;
+};
+
+export type VNextSchedulerStatus = {
+  mode: string;
+  disabled_by_default: boolean;
+  workflows: VNextSchedulerWorkflowRecord[];
+  recent_runs: VNextSchedulerRunRecord[];
+  enabled_count: number;
+  paused_count: number;
+  last_failure: VNextSchedulerRunRecord | null;
+};
+
+export type VNextAgentActivity = {
+  agents: VNextAgentIdentityRecord[];
+  recent_events: VNextEventRecord[];
+  policy_blocks: VNextEventRecord[];
+  generated_artifacts: VNextArtifactRecord[];
+  pending_review_items: VNextMemoryRecord[];
+};
+
 export type VNextWorkspacePayload = {
   mode: "live";
   summary: {
@@ -308,6 +377,8 @@ export type VNextWorkspacePayload = {
     open_loop_count: number;
     project_count: number;
     event_count: number;
+    agent_count?: number;
+    scheduler_enabled_count?: number;
     memory_status_counts: Record<string, number>;
     artifact_status_counts: Record<string, number>;
     open_loop_status_counts: Record<string, number>;
@@ -322,6 +393,8 @@ export type VNextWorkspacePayload = {
   beliefs: VNextBeliefRecord[];
   tasks: VNextTaskRecord[];
   recent_events: VNextEventRecord[];
+  agent_activity?: VNextAgentActivity;
+  scheduler?: VNextSchedulerStatus;
   brain_charter: VNextBrainCharterRecord | null;
 };
 
@@ -3968,4 +4041,49 @@ export function upsertVNextBrainCharter(
       body: JSON.stringify(payload),
     },
   );
+}
+
+export function getVNextSchedulerStatus(apiBaseUrl: string, userId: string) {
+  return requestJson<VNextSchedulerStatus>(
+    apiBaseUrl,
+    "/v0/vnext/scheduler/status",
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function patchVNextSchedulerWorkflow(
+  apiBaseUrl: string,
+  workflowType: string,
+  payload: {
+    user_id: string;
+    enabled?: boolean;
+    paused?: boolean;
+    schedule_json?: JsonObject;
+    timezone?: string;
+  },
+) {
+  return requestJson<{ workflow: VNextSchedulerWorkflowRecord; policy_decision: VNextPolicyDecisionRecord }>(
+    apiBaseUrl,
+    `/v0/vnext/scheduler/workflows/${workflowType}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export function runVNextSchedulerWorkflowNow(
+  apiBaseUrl: string,
+  workflowType: string,
+  payload: { user_id: string; scope?: JsonObject; options?: JsonObject },
+) {
+  return requestJson<{
+    run: VNextSchedulerRunRecord;
+    artifact: VNextArtifactRecord | null;
+    policy_decision: VNextPolicyDecisionRecord;
+  }>(apiBaseUrl, `/v0/vnext/scheduler/workflows/${workflowType}/run-now`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }

@@ -178,20 +178,23 @@ def test_memory_methods_use_expected_queries_and_payload_serialization() -> None
     append_revision_query, append_revision_params = cursor.executed[3]
     assert "INSERT INTO memory_revisions" in append_revision_query
     assert append_revision_params is not None
-    assert append_revision_params[:4] == (
+    assert append_revision_params[:5] == (
         memory_id,
         memory_id,
         "ADD",
+        "ADD",
         "user.preference.coffee",
     )
-    assert isinstance(append_revision_params[4], Jsonb)
-    assert append_revision_params[4].obj is None
     assert isinstance(append_revision_params[5], Jsonb)
-    assert append_revision_params[5].obj == {"likes": "black"}
+    assert append_revision_params[5].obj is None
     assert isinstance(append_revision_params[6], Jsonb)
-    assert append_revision_params[6].obj == [str(event_id)]
+    assert append_revision_params[6].obj == {"likes": "black"}
     assert isinstance(append_revision_params[7], Jsonb)
-    assert append_revision_params[7].obj == {"memory_key": "user.preference.coffee"}
+    assert append_revision_params[7].obj == [str(event_id)]
+    assert isinstance(append_revision_params[8], Jsonb)
+    assert append_revision_params[8].obj == {"memory_key": "user.preference.coffee"}
+    assert append_revision_params[9] is None
+    assert append_revision_params[10] == '{"likes": "black"}'
     assert cursor.executed[6] == (
         """
                 SELECT

@@ -67,6 +67,12 @@ class VNextRetrievalRequest:
     include_contradictions: bool = True
     max_items: int = DEFAULT_CONTEXT_PACK_LIMIT
     max_tokens: int = 8_000
+    actor_type: str = "system"
+    actor_id: str | None = None
+    agent_identity: JsonObject | None = None
+    policy_decision: JsonObject | None = None
+    trace_id: str | None = None
+    run_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,7 +280,7 @@ class VNextRetrievalService:
         terms = list(interpretation["terms"])  # type: ignore[arg-type]
         domains = list(interpretation["domains"])  # type: ignore[arg-type]
         sensitivity_allowed = list(interpretation["sensitivity_allowed"])  # type: ignore[arg-type]
-        trace_id = str(uuid4())
+        trace_id = request.trace_id or str(uuid4())
         context_pack_id = str(uuid4())
 
         memory_rows = self.store.search_memories(
@@ -364,22 +370,46 @@ class VNextRetrievalService:
             "warnings": warnings,
             "trace_id": trace_id,
             "trace": trace,
+            "agent_identity": request.agent_identity,
+            "policy_decision": request.policy_decision,
         }
         append_event(
             self.store,
             event_type="retrieval.context_pack_compiled",
-            actor_type="system",
+            actor_type=request.actor_type,
+            actor_id=request.actor_id,
             target_type="context_pack",
             target_id=context_pack_id,
             trace_id=trace_id,
+            run_id=request.run_id,
             payload={
                 "query": request.query,
                 "query_type": interpretation["query_type"],
                 "candidate_count": trace["candidate_count"],
                 "selected_count": trace["selected_count"],
                 "warnings": warnings,
+                "agent_identity": request.agent_identity,
+                "policy_decision": request.policy_decision,
             },
         )
+        if request.actor_type == "agent" and request.actor_id is not None:
+            append_event(
+                self.store,
+                event_type="agent.context_pack_requested",
+                actor_type="agent",
+                actor_id=request.actor_id,
+                target_type="context_pack",
+                target_id=context_pack_id,
+                trace_id=trace_id,
+                run_id=request.run_id,
+                payload={
+                    "query": request.query,
+                    "query_type": interpretation["query_type"],
+                    "selected_count": trace["selected_count"],
+                    "agent_identity": request.agent_identity,
+                    "policy_decision": request.policy_decision,
+                },
+            )
         return pack
 
     def _supporting_evidence(self, memories: list[JsonObject]) -> list[JsonObject]:

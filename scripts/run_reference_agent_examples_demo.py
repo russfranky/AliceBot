@@ -8,6 +8,7 @@ from pathlib import Path
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 from typing import Any
 
@@ -18,6 +19,7 @@ TYPESCRIPT_EXAMPLE = REPO_ROOT / "docs" / "examples" / "generic_typescript_agent
 CANONICAL_BRIEF_FIXTURE = (
     REPO_ROOT / "fixtures" / "reference_integrations" / "continuity_brief_agent_handoff_v1.json"
 )
+TYPESCRIPT_PACKAGE = REPO_ROOT / "apps" / "web" / "node_modules" / "typescript"
 
 
 def _brief_payload() -> dict[str, Any]:
@@ -102,6 +104,65 @@ def _run_step(*, name: str, command: list[str], env: dict[str, str]) -> dict[str
     }
 
 
+def _node_supports_strip_types(env: dict[str, str]) -> bool:
+    completed = subprocess.run(
+        ["node", "--experimental-strip-types", "--version"],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return completed.returncode == 0
+
+
+def _run_typescript_step(env: dict[str, str]) -> dict[str, Any]:
+    if _node_supports_strip_types(env):
+        return _run_step(
+            name="typescript_example",
+            command=["node", "--experimental-strip-types", str(TYPESCRIPT_EXAMPLE)],
+            env=env,
+        )
+
+    with tempfile.TemporaryDirectory(prefix="alice-reference-agent-ts-") as temp_dir:
+        compiled_path = Path(temp_dir) / "generic_typescript_agent.js"
+        transpile_script = """
+const fs = require("fs");
+const ts = require(process.argv[1]);
+const sourcePath = process.argv[2];
+const outputPath = process.argv[3];
+const source = fs.readFileSync(sourcePath, "utf8");
+const output = ts.transpileModule(source, {
+  compilerOptions: {
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.CommonJS,
+  },
+});
+fs.writeFileSync(outputPath, output.outputText);
+"""
+        transpile = subprocess.run(
+            ["node", "-e", transpile_script, str(TYPESCRIPT_PACKAGE), str(TYPESCRIPT_EXAMPLE), str(compiled_path)],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if transpile.returncode != 0:
+            return {
+                "name": "typescript_example",
+                "command": ["node", "--experimental-strip-types", str(TYPESCRIPT_EXAMPLE)],
+                "returncode": transpile.returncode,
+                "stdout": None,
+                "stderr": transpile.stderr.strip(),
+            }
+        return _run_step(
+            name="typescript_example",
+            command=["node", str(compiled_path)],
+            env=env,
+        )
+
+
 def main() -> int:
     server, thread, base_url = _start_demo_server()
     env = os.environ.copy()
@@ -120,11 +181,7 @@ def main() -> int:
             command=[sys.executable, str(PYTHON_EXAMPLE)],
             env=env,
         )
-        typescript_step = _run_step(
-            name="typescript_example",
-            command=["node", "--experimental-strip-types", str(TYPESCRIPT_EXAMPLE)],
-            env=env,
-        )
+        typescript_step = _run_typescript_step(env)
     finally:
         server.shutdown()
         thread.join(timeout=5)

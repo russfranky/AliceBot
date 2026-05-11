@@ -37,23 +37,23 @@ class InMemoryVNextConnectorStore:
     def get_source_by_content_hash(self, content_hash: str) -> dict[str, object] | None:
         return self._source_by_hash.get(content_hash)
 
-    def create_source(self, source: dict[str, object]) -> dict[str, object]:
+    def create_source(self, source: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**source, "id": f"source-{len(self.sources) + 1}"}
         self.sources.append(row)
         self._source_by_hash[str(source["content_hash"])] = row
         return row
 
-    def create_source_chunk(self, chunk: dict[str, object]) -> dict[str, object]:
+    def create_source_chunk(self, chunk: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**chunk, "id": f"chunk-{len(self.chunks) + 1}"}
         self.chunks.append(row)
         return row
 
-    def create_memory(self, memory: dict[str, object]) -> dict[str, object]:
+    def create_memory(self, memory: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**memory, "id": f"memory-{len(self.memories) + 1}"}
         self.memories.append(row)
         return row
 
-    def create_provenance_link(self, link: dict[str, object]) -> dict[str, object]:
+    def create_provenance_link(self, link: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**link, "id": f"provenance-{len(self.provenance_links) + 1}"}
         self.provenance_links.append(row)
         return row

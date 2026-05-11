@@ -19,7 +19,7 @@ class InMemoryVNextProjectStore:
         self.events.append(event)
         return event
 
-    def create_artifact(self, artifact: dict[str, object]) -> dict[str, object]:
+    def create_artifact(self, artifact: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**artifact, "id": f"artifact-{len(self.artifacts) + 1}"}
         self.artifacts[str(row["id"])] = row
         return row
@@ -27,22 +27,22 @@ class InMemoryVNextProjectStore:
     def get_artifact(self, artifact_id: str) -> dict[str, object] | None:
         return self.artifacts.get(artifact_id)
 
-    def update_artifact_status(self, *, artifact_id: str, status: str) -> dict[str, object]:
+    def update_artifact_status(self, *, artifact_id: str, status: str, **_kwargs) -> dict[str, object]:
         artifact = self.artifacts[artifact_id]
         artifact["status"] = status
         return artifact
 
-    def create_memory(self, memory: dict[str, object]) -> dict[str, object]:
+    def create_memory(self, memory: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**memory, "id": f"memory-{len(self.memories) + 1}"}
         self.memories[str(row["id"])] = row
         return row
 
-    def update_memory(self, *, memory_id: str, patch: dict[str, object]) -> dict[str, object]:
+    def update_memory(self, *, memory_id: str, patch: dict[str, object], **_kwargs) -> dict[str, object]:
         memory = self.memories[memory_id]
         memory.update(patch)
         return memory
 
-    def append_revision(self, revision: dict[str, object]) -> dict[str, object]:
+    def append_revision(self, revision: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**revision, "id": f"revision-{len(self.revisions) + 1}"}
         self.revisions.append(row)
         return row
@@ -61,12 +61,12 @@ class InMemoryVNextProjectStore:
         rows = [row for row in self.projects.values() if status is None or row.get("status") == status]
         return _filter_rows(rows, domains=domains, sensitivity_allowed=sensitivity_allowed)[:limit]
 
-    def update_project(self, *, project_id: str, patch: dict[str, object]) -> dict[str, object]:
+    def update_project(self, *, project_id: str, patch: dict[str, object], **_kwargs) -> dict[str, object]:
         project = self.projects[project_id]
         project.update(patch)
         return project
 
-    def create_open_loop(self, loop: dict[str, object]) -> dict[str, object]:
+    def create_open_loop(self, loop: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**loop, "id": f"loop-{len(self.open_loops) + 1}", "status": loop.get("status", "open")}
         self.open_loops[str(row["id"])] = row
         return row
@@ -93,7 +93,7 @@ class InMemoryVNextProjectStore:
         ]
         return _filter_rows(rows, domains=domains, sensitivity_allowed=sensitivity_allowed)[:limit]
 
-    def update_open_loop(self, *, loop_id: str, patch: dict[str, object]) -> dict[str, object]:
+    def update_open_loop(self, *, loop_id: str, patch: dict[str, object], **_kwargs) -> dict[str, object]:
         loop = self.open_loops[loop_id]
         loop.update(patch)
         return loop
@@ -104,6 +104,7 @@ class InMemoryVNextProjectStore:
         loop_id: str,
         status: str,
         resolution_note: str | None = None,
+        **_kwargs,
     ) -> dict[str, object]:
         loop = self.open_loops[loop_id]
         loop["status"] = status

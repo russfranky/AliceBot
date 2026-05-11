@@ -37,9 +37,9 @@ Alice vNext is the next release candidate for the true second-brain product. It 
 
 - **Alice Core**: local-first storage, provenance, policy, event logging, revisions, graph objects, sources, and connector evidence.
 - **Alice Brain**: user-facing second-brain workflows such as daily briefs, weekly syntheses, context packs, contradiction reports, project updates, open loops, and reviewable artifacts.
-- **Alice Agent Memory**: CLI, API, and MCP surfaces that let agents capture, retrieve, resume, explain, and generate context without owning the memory store.
+- **Alice Agent Memory**: CLI, API, and MCP surfaces that let agents capture, retrieve, resume, explain, generate context, propose memory, and trigger governed workflows without owning the memory store.
 
-The vNext preview currently includes deterministic source capture, retrieval/context packs, queue/artifact workflows, daily and weekly brain artifacts, connection/contradiction/project/open-loop workflows, synthetic evals, deterministic connector payload ingestion, and a fixture-backed `/vnext` workspace.
+The vNext preview currently includes deterministic source capture, retrieval/context packs, queue/artifact workflows, daily and weekly brain artifacts, connection/contradiction/project/open-loop workflows, synthetic evals, deterministic connector payload ingestion, agent identity/policy auditing, a governed local scheduler with due scans, and a live/fixture-backed `/vnext` operator workspace.
 
 Start with:
 
@@ -52,6 +52,7 @@ Start with:
 - [vNext release checklist](docs/release/vnext-public-release-checklist.md)
 - [vNext preview release notes](docs/release/v0.5.1-vnext-preview-release-notes.md)
 - [vNext preview tag plan](docs/release/v0.5.1-vnext-preview-tag-plan.md)
+- [Agentic control plane CTO summary](docs/vnext-agentic-control-plane-cto-summary.md)
 
 ## Release Boundary (`v0.5.1`)
 
@@ -392,6 +393,7 @@ Deferred beyond `v0.5.1`:
 - [vNext Quickstart](docs/vnext/quickstart.md)
 - [vNext Architecture](docs/vnext/architecture.md)
 - [vNext Security and Privacy](docs/vnext/security-privacy.md)
+- [Agentic Control Plane CTO Summary](docs/vnext-agentic-control-plane-cto-summary.md)
 - [Quickstart](docs/quickstart/local-setup-and-first-result.md)
 - [Architecture](ARCHITECTURE.md)
 - [MCP](docs/integrations/mcp.md)

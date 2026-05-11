@@ -617,6 +617,7 @@ def test_phase10_telegram_webhook_rate_limit_enforced(
     migrated_database_urls,
     monkeypatch,
 ) -> None:
+    main_module.entrypoint_rate_limiter.reset()
     monkeypatch.setattr(
         main_module,
         "get_settings",
@@ -624,11 +625,12 @@ def test_phase10_telegram_webhook_rate_limit_enforced(
             database_url=migrated_database_urls["app"],
             telegram_webhook_secret="",
             telegram_bot_token="",
-            telegram_bot_username="alicebot",
-            telegram_webhook_rate_limit_max_requests=1,
-            telegram_webhook_rate_limit_window_seconds=60,
-        ),
-    )
+                telegram_bot_username="alicebot",
+                telegram_webhook_rate_limit_max_requests=1,
+                telegram_webhook_rate_limit_window_seconds=60,
+                entrypoint_rate_limit_backend="memory",
+            ),
+        )
 
     first_webhook_status, _first_webhook_payload = invoke_request(
         "POST",

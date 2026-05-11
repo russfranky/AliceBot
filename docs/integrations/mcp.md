@@ -41,12 +41,33 @@ MCP uses the same local runtime scope as CLI:
 - `alice_memory_correct` (legacy alias)
 - `alice_explain`
 - `alice_context_pack`
+- `alice_vnext_context_pack`
+- `alice_vnext_capture`
+- `alice_vnext_queue_task`
+- `alice_vnext_generate_artifact`
+- `alice_vnext_project_dashboard`
+- `alice_vnext_open_loops`
+- `alice_vnext_recent_decisions`
+- `alice_vnext_recent_changes`
+- `alice_vnext_find_connections`
+- `alice_vnext_find_contradictions`
+- `alice_vnext_propose_memory`
+- `alice_vnext_review_items`
+- `alice_vnext_artifact_get`
+- `alice_vnext_artifact_review`
+- `alice_vnext_scheduler_status`
+- `alice_vnext_scheduler_run_now`
+- `alice_vnext_scheduler_run_due`
+- `alice_vnext_scheduler_pause`
+- `alice_vnext_scheduler_resume`
 
 `alice_brief` is the default external-agent continuity lookup. It returns one continuity bundle with relevant facts, recent changes, open loops, conflicts, timeline highlights, provenance, trust posture, and a next suggested action.
 `alice_explain` now accepts either `continuity_object_id` for evidence-chain inspection or `entity_id` plus optional `at` for temporal explain output.
 `alice_prefetch_context` provides an automation-oriented pre-turn context assembly surface using the same continuity resumption semantics shipped for `alice_resume`.
 `alice_capture_candidates` and `alice_commit_captures` provide the B2 bridge auto-capture pipeline over user/assistant turns with `manual`/`assist`/`auto` commit policy support.
 `alice_review_queue` and `alice_review_apply` provide B3 review operations (`approve`, `edit-and-approve`, `reject`, `supersede-existing`) with deterministic recall/resume effects after approved actions.
+
+The `alice_vnext_*` tools carry the agentic control-plane contract. Agent callers can include `agent_id`, `agent_type`, `agent_run_id`, `task_id`, `project_scope`, `permission_profile`, domain filters, and sensitivity filters. Policy decisions are logged, restricted requests are filtered or blocked, memory writes stay proposal/review-only, and scheduler actions create governed run records with trace IDs.
 
 ## Example: Claude Desktop MCP Config
 
@@ -92,6 +113,7 @@ One-command bridge demo:
 - tool output is deterministic for parity testing
 - MCP does not widen core product semantics beyond the shipped Phase 13 baseline and Bridge `B1` through `B4`
 - `alice_brief` is the preferred first call for external runtimes that need continuity in one request
+- vNext agent tools preserve the no-auto-promotion rule and require review for agent-proposed memory
 
 See tests:
 

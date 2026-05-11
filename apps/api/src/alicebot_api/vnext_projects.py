@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
 from typing import Protocol
 from uuid import uuid4
@@ -22,17 +22,17 @@ class VNextProjectValidationError(ValueError):
 class VNextProjectStore(Protocol):
     def append_event(self, event: JsonObject) -> JsonObject: ...
 
-    def create_artifact(self, artifact: JsonObject) -> JsonObject: ...
+    def create_artifact(self, artifact: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
 
     def get_artifact(self, artifact_id: str) -> JsonObject | None: ...
 
-    def update_artifact_status(self, *, artifact_id: str, status: str) -> JsonObject: ...
+    def update_artifact_status(self, *, artifact_id: str, status: str, actor_type: str = "system") -> JsonObject: ...
 
-    def create_memory(self, memory: JsonObject) -> JsonObject: ...
+    def create_memory(self, memory: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
 
-    def update_memory(self, *, memory_id: str, patch: JsonObject) -> JsonObject: ...
+    def update_memory(self, *, memory_id: str, patch: JsonObject, actor_type: str = "system") -> JsonObject: ...
 
-    def append_revision(self, revision: JsonObject) -> JsonObject: ...
+    def append_revision(self, revision: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
 
     def get_project(self, project_id: str) -> JsonObject | None: ...
 
@@ -45,9 +45,9 @@ class VNextProjectStore(Protocol):
         limit: int = DEFAULT_PROJECT_LIMIT,
     ) -> list[JsonObject]: ...
 
-    def update_project(self, *, project_id: str, patch: JsonObject) -> JsonObject: ...
+    def update_project(self, *, project_id: str, patch: JsonObject, actor_type: str = "system") -> JsonObject: ...
 
-    def create_open_loop(self, loop: JsonObject) -> JsonObject: ...
+    def create_open_loop(self, loop: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
 
     def get_open_loop(self, loop_id: str) -> JsonObject | None: ...
 
@@ -62,9 +62,16 @@ class VNextProjectStore(Protocol):
         limit: int = DEFAULT_PROJECT_LIMIT,
     ) -> list[JsonObject]: ...
 
-    def update_open_loop(self, *, loop_id: str, patch: JsonObject) -> JsonObject: ...
+    def update_open_loop(self, *, loop_id: str, patch: JsonObject, actor_type: str = "system") -> JsonObject: ...
 
-    def update_open_loop_status(self, *, loop_id: str, status: str, resolution_note: str | None = None) -> JsonObject: ...
+    def update_open_loop_status(
+        self,
+        *,
+        loop_id: str,
+        status: str,
+        resolution_note: str | None = None,
+        actor_type: str = "system",
+    ) -> JsonObject: ...
 
     def search_sources(
         self,
@@ -101,6 +108,13 @@ class ProjectAutomationRequest:
     project_id: str | None = None
     person_id: str | None = None
     max_items: int = DEFAULT_PROJECT_LIMIT
+    generated_by: str = "system"
+    actor_id: str | None = None
+    trace_id: str | None = None
+    run_id: str | None = None
+    agent_identity: JsonObject | None = None
+    policy_decision: JsonObject | None = None
+    metadata_json: JsonObject = field(default_factory=dict)
 
 
 def _validate_request(request: ProjectAutomationRequest) -> None:
@@ -287,8 +301,15 @@ class VNextProjectService:
                     "project_id": project.get("id"),
                     "source_ids": _source_ids(sources),
                     "memory_ids": _source_ids(memories),
+                    "generated_by": request.generated_by,
+                    "agent_identity": request.agent_identity,
+                    "agent_id": request.actor_id if request.generated_by == "agent" else None,
+                    "trace_id": request.trace_id,
+                    "policy_decision": request.policy_decision,
+                    **request.metadata_json,
                 },
-            }
+            },
+            actor_type=request.generated_by,
         )
         artifact = self.store.create_artifact(
             {
@@ -304,7 +325,7 @@ class VNextProjectService:
                 "status": "needs_review",
                 "domain": project.get("domain", "project"),
                 "sensitivity": _highest_sensitivity([project, *sources, *memories]),
-                "generated_by": "vnext_project_auto_updater",
+                "generated_by": request.generated_by if request.generated_by != "system" else "vnext_project_auto_updater",
                 "metadata_json": {
                     "workflow": "project_auto_update",
                     "project_id": project.get("id"),
@@ -312,19 +333,32 @@ class VNextProjectService:
                     "suggested_current_state": suggested_current_state,
                     "source_ids": _source_ids(sources),
                     "memory_ids": _source_ids(memories),
+                    "generated_by": request.generated_by,
+                    "agent_identity": request.agent_identity,
+                    "agent_id": request.actor_id if request.generated_by == "agent" else None,
+                    "agent_run_id": request.run_id if request.generated_by == "agent" else None,
+                    "trace_id": request.trace_id,
+                    "policy_decision": request.policy_decision,
+                    **request.metadata_json,
                 },
-            }
+            },
+            actor_type=request.generated_by,
         )
         append_event(
             self.store,
             event_type="project.update_candidate_created",
-            actor_type="system",
+            actor_type=request.generated_by,
+            actor_id=request.actor_id,
             target_type="artifact",
             target_id=str(artifact["id"]),
+            trace_id=request.trace_id,
+            run_id=request.run_id,
             payload={
                 "project_id": project.get("id"),
                 "candidate_memory_id": candidate_memory.get("id"),
                 "source_ids": _source_ids(sources),
+                "agent_identity": request.agent_identity,
+                "policy_decision": request.policy_decision,
             },
         )
         return artifact
@@ -346,12 +380,24 @@ class VNextProjectService:
                     candidate["project_id"] = request.project_id
                 if request.person_id is not None:
                     candidate["person_id"] = request.person_id
-                created.append(self.store.create_open_loop(candidate))
+                metadata = candidate.get("metadata_json") if isinstance(candidate.get("metadata_json"), dict) else {}
+                candidate["metadata_json"] = {
+                    **metadata,
+                    "generated_by": request.generated_by,
+                    "agent_identity": request.agent_identity,
+                    "agent_id": request.actor_id if request.generated_by == "agent" else None,
+                    "trace_id": request.trace_id,
+                    "policy_decision": request.policy_decision,
+                }
+                created.append(self.store.create_open_loop(candidate, actor_type=request.generated_by))
         append_event(
             self.store,
             event_type="open_loop.extraction_completed",
-            actor_type="system",
+            actor_type=request.generated_by,
+            actor_id=request.actor_id,
             target_type="open_loop",
+            trace_id=request.trace_id,
+            run_id=request.run_id,
             payload={"created_count": len(created), "source_ids": _source_ids(sources)},
         )
         return created

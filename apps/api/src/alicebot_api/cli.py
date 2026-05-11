@@ -9,7 +9,7 @@ import json
 import os
 from pathlib import Path
 import sys
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import psycopg
 
@@ -187,6 +187,13 @@ from alicebot_api.trusted_fact_promotions import (
     list_trusted_fact_patterns,
     list_trusted_fact_playbooks,
 )
+from alicebot_api.vnext_agent_control import (
+    AgentIdentity,
+    agent_metadata,
+    append_policy_events,
+    ensure_policy_allowed,
+    evaluate_agent_policy,
+)
 from alicebot_api.vnext_capture import VNextCaptureService, VNextCaptureValidationError
 from alicebot_api.vnext_brain import BrainArtifactRequest, VNextBrainService, VNextBrainValidationError
 from alicebot_api.vnext_connections import (
@@ -213,6 +220,8 @@ from alicebot_api.vnext_evals import (
 from alicebot_api.vnext_projects import ProjectAutomationRequest, VNextProjectService, VNextProjectValidationError
 from alicebot_api.vnext_queue import QueueTaskRequest, VNextQueueService, VNextQueueValidationError
 from alicebot_api.vnext_retrieval import VNextRetrievalRequest, VNextRetrievalService, VNextRetrievalValidationError
+from alicebot_api.vnext_scheduler import SchedulerRunRequest, VNextSchedulerService, VNextSchedulerValidationError
+from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_json import json_safe
 from alicebot_api.vnext_store import PostgresVNextStore
 
@@ -271,6 +280,15 @@ def _add_scope_filter_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--person", default=None, help="Optional person scope.")
     parser.add_argument("--since", type=_parse_datetime, default=None, help="Optional start time (ISO-8601).")
     parser.add_argument("--until", type=_parse_datetime, default=None, help="Optional end time (ISO-8601).")
+
+
+def _add_vnext_agent_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--agent-id", default=None, help="Agent id for agent-originated vNext actions.")
+    parser.add_argument("--agent-type", default="unknown", help="Agent type.")
+    parser.add_argument("--agent-run-id", default=None, help="Agent run id.")
+    parser.add_argument("--agent-task-id", default=None, help="Agent task id.")
+    parser.add_argument("--project-scope", action="append", default=[], help="Allowed project scope. Repeatable.")
+    parser.add_argument("--permission-profile", default="read_only_agent", help="Agent permission profile.")
 
 
 def _add_task_brief_arguments(parser: argparse.ArgumentParser) -> None:
@@ -499,6 +517,54 @@ def _vnext_sensitivity_allowed(args: argparse.Namespace) -> tuple[str, ...]:
     return tuple(values) if values else DEFAULT_VNEXT_SENSITIVITY_ALLOWED
 
 
+def _vnext_agent_identity_from_args(args: argparse.Namespace) -> AgentIdentity | None:
+    agent_id = getattr(args, "agent_id", None)
+    if not agent_id:
+        return None
+    return AgentIdentity(
+        agent_id=agent_id,
+        agent_type=getattr(args, "agent_type", None) or "unknown",
+        agent_run_id=getattr(args, "agent_run_id", None),
+        task_id=getattr(args, "agent_task_id", None),
+        project_scope=tuple(getattr(args, "project_scope", None) or ()),
+        permission_profile=getattr(args, "permission_profile", None) or "read_only_agent",
+    )
+
+
+def _vnext_policy_checked_for_args(
+    store: PostgresVNextStore,
+    args: argparse.Namespace,
+    *,
+    action: str,
+    domains: tuple[str, ...] = (),
+    workflow_type: str | None = None,
+    write_policy: str | None = None,
+) -> tuple[AgentIdentity | None, str, str | None, object]:
+    identity = _vnext_agent_identity_from_args(args)
+    if identity is not None:
+        store.upsert_agent_identity(
+            {
+                "agent_id": identity.agent_id,
+                "agent_type": identity.agent_type,
+                "permission_profile": identity.permission_profile,
+                "project_scope_json": list(identity.project_scope),
+                "metadata_json": {"last_agent_run_id": identity.agent_run_id, "last_task_id": identity.task_id},
+            },
+            actor_type="agent",
+        )
+    decision = evaluate_agent_policy(
+        identity=identity,
+        action=action,
+        domains=domains,
+        sensitivity_allowed=_vnext_sensitivity_allowed(args),
+        project_scope=tuple(getattr(args, "project_scope", None) or ()),
+        workflow_type=workflow_type,
+        write_policy=write_policy,
+    )
+    append_policy_events(store, identity=identity, decision=decision)
+    return identity, ("agent" if identity is not None else "user"), identity.agent_id if identity is not None else None, decision
+
+
 def _run_vnext_sources_capture_text(ctx: CLIContext, args: argparse.Namespace) -> str:
     raw_text = " ".join(args.raw_text).strip()
     with _vnext_store_context(ctx) as store:
@@ -607,6 +673,358 @@ def _run_weekly_synthesis(ctx: CLIContext, args: argparse.Namespace) -> str:
     with _vnext_store_context(ctx) as store:
         artifact = VNextBrainService(store).generate_weekly_synthesis(_brain_artifact_request_from_args(args))
     return _json_dumps(artifact)
+
+
+def _run_vnext_agent_propose_memory(ctx: CLIContext, args: argparse.Namespace) -> str:
+    if not getattr(args, "agent_id", None):
+        raise ValueError("--agent-id is required")
+    blocked_decision = None
+    memory: JsonObject | None = None
+    decision = None
+    with _vnext_store_context(ctx) as store:
+        identity, _actor_type, _actor_id, decision = _vnext_policy_checked_for_args(
+            store,
+            args,
+            action="memory.propose",
+            domains=(args.domain,),
+        )
+        if decision.decision == "blocked":
+            blocked_decision = decision
+        else:
+            if identity is None:
+                raise ValueError("--agent-id is required")
+            memory = store.create_memory(
+                {
+                    "memory_type": args.memory_type,
+                    "memory_key": f"agent_proposal.{args.proposal_type}.{uuid4()}",
+                    "value": {"proposal_type": args.proposal_type, "text": args.canonical_text, "rationale": args.rationale},
+                    "status": "candidate",
+                    "confidence": args.confidence,
+                    "title": args.title,
+                    "canonical_text": args.canonical_text,
+                    "summary": args.canonical_text[:280],
+                    "domain": args.domain,
+                    "sensitivity": args.sensitivity,
+                    "metadata_json": {
+                        "proposal_type": args.proposal_type,
+                        "review_required": True,
+                        **agent_metadata(identity, decision),
+                    },
+                },
+                actor_type="agent",
+            )
+            append_event(
+                store,
+                event_type="agent.memory_proposed",
+                actor_type="agent",
+                actor_id=identity.agent_id,
+                target_type="memory",
+                target_id=str(memory["id"]),
+                trace_id=decision.trace_id,
+                run_id=identity.agent_run_id,
+                payload={"proposal_type": args.proposal_type, "agent_identity": identity.to_record()},
+            )
+    if blocked_decision is not None:
+        ensure_policy_allowed(blocked_decision)
+    if memory is None or decision is None:
+        raise RuntimeError("agent memory proposal did not complete")
+    return _json_dumps({"proposal": memory, "policy_decision": decision.to_record(), "review_required": True})
+
+
+def _run_vnext_scheduler_status(ctx: CLIContext, _args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        payload = VNextSchedulerService(store).status()
+    return _json_dumps(payload)
+
+
+def _run_vnext_scheduler_run_now(ctx: CLIContext, args: argparse.Namespace) -> str:
+    blocked_decision = None
+    payload = None
+    decision = None
+    with _vnext_store_context(ctx) as store:
+        identity, actor_type, _actor_id, decision = _vnext_policy_checked_for_args(
+            store,
+            args,
+            action="scheduler.run_now",
+            domains=tuple(args.domain),
+            workflow_type=args.workflow_type,
+        )
+        if decision.decision == "blocked":
+            blocked_decision = decision
+        else:
+            payload = VNextSchedulerService(store).run_now(
+                SchedulerRunRequest(
+                    workflow_type=args.workflow_type,
+                    domains=decision.effective_domains,
+                    sensitivity_allowed=decision.effective_sensitivity_allowed,
+                    generated_for=args.generated_for,
+                    triggered_by=actor_type,
+                    agent_identity=identity,
+                    policy_decision=decision,
+                )
+            )
+    if blocked_decision is not None:
+        ensure_policy_allowed(blocked_decision)
+    if payload is None or decision is None:
+        raise RuntimeError("scheduler run-now did not complete")
+    return _json_dumps({**payload, "policy_decision": decision.to_record()})
+
+
+def _run_vnext_scheduler_run_due(ctx: CLIContext, args: argparse.Namespace) -> str:
+    blocked_decision = None
+    payload = None
+    decision = None
+    with _vnext_store_context(ctx) as store:
+        identity, actor_type, _actor_id, decision = _vnext_policy_checked_for_args(
+            store,
+            args,
+            action="scheduler.run_due",
+        )
+        if decision.decision == "blocked":
+            blocked_decision = decision
+        else:
+            payload = VNextSchedulerService(store).run_due_workflows(
+                limit=args.limit,
+                triggered_by=actor_type if identity is not None else "scheduler",
+                agent_identity=identity,
+                policy_decision=decision,
+            )
+    if blocked_decision is not None:
+        ensure_policy_allowed(blocked_decision)
+    if payload is None or decision is None:
+        raise RuntimeError("scheduler run-due did not complete")
+    return _json_dumps({**payload, "policy_decision": decision.to_record()})
+
+
+def _run_vnext_scheduler_pause(ctx: CLIContext, args: argparse.Namespace) -> str:
+    blocked_decision = None
+    payload = None
+    decision = None
+    with _vnext_store_context(ctx) as store:
+        _identity, actor_type, _actor_id, decision = _vnext_policy_checked_for_args(
+            store,
+            args,
+            action="scheduler.pause",
+        )
+        if decision.decision == "blocked":
+            blocked_decision = decision
+        else:
+            payload = VNextSchedulerService(store).pause_all(actor_type=actor_type)
+    if blocked_decision is not None:
+        ensure_policy_allowed(blocked_decision)
+    if payload is None or decision is None:
+        raise RuntimeError("scheduler pause did not complete")
+    return _json_dumps({**payload, "policy_decision": decision.to_record()})
+
+
+def _run_vnext_scheduler_resume(ctx: CLIContext, args: argparse.Namespace) -> str:
+    blocked_decision = None
+    payload = None
+    decision = None
+    with _vnext_store_context(ctx) as store:
+        _identity, actor_type, _actor_id, decision = _vnext_policy_checked_for_args(
+            store,
+            args,
+            action="scheduler.resume",
+        )
+        if decision.decision == "blocked":
+            blocked_decision = decision
+        else:
+            payload = VNextSchedulerService(store).resume_all(actor_type=actor_type)
+    if blocked_decision is not None:
+        ensure_policy_allowed(blocked_decision)
+    if payload is None or decision is None:
+        raise RuntimeError("scheduler resume did not complete")
+    return _json_dumps({**payload, "policy_decision": decision.to_record()})
+
+
+def _run_vnext_smoke_agentic_scheduler(ctx: CLIContext, _args: argparse.Namespace) -> str:
+    smoke_run_id = f"cli-agentic-scheduler-smoke-{uuid4()}"
+    with _vnext_store_context(ctx) as store:
+        service = VNextSchedulerService(store)
+        initial_status = service.status()
+        daily_workflow = service.configure_workflow(
+            workflow_type="daily_brief",
+            enabled=True,
+            paused=False,
+            schedule_json={"kind": "daily", "time_of_day": "08:00", "days_of_week": ["monday"]},
+            timezone="UTC",
+            actor_type="user",
+        )
+        weekly_workflow = service.configure_workflow(
+            workflow_type="weekly_synthesis",
+            enabled=True,
+            paused=False,
+            schedule_json={"kind": "weekly", "day_of_week": "monday", "time_of_day": "09:00"},
+            timezone="UTC",
+            actor_type="user",
+        )
+        identity = AgentIdentity(
+            agent_id="hermes",
+            agent_type="personal_assistant",
+            agent_run_id=smoke_run_id,
+            project_scope=("Alice",),
+            permission_profile="trusted_local_agent",
+        )
+        store.upsert_agent_identity(
+            {
+                "agent_id": identity.agent_id,
+                "agent_type": identity.agent_type,
+                "permission_profile": identity.permission_profile,
+                "project_scope_json": list(identity.project_scope),
+                "metadata_json": {"last_agent_run_id": identity.agent_run_id, "last_task_id": identity.task_id},
+            },
+            actor_type="agent",
+        )
+        proposal_decision = evaluate_agent_policy(
+            identity=identity,
+            action="memory.propose",
+            domains=("project",),
+            sensitivity_allowed=("private",),
+            project_scope=identity.project_scope,
+        )
+        append_policy_events(store, identity=identity, decision=proposal_decision)
+        ensure_policy_allowed(proposal_decision)
+        proposal = store.create_memory(
+            {
+                "memory_type": "semantic",
+                "memory_key": f"agent_proposal.smoke.{uuid4()}",
+                "value": {
+                    "proposal_type": "candidate_memory",
+                    "text": "Agentic scheduler smoke validates proposal-only memory writes.",
+                },
+                "status": "candidate",
+                "confidence": 0.5,
+                "title": "Agentic scheduler smoke proposal",
+                "canonical_text": "Agentic scheduler smoke validates proposal-only memory writes.",
+                "summary": "Agentic scheduler smoke validates proposal-only memory writes.",
+                "domain": "project",
+                "sensitivity": "private",
+                "metadata_json": {
+                    "proposal_type": "candidate_memory",
+                    "review_required": True,
+                    **agent_metadata(identity, proposal_decision),
+                },
+            },
+            actor_type="agent",
+        )
+        append_event(
+            store,
+            event_type="agent.memory_proposed",
+            actor_type="agent",
+            actor_id=identity.agent_id,
+            target_type="memory",
+            target_id=str(proposal["id"]),
+            trace_id=proposal_decision.trace_id,
+            run_id=identity.agent_run_id,
+            payload={"proposal_type": "candidate_memory", "agent_identity": identity.to_record()},
+        )
+        daily_decision = evaluate_agent_policy(
+            identity=identity,
+            action="scheduler.run_now",
+            domains=("project",),
+            sensitivity_allowed=("public", "internal", "private", "unknown"),
+            project_scope=identity.project_scope,
+            workflow_type="daily_brief",
+        )
+        append_policy_events(store, identity=identity, decision=daily_decision)
+        ensure_policy_allowed(daily_decision)
+        daily_run = service.run_now(
+            SchedulerRunRequest(
+                workflow_type="daily_brief",
+                domains=daily_decision.effective_domains,
+                sensitivity_allowed=daily_decision.effective_sensitivity_allowed,
+                triggered_by="agent",
+                agent_identity=identity,
+                policy_decision=daily_decision,
+            )
+        )
+        weekly_decision = evaluate_agent_policy(
+            identity=identity,
+            action="scheduler.run_now",
+            domains=("project",),
+            sensitivity_allowed=("public", "internal", "private", "unknown"),
+            project_scope=identity.project_scope,
+            workflow_type="weekly_synthesis",
+        )
+        append_policy_events(store, identity=identity, decision=weekly_decision)
+        ensure_policy_allowed(weekly_decision)
+        weekly_run = service.run_now(
+            SchedulerRunRequest(
+                workflow_type="weekly_synthesis",
+                domains=weekly_decision.effective_domains,
+                sensitivity_allowed=weekly_decision.effective_sensitivity_allowed,
+                triggered_by="agent",
+                agent_identity=identity,
+                policy_decision=weekly_decision,
+            )
+        )
+        due_decision = evaluate_agent_policy(
+            identity=identity,
+            action="scheduler.run_due",
+            project_scope=identity.project_scope,
+        )
+        append_policy_events(store, identity=identity, decision=due_decision)
+        ensure_policy_allowed(due_decision)
+        store.update_scheduler_workflow(
+            workflow_type="daily_brief",
+            patch={"enabled": True, "paused": False, "next_run_at": "2000-01-01T00:00:00+00:00"},
+            actor_type="system",
+        )
+        due_payload = service.run_due_workflows(
+            limit=1,
+            triggered_by="agent",
+            agent_identity=identity,
+            policy_decision=due_decision,
+        )
+        readonly_identity = AgentIdentity(
+            agent_id="readonly-smoke",
+            agent_type="unknown",
+            agent_run_id=smoke_run_id,
+            permission_profile="read_only_agent",
+        )
+        blocked_decision = evaluate_agent_policy(identity=readonly_identity, action="scheduler.pause")
+        append_policy_events(store, identity=readonly_identity, decision=blocked_decision)
+        pause_payload = service.pause_all(actor_type="user")
+        resume_payload = service.resume_all(actor_type="user")
+        final_status = service.status()
+
+    gates = {
+        "scheduler_defaults_exist": len(initial_status.get("workflows", [])) >= 6,
+        "scheduler_disabled_by_default": initial_status.get("disabled_by_default") is True,
+        "daily_workflow_enabled": daily_workflow.get("enabled") is True,
+        "weekly_workflow_enabled": weekly_workflow.get("enabled") is True,
+        "memory_proposal_candidate": proposal.get("status") == "candidate",
+        "daily_run_succeeded": (daily_run.get("run") or {}).get("status") == "succeeded",
+        "weekly_run_succeeded": (weekly_run.get("run") or {}).get("status") == "succeeded",
+        "due_scan_executed": due_payload.get("due_count") == 1
+        and ((due_payload.get("runs") or [{}])[0].get("run") or {}).get("status") == "succeeded",
+        "scheduler_artifacts_reviewable": (daily_run.get("artifact") or {}).get("status") == "needs_review"
+        and (weekly_run.get("artifact") or {}).get("status") == "needs_review",
+        "blocked_policy_recorded": blocked_decision.decision == "blocked",
+        "pause_resume_completed": pause_payload.get("paused_count", 0) >= 6 and resume_payload.get("resumed_count", 0) >= 6,
+        "run_history_visible": len(final_status.get("recent_runs", [])) >= 2,
+    }
+    payload = {
+        "status": "passed" if all(gates.values()) else "failed",
+        "smoke": "agentic-scheduler",
+        "gates": gates,
+        "agent_identity": identity.to_record(),
+        "proposal_id": str(proposal.get("id")),
+        "daily_run_id": str((daily_run.get("run") or {}).get("id")),
+        "weekly_run_id": str((weekly_run.get("run") or {}).get("id")),
+        "due_run_id": str((((due_payload.get("runs") or [{}])[0].get("run") or {}).get("id"))),
+        "policy_decisions": {
+            "proposal": proposal_decision.to_record(),
+            "daily_run": daily_decision.to_record(),
+            "weekly_run": weekly_decision.to_record(),
+            "due_run": due_decision.to_record(),
+            "blocked": blocked_decision.to_record(),
+        },
+    }
+    if payload["status"] != "passed":
+        raise RuntimeError(_json_dumps(payload))
+    return _json_dumps(payload)
 
 
 def _connection_finder_request_from_args(args: argparse.Namespace) -> ConnectionFinderRequest:
@@ -1887,6 +2305,64 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_open_loop_review_parser.add_argument("--resolution-note", default=None, help="Resolution note for close.")
     vnext_open_loop_review_parser.set_defaults(handler=_run_vnext_open_loop_review)
 
+    vnext_agents_parser = vnext_subparsers.add_parser("agents", help="Submit and inspect vNext agent proposals.")
+    vnext_agents_subparsers = vnext_agents_parser.add_subparsers(dest="vnext_agents_command", required=True)
+    vnext_agent_propose_parser = vnext_agents_subparsers.add_parser(
+        "propose-memory",
+        help="Submit an agent memory proposal for review.",
+    )
+    _add_vnext_agent_arguments(vnext_agent_propose_parser)
+    vnext_agent_propose_parser.add_argument("--proposal-type", default="candidate_memory", help="Proposal type.")
+    vnext_agent_propose_parser.add_argument("--memory-type", default="semantic", help="Stored candidate memory type.")
+    vnext_agent_propose_parser.add_argument("--title", required=True, help="Proposal title.")
+    vnext_agent_propose_parser.add_argument("--canonical-text", required=True, help="Canonical memory text.")
+    vnext_agent_propose_parser.add_argument("--domain", default="unknown", help="Domain label.")
+    vnext_agent_propose_parser.add_argument("--sensitivity", default="unknown", help="Sensitivity label.")
+    vnext_agent_propose_parser.add_argument(
+        "--sensitivity-allowed",
+        action="append",
+        default=None,
+        help="Allowed sensitivity. Repeatable.",
+    )
+    vnext_agent_propose_parser.add_argument("--confidence", type=float, default=0.5, help="Proposal confidence.")
+    vnext_agent_propose_parser.add_argument("--rationale", default=None, help="Proposal rationale.")
+    vnext_agent_propose_parser.set_defaults(handler=_run_vnext_agent_propose_memory)
+
+    vnext_scheduler_parser = vnext_subparsers.add_parser("scheduler", help="Governed local vNext scheduler controls.")
+    vnext_scheduler_subparsers = vnext_scheduler_parser.add_subparsers(dest="vnext_scheduler_command", required=True)
+    vnext_scheduler_status_parser = vnext_scheduler_subparsers.add_parser("status", help="Show scheduler status.")
+    vnext_scheduler_status_parser.set_defaults(handler=_run_vnext_scheduler_status)
+    vnext_scheduler_run_parser = vnext_scheduler_subparsers.add_parser("run-now", help="Run a workflow now.")
+    _add_vnext_agent_arguments(vnext_scheduler_run_parser)
+    vnext_scheduler_run_parser.add_argument("workflow_type", help="Workflow type, such as daily_brief.")
+    vnext_scheduler_run_parser.add_argument("--generated-for", default=None, help="YYYY-MM-DD generation date.")
+    vnext_scheduler_run_parser.add_argument("--domain", action="append", default=[], help="Allowed domain. Repeatable.")
+    vnext_scheduler_run_parser.add_argument(
+        "--sensitivity-allowed",
+        action="append",
+        default=None,
+        help="Allowed sensitivity. Repeatable.",
+    )
+    vnext_scheduler_run_parser.set_defaults(handler=_run_vnext_scheduler_run_now)
+    vnext_scheduler_run_due_parser = vnext_scheduler_subparsers.add_parser("run-due", help="Run enabled workflows whose next_run_at is due.")
+    _add_vnext_agent_arguments(vnext_scheduler_run_due_parser)
+    vnext_scheduler_run_due_parser.add_argument("--limit", type=int, default=10, help="Maximum due workflows to run.")
+    vnext_scheduler_run_due_parser.set_defaults(handler=_run_vnext_scheduler_run_due)
+    vnext_scheduler_pause_parser = vnext_scheduler_subparsers.add_parser("pause", help="Pause all scheduler workflows.")
+    _add_vnext_agent_arguments(vnext_scheduler_pause_parser)
+    vnext_scheduler_pause_parser.set_defaults(handler=_run_vnext_scheduler_pause)
+    vnext_scheduler_resume_parser = vnext_scheduler_subparsers.add_parser("resume", help="Resume all scheduler workflows.")
+    _add_vnext_agent_arguments(vnext_scheduler_resume_parser)
+    vnext_scheduler_resume_parser.set_defaults(handler=_run_vnext_scheduler_resume)
+
+    vnext_smoke_parser = vnext_subparsers.add_parser("smoke", help="Run vNext smoke checks.")
+    vnext_smoke_subparsers = vnext_smoke_parser.add_subparsers(dest="vnext_smoke_command", required=True)
+    vnext_smoke_agentic_scheduler_parser = vnext_smoke_subparsers.add_parser(
+        "agentic-scheduler",
+        help="Run the agentic control-plane and governed scheduler smoke.",
+    )
+    vnext_smoke_agentic_scheduler_parser.set_defaults(handler=_run_vnext_smoke_agentic_scheduler)
+
     mutations_parser = subparsers.add_parser("mutations", help="Generate, inspect, and apply memory operations.")
     mutations_subparsers = mutations_parser.add_subparsers(dest="mutations_command", required=True)
 
@@ -2619,6 +3095,7 @@ def main(argv: list[str] | None = None) -> int:
         output = handler(ctx, args)
     except (
         ValueError,
+        PermissionError,
         psycopg.Error,
         ContinuityCaptureValidationError,
         VNextCaptureValidationError,
@@ -2629,6 +3106,7 @@ def main(argv: list[str] | None = None) -> int:
         VNextProjectValidationError,
         VNextQueueValidationError,
         VNextRetrievalValidationError,
+        VNextSchedulerValidationError,
         ContinuityLifecycleValidationError,
         ContinuityLifecycleNotFoundError,
         ContinuityRecallValidationError,

@@ -22,7 +22,7 @@ class VNextQueueNotFoundError(VNextQueueValidationError):
 class VNextQueueStore(Protocol):
     def append_event(self, event: JsonObject) -> JsonObject: ...
 
-    def create_task(self, task: JsonObject) -> JsonObject: ...
+    def create_task(self, task: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
 
     def claim_next_task(self) -> JsonObject | None: ...
 
@@ -48,6 +48,12 @@ class QueueTaskRequest:
     write_policy: str = "proposal_only"
     scheduled_for: str | None = None
     metadata_json: JsonObject = field(default_factory=dict)
+    actor_type: str = "system"
+    actor_id: str | None = None
+    trace_id: str | None = None
+    run_id: str | None = None
+    agent_identity: JsonObject | None = None
+    policy_decision: JsonObject | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,17 +143,39 @@ class VNextQueueService:
                 "sensitivity": request.sensitivity,
                 "write_policy": request.write_policy,
                 "scheduled_for": request.scheduled_for,
-                "metadata_json": request.metadata_json,
-            }
+                "metadata_json": {
+                    **request.metadata_json,
+                    "agent_identity": request.agent_identity,
+                    "agent_id": request.actor_id if request.actor_type == "agent" else None,
+                    "policy_decision": request.policy_decision,
+                    "trace_id": request.trace_id,
+                },
+            },
+            actor_type=request.actor_type,
         )
         append_event(
             self.store,
             event_type="queue.task_enqueued",
-            actor_type="system",
+            actor_type=request.actor_type,
+            actor_id=request.actor_id,
             target_type="task",
             target_id=str(task["id"]),
+            trace_id=request.trace_id,
+            run_id=request.run_id,
             payload={"task_type": task_type, "write_policy": request.write_policy},
         )
+        if request.actor_type == "agent" and request.actor_id is not None:
+            append_event(
+                self.store,
+                event_type="agent.task_created",
+                actor_type="agent",
+                actor_id=request.actor_id,
+                target_type="task",
+                target_id=str(task["id"]),
+                trace_id=request.trace_id,
+                run_id=request.run_id,
+                payload={"task_type": task_type, "agent_identity": request.agent_identity},
+            )
         return task
 
     def process_next_task(self) -> QueueProcessResult:

@@ -200,11 +200,80 @@ def test_vnext_live_workspace_happy_path_writes_reviewable_postgres_state(
     assert "supporting_evidence" in pack_payload
     assert "contradicting_evidence" in pack_payload
 
+    openclaw_identity = {
+        "agent_id": "openclaw",
+        "agent_type": "coding_agent",
+        "agent_run_id": "openclaw-smoke-run-1",
+        "task_id": "openclaw-task-1",
+        "project_scope": ["Alice"],
+        "permission_profile": "project_scoped_agent",
+    }
+    openclaw_pack_status, openclaw_pack_payload = invoke_request(
+        "POST",
+        "/v0/vnext/context-packs",
+        payload={
+            "user_id": user_id_text,
+            "agent_identity": openclaw_identity,
+            "project_scope": ["Alice"],
+            "query": "Alice Live UI uses Postgres",
+            "scope": {"domains": ["project"]},
+            "options": {"sensitivity_allowed": ["public", "internal", "private", "unknown"], "max_items": 6},
+        },
+    )
+    assert openclaw_pack_status == 201
+    assert openclaw_pack_payload["agent_identity"]["agent_id"] == "openclaw"
+    assert openclaw_pack_payload["policy_decision"]["decision"] == "allowed"
+    assert openclaw_pack_payload["trace"]["selected_count"] >= 1
+
+    proposal_status, proposal_payload = invoke_request(
+        "POST",
+        "/v0/vnext/memory-proposals",
+        payload={
+            "user_id": user_id_text,
+            "agent_identity": openclaw_identity,
+            "proposal_type": "candidate_memory",
+            "title": "OpenClaw project memory proposal",
+            "canonical_text": "OpenClaw should use Alice project context through governed memory proposals.",
+            "source_refs": [source_id],
+            "project_scope": ["Alice"],
+            "domain": "project",
+            "sensitivity": "private",
+            "confidence": 0.72,
+            "rationale": "Agentic scheduler smoke proposal.",
+        },
+    )
+    assert proposal_status == 201
+    assert proposal_payload["proposal"]["status"] == "candidate"
+    assert proposal_payload["proposal"]["metadata_json"]["review_required"] is True
+    assert proposal_payload["review_required"] is True
+
+    restricted_status, restricted_payload = invoke_request(
+        "POST",
+        "/v0/vnext/context-packs",
+        payload={
+            "user_id": user_id_text,
+            "agent_identity": openclaw_identity,
+            "query": "restricted family and health context",
+            "scope": {"domains": ["family", "health"], "projects": ["Alice"]},
+            "options": {"sensitivity_allowed": ["private", "highly_sensitive"], "max_items": 6},
+        },
+    )
+    assert restricted_status == 403
+    assert restricted_payload["policy_decision"]["decision"] == "blocked"
+    assert "all_requested_domains_restricted" in restricted_payload["policy_decision"]["reasons"]
+
     open_loop_status, open_loop_payload = invoke_request(
         "POST",
         "/v0/vnext/open-loops",
         payload={
             "user_id": user_id_text,
+            "agent_identity": {
+                "agent_id": "hermes",
+                "agent_type": "personal_assistant",
+                "agent_run_id": "hermes-smoke-run-1",
+                "project_scope": ["Alice"],
+                "permission_profile": "trusted_local_agent",
+            },
             "title": "Confirm project dashboard updates before release",
             "description": "Created from the live /vnext workspace smoke.",
             "priority": "high",
@@ -217,6 +286,7 @@ def test_vnext_live_workspace_happy_path_writes_reviewable_postgres_state(
     )
     assert open_loop_status == 201
     loop_id = open_loop_payload["open_loop"]["id"]
+    assert open_loop_payload["open_loop"]["metadata_json"]["agent_id"] == "hermes"
 
     edit_loop_status, edit_loop_payload = invoke_request(
         "POST",
@@ -297,6 +367,95 @@ def test_vnext_live_workspace_happy_path_writes_reviewable_postgres_state(
     assert weekly_review_status == 200
     assert weekly_review_payload["status"] == "accepted"
 
+    scheduler_status, scheduler_payload = invoke_request(
+        "GET",
+        "/v0/vnext/scheduler/status",
+        query_params={"user_id": user_id_text},
+    )
+    assert scheduler_status == 200
+    assert scheduler_payload["disabled_by_default"] is True
+    assert {workflow["workflow_type"] for workflow in scheduler_payload["workflows"]} >= {
+        "daily_brief",
+        "weekly_synthesis",
+    }
+
+    daily_enable_status, daily_enable_payload = invoke_request(
+        "PATCH",
+        "/v0/vnext/scheduler/workflows/daily_brief",
+        payload={
+            "user_id": user_id_text,
+            "enabled": True,
+            "schedule_json": {"kind": "daily", "time_of_day": "08:00", "days_of_week": ["monday"]},
+            "timezone": "UTC",
+        },
+    )
+    assert daily_enable_status == 200
+    assert daily_enable_payload["workflow"]["enabled"] is True
+
+    weekly_enable_status, weekly_enable_payload = invoke_request(
+        "PATCH",
+        "/v0/vnext/scheduler/workflows/weekly_synthesis",
+        payload={
+            "user_id": user_id_text,
+            "enabled": True,
+            "schedule_json": {"kind": "weekly", "day_of_week": "monday", "time_of_day": "09:00"},
+            "timezone": "UTC",
+        },
+    )
+    assert weekly_enable_status == 200
+    assert weekly_enable_payload["workflow"]["enabled"] is True
+
+    pause_status, pause_payload = invoke_request(
+        "POST",
+        "/v0/vnext/scheduler/pause",
+        payload={"user_id": user_id_text},
+    )
+    assert pause_status == 200
+    assert pause_payload["paused_count"] >= 2
+
+    resume_status, resume_payload = invoke_request(
+        "POST",
+        "/v0/vnext/scheduler/resume",
+        payload={"user_id": user_id_text},
+    )
+    assert resume_status == 200
+    assert resume_payload["resumed_count"] >= 2
+
+    scheduler_daily_status, scheduler_daily_payload = invoke_request(
+        "POST",
+        "/v0/vnext/scheduler/workflows/daily_brief/run-now",
+        payload={
+            "user_id": user_id_text,
+            "scope": {"domains": ["project"]},
+            "options": {"generated_for": "2026-05-11", "sensitivity_allowed": ["public", "internal", "private", "unknown"]},
+        },
+    )
+    assert scheduler_daily_status == 201
+    assert scheduler_daily_payload["run"]["status"] == "succeeded"
+    assert scheduler_daily_payload["artifact"]["generated_by"] == "scheduler"
+    assert scheduler_daily_payload["artifact"]["metadata_json"]["scheduler_run_id"] == scheduler_daily_payload["run"]["id"]
+
+    scheduler_weekly_status, scheduler_weekly_payload = invoke_request(
+        "POST",
+        "/v0/vnext/scheduler/workflows/weekly_synthesis/run-now",
+        payload={
+            "user_id": user_id_text,
+            "scope": {"domains": ["project"]},
+            "options": {"generated_for": "2026-05-11", "sensitivity_allowed": ["public", "internal", "private", "unknown"]},
+        },
+    )
+    assert scheduler_weekly_status == 201
+    assert scheduler_weekly_payload["run"]["status"] == "succeeded"
+    assert scheduler_weekly_payload["artifact"]["metadata_json"]["generated_by"] == "scheduler"
+
+    scheduler_review_status, scheduler_review_payload = invoke_request(
+        "POST",
+        f"/v0/vnext/artifacts/{scheduler_daily_payload['artifact']['id']}/review",
+        payload={"user_id": user_id_text, "action": "archive"},
+    )
+    assert scheduler_review_status == 200
+    assert scheduler_review_payload["status"] == "archived"
+
     project_update_status, project_update_payload = invoke_request(
         "POST",
         "/v0/vnext/projects/update-candidates",
@@ -355,9 +514,14 @@ def test_vnext_live_workspace_happy_path_writes_reviewable_postgres_state(
     )
     assert final_workspace_status == 200
     assert final_workspace_payload["summary"]["artifact_count"] >= 3
+    assert final_workspace_payload["summary"]["agent_count"] >= 2
+    assert final_workspace_payload["summary"]["scheduler_enabled_count"] >= 2
     assert final_workspace_payload["project_dashboards"][0]["counts"]["open_loops"] >= 1
     assert final_workspace_payload["brain_charter"]["id"] == charter_payload["brain_charter"]["id"]
     assert final_workspace_payload["recent_events"]
+    assert final_workspace_payload["agent_activity"]["agents"]
+    assert final_workspace_payload["agent_activity"]["policy_blocks"]
+    assert final_workspace_payload["scheduler"]["recent_runs"]
 
     with user_connection(migrated_database_urls["app"], user_id) as conn:
         with conn.cursor() as cur:
@@ -373,11 +537,35 @@ def test_vnext_live_workspace_happy_path_writes_reviewable_postgres_state(
                 """
             )
             active_artifact_summary_count = cur.fetchone()["count"]
+            cur.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM memories
+                WHERE status = 'candidate'
+                  AND metadata_json ->> 'proposal_type' = 'candidate_memory'
+                  AND metadata_json ->> 'agent_id' = 'openclaw'
+                """
+            )
+            openclaw_candidate_count = cur.fetchone()["count"]
+            cur.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM scheduler_runs
+                WHERE status = 'succeeded'
+                  AND workflow_type IN ('daily_brief', 'weekly_synthesis')
+                """
+            )
+            scheduler_success_count = cur.fetchone()["count"]
 
     assert {
         "project.created",
         "source.created",
         "source.captured",
+        "policy.decision",
+        "agent.context_pack_requested",
+        "agent.memory_proposed",
+        "agent.policy_blocked",
+        "review.item_created",
         "memory.updated",
         "memory_revision.created",
         "graph_edge.created",
@@ -387,6 +575,14 @@ def test_vnext_live_workspace_happy_path_writes_reviewable_postgres_state(
         "artifact.generated",
         "artifact.reviewed",
         "project.update_candidate_created",
+        "scheduler.workflow_enabled",
+        "scheduler.workflow_paused",
+        "scheduler.workflow_resumed",
+        "scheduler.run_started",
+        "scheduler.run_succeeded",
+        "scheduler.artifact_created",
         "brain_charter.upserted",
     }.issubset(event_types)
     assert active_artifact_summary_count == 0
+    assert openclaw_candidate_count == 1
+    assert scheduler_success_count >= 2

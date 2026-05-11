@@ -1,0 +1,565 @@
+
+Alice vNext Sprint Prompt: Agentic Control Plane + Governed Scheduler
+
+Project Scope
+
+Build the next Alice vNext sprint focused on making Alice agent-native, scheduled, auditable, and safe by default.
+
+Alice already has a live-backed /vnext workspace, source capture, candidate memories, provenance, context packs, generated artifacts, open loops, projects, Brain Charter settings, and review flows.
+
+This sprint should add two connected capabilities:
+
+1. Agentic Control Plane
+    Hermes, OpenClaw, and future agents must be able to safely interact with Alice through MCP/API/CLI using scoped identities, permissions, context packs, task submission, artifact generation, memory proposals, and review queues.
+2. Governed Scheduler
+    Alice must be able to run daily/weekly/proactive workflows on a governed local schedule, producing reviewable generated artifacts without automatically promoting anything into trusted memory.
+
+The /vnext UI should remain the human operator console: review, auditability, agent activity, schedule settings, artifact inspection, and memory governance.
+
+⸻
+
+Product Principle
+
+Alice is not primarily a second-brain notes app.
+
+Alice is:
+
+An agent-native memory and continuity substrate for humans and agents,
+with a human review and governance cockpit.
+
+Hermes/OpenClaw should interact through Alice MCP/API/CLI. /vnext should expose what happened, what was retrieved, what was generated, what was proposed, what was blocked, and what needs review.
+
+⸻
+
+Core Build Requirements
+
+1. Agent Identity Model
+
+Add a first-class agent identity model for API/MCP/CLI initiated actions.
+
+Each agent-originated call should be able to include:
+
+{
+  "agent_id": "hermes",
+  "agent_type": "personal_assistant | coding_agent | research_agent | workflow_agent | unknown",
+  "agent_run_id": "...",
+  "task_id": "...",
+  "project_scope": ["Alice"],
+  "permission_profile": "trusted_local_agent"
+}
+
+Persist agent identity in event logs, generated artifacts, memory proposals, task queue records, context pack traces, scheduler-triggered runs where applicable, and policy decisions.
+
+Supported initial permission profiles:
+
+read_only_agent
+project_scoped_agent
+trusted_local_agent
+memory_proposal_agent
+admin_agent
+
+Default behavior:
+
+Hermes:
+- broad personal assistant context where allowed by policy
+- can create open loops
+- can create task queue items
+- can generate artifacts
+- can propose memories
+- cannot auto-promote sensitive memories
+OpenClaw:
+- project-scoped by default
+- can request project/sprint/code context
+- can create artifacts
+- can propose project updates and open loops
+- cannot access family, health, spiritual, legal, financial, or highly sensitive domains unless explicitly allowed
+
+Do not hardcode only Hermes/OpenClaw. Make this generic enough for future agents.
+
+⸻
+
+2. Agent Permission and Policy Enforcement
+
+Implement a policy layer that checks:
+
+agent identity
+permission profile
+requested action
+project scope
+domain scope
+sensitivity scope
+write policy
+
+The policy layer must decide whether the action is:
+
+allowed
+allowed_with_filtering
+requires_review
+blocked
+
+Blocked and filtered actions must be logged.
+
+Agents must not be able to bypass:
+
+domain/sensitivity restrictions
+no-auto-promotion rule
+review-required workflows
+raw evidence deletion restrictions
+Brain Charter constraints
+
+⸻
+
+3. MCP/API/CLI Parity for Agentic Workflows
+
+Ensure the following capabilities are available through MCP/API/CLI, not only UI:
+
+context pack request
+source capture
+queue task creation
+artifact generation
+project dashboard lookup
+open-loop lookup/create/update
+recent decisions lookup
+recent changes lookup
+connection report generation
+contradiction report generation
+memory proposal creation
+review item lookup
+artifact lookup
+artifact review action
+scheduler status
+scheduler run now
+scheduler pause/resume
+
+Prioritize MCP and API. CLI can be thinner but must support essential status/run/test flows.
+
+Required MCP tools or equivalent existing tool expansion:
+
+alice_vnext_context_pack
+alice_vnext_capture
+alice_vnext_queue_task
+alice_vnext_generate_artifact
+alice_vnext_project_dashboard
+alice_vnext_open_loops
+alice_vnext_recent_decisions
+alice_vnext_recent_changes
+alice_vnext_find_connections
+alice_vnext_find_contradictions
+alice_vnext_propose_memory
+alice_vnext_review_items
+alice_vnext_artifact_get
+alice_vnext_artifact_review
+alice_vnext_scheduler_status
+alice_vnext_scheduler_run_now
+alice_vnext_scheduler_pause
+alice_vnext_scheduler_resume
+
+If some already exist, extend them to include agent identity, policy checks, trace IDs, and event logging.
+
+⸻
+
+4. Agent Memory Proposal Flow
+
+Agents must be able to propose memory updates without directly promoting them into trusted memory.
+
+Supported proposal types:
+
+candidate_memory
+project_update
+open_loop
+belief_update
+contradiction
+graph_edge
+artifact_summary
+decision
+recent_change
+
+Flow:
+
+agent proposes
+→ Alice applies policy
+→ proposal is stored as candidate/review item/generated artifact
+→ event log records proposal
+→ /vnext review cockpit displays it
+→ human or trusted review flow accepts/edits/rejects
+→ accepted proposal creates memory revision/event log
+
+Required fields for memory proposals:
+
+{
+  "proposal_type": "candidate_memory",
+  "title": "...",
+  "canonical_text": "...",
+  "source_refs": [],
+  "project_scope": ["Alice"],
+  "domain": "professional",
+  "sensitivity": "private",
+  "confidence": 0.72,
+  "agent_id": "openclaw",
+  "agent_run_id": "...",
+  "rationale": "...",
+  "review_required": true
+}
+
+No agent proposal should become trusted memory automatically unless an explicit future policy allows it. For this sprint, keep review required.
+
+⸻
+
+5. Agent Activity View in /vnext
+
+Add an Agent Activity surface in /vnext.
+
+It should show:
+
+agent name/id
+permission profile
+recent context packs requested
+artifacts generated
+tasks created
+memory proposals submitted
+open loops created
+project updates proposed
+policy blocks/filtering events
+last run IDs
+timestamps
+status
+
+Minimum viable UI:
+
+Agent Activity page/tab
+Agent detail panel
+Recent events list
+Policy blocks list
+Generated artifacts by agent
+Pending review items by agent
+
+This does not need to be beautiful yet, but it must be useful for auditability.
+
+⸻
+
+6. Governed Scheduler
+
+Add a local governed scheduler for Alice Brain workflows.
+
+Initial scheduled workflows:
+
+daily_brief
+weekly_synthesis
+connection_report
+contradiction_report
+open_loop_review
+project_update_scan
+
+Required scheduler behavior:
+
+local-first
+disabled by default unless configured
+user-configurable
+agent-addressable with permission checks
+pausable
+auditable
+restart-persistent
+safe by default
+produces generated artifacts only
+does not auto-promote artifacts into memory
+logs start/success/failure
+records run IDs and trace IDs
+
+Daily and weekly workflows should be the primary supported workflows. Others may be opt-in but should have the schema and control path ready.
+
+⸻
+
+7. Scheduler Settings UI
+
+Add scheduler controls to /vnext.
+
+Can be under Settings or a dedicated Schedules tab.
+
+For each workflow, show:
+
+enabled/disabled
+schedule expression or simple schedule fields
+timezone
+next run
+last run
+last result
+last error
+run now
+pause/resume
+edit schedule
+
+Minimum supported schedule config:
+
+Daily Brief:
+- enabled
+- time of day
+- timezone
+- days of week
+Weekly Synthesis:
+- enabled
+- day of week
+- time of day
+- timezone
+
+Scheduler events must also appear in Timeline/event log.
+
+⸻
+
+8. Scheduler API/MCP/CLI
+
+Add or extend endpoints/tools for:
+
+get scheduler status
+list scheduled workflows
+enable workflow
+disable workflow
+pause all
+resume all
+run workflow now
+get workflow run history
+get last failure
+
+Agent-triggered scheduler actions must go through policy checks.
+
+Example rule:
+
+read_only_agent:
+- can view scheduler status
+- cannot run/pause/resume
+project_scoped_agent:
+- can run project-scoped reports if allowed
+- cannot pause global scheduler
+trusted_local_agent:
+- can run now
+- can create project-scoped scheduled tasks if allowed
+- cannot enable broad personal sensitive workflows without review
+admin_agent:
+- can configure schedules
+
+⸻
+
+9. Generated Artifact Metadata
+
+All generated artifacts must include:
+
+generated_by: user | agent | scheduler | system
+agent_id if applicable
+agent_run_id if applicable
+scheduler_run_id if applicable
+workflow type
+source refs
+domain
+sensitivity
+policy decision
+review status
+trace ID
+created_at
+
+Generated artifacts must remain reviewable.
+
+No scheduled or agent-generated artifact may auto-promote to trusted memory.
+
+⸻
+
+10. Event Log Expansion
+
+Every meaningful action must create an event-log entry.
+
+Required new/expanded event types:
+
+agent.context_pack_requested
+agent.task_created
+agent.artifact_generated
+agent.memory_proposed
+agent.policy_blocked
+agent.policy_filtered
+scheduler.workflow_enabled
+scheduler.workflow_disabled
+scheduler.workflow_paused
+scheduler.workflow_resumed
+scheduler.run_started
+scheduler.run_succeeded
+scheduler.run_failed
+scheduler.artifact_created
+policy.decision
+review.item_created
+review.item_accepted
+review.item_rejected
+review.item_edited
+
+Event payloads must include agent identity, scheduler run ID, workflow, target IDs, policy decision, and trace ID where applicable.
+
+⸻
+
+11. Local Alpha Hardening
+
+Include hardening as part of this sprint.
+
+Required hardening:
+
+all new write paths audited
+all new agent paths policy-checked
+scheduler state survives restart
+scheduler failures do not crash app
+bad agent input fails safely
+bad schedule config fails validation
+permission-denied responses are clear
+UI handles loading/empty/error states
+Postgres smoke tests cover main paths
+existing tests stay green
+
+Do not add live OAuth connectors in this sprint.
+
+Do not add production cloud deployment.
+
+Do not add automatic memory promotion.
+
+⸻
+
+Explicit Deferrals
+
+Do not build these in this sprint:
+
+live Gmail OAuth
+live Calendar OAuth
+live Telegram polling
+browser extension runtime actions
+OCR model execution
+voice transcription model execution
+cloud deployment
+hosted accounts
+mobile app
+full notification system
+automatic memory promotion
+human-rated eval scoring
+major graph visualization overhaul
+consumer onboarding polish
+
+A small local notification stub or UI badge is acceptable only if it does not distract from scheduler/agent-control work.
+
+⸻
+
+Required End-to-End Flows
+
+Flow 1: OpenClaw requests project context
+
+OpenClaw calls Alice MCP/API with agent identity.
+Alice policy checks project scope.
+Alice creates context pack for project Alice.
+Context pack includes relevant memories, sources, open loops, recent changes, contradictions, and decisions.
+Event log records request.
+Agent Activity page shows the request.
+
+Flow 2: OpenClaw proposes a memory
+
+OpenClaw proposes a project memory.
+Alice policy checks permission.
+Alice stores proposal as review item/candidate memory.
+No auto-promotion occurs.
+Memory Review page shows pending proposal.
+User accepts/rejects/edits.
+Event log records all actions.
+
+Flow 3: Hermes creates an open loop
+
+Hermes submits open-loop proposal.
+Alice policy checks scope.
+Open loop is created or queued for review depending on sensitivity.
+Open loop appears in /vnext.
+Event log records action.
+
+Flow 4: Scheduler generates daily brief
+
+Daily Brief schedule triggers locally.
+Run creates scheduler run ID and trace ID.
+Alice retrieves scoped context.
+Alice generates daily brief artifact.
+Artifact is not auto-promoted.
+Event log records start/success/artifact creation.
+Generated page shows artifact.
+Timeline shows scheduled run.
+
+Flow 5: Agent tries restricted access
+
+OpenClaw requests family/health/spiritual memory without permission.
+Policy blocks or filters restricted content.
+Context pack excludes restricted memories.
+Event log records policy decision.
+Agent Activity shows policy block/filter.
+
+⸻
+
+Acceptance Criteria
+
+The sprint is complete only when all of the following pass:
+
+Agent identity model exists and is persisted in relevant events/artifacts/tasks/proposals.
+Permission profiles exist and are enforced on API/MCP/CLI paths.
+Agent context-pack requests support project/domain/sensitivity scoping.
+Agent memory proposals can be created and appear in review flow.
+Agent proposals cannot auto-promote to trusted memory.
+Agent Activity page exists in /vnext and shows recent agent actions, generated artifacts, proposals, and policy blocks.
+Governed scheduler exists with persistent workflow configuration.
+Daily Brief schedule can be enabled, disabled, paused, resumed, and manually run.
+Weekly Synthesis schedule can be enabled, disabled, paused, resumed, and manually run.
+Scheduled runs create generated artifacts with correct metadata.
+Scheduled runs create event-log entries for start, success, failure, and artifact creation.
+Scheduler state survives restart.
+Scheduler failures are visible in /vnext and do not crash the app.
+Scheduler/API/MCP/CLI controls are policy-checked.
+No generated artifact is auto-promoted into trusted memory.
+No new live connector OAuth/polling is introduced.
+Postgres-backed integration smoke covers:
+- agent context pack request
+- agent memory proposal
+- restricted policy block/filter
+- scheduler daily brief run
+- scheduler weekly synthesis run
+- artifact review
+- event log verification
+Unit/integration tests pass.
+Web tests pass.
+Web build passes.
+Web lint passes.
+git diff --check passes.
+Existing public preview functionality remains intact.
+
+⸻
+
+Validation Commands
+
+Run the project’s standard validation suite plus new scheduler/agentic smoke tests.
+
+At minimum:
+
+pytest tests/unit -q
+pytest tests/integration -q
+pnpm --dir apps/web test
+pnpm --dir apps/web lint
+pnpm --dir apps/web build
+git diff --check
+alicebot eval run --suite all
+
+Also add and run a dedicated Postgres-backed smoke test for this sprint:
+
+alicebot vnext smoke agentic-scheduler
+
+If that exact command does not exist, create the equivalent script/pytest target and document it.
+
+⸻
+
+Final Deliverable
+
+At the end of the sprint, provide a CTO summary with:
+
+what was built
+new API/MCP/CLI surfaces
+new UI surfaces
+agent permission model
+scheduler behavior
+guardrails preserved
+tests and validation results
+known limitations
+recommended next phase
+PR number
+merge commit

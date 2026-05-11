@@ -33,6 +33,21 @@ alice brief --brief-type general --query local-first
 
 `brief` is the default external-agent continuity entrypoint. It assembles relevant facts, recent changes, open loops, conflicts, timeline highlights, provenance, trust posture, and a next suggested action in one call.
 
+## vNext Agentic Commands
+
+```bash
+alicebot context-pack "Alice sprint context" --domain project
+alicebot vnext agents propose-memory --agent-id openclaw --permission-profile project_scoped_agent --project-scope Alice --title "Candidate memory" --canonical-text "Alice should keep agent proposals review-only." --domain project --sensitivity private
+alicebot vnext scheduler status
+alicebot vnext scheduler run-now daily_brief --agent-id hermes --permission-profile trusted_local_agent --project-scope Alice --domain project
+alicebot vnext scheduler run-due --agent-id hermes --permission-profile trusted_local_agent
+alicebot vnext scheduler pause --agent-id hermes --permission-profile trusted_local_agent
+alicebot vnext scheduler resume --agent-id hermes --permission-profile trusted_local_agent
+alicebot vnext smoke agentic-scheduler
+```
+
+The vNext agent arguments are `--agent-id`, `--agent-type`, `--agent-run-id`, `--agent-task-id`, `--project-scope`, and `--permission-profile`. Agent-originated scheduler and memory-proposal commands are policy checked, logged, and kept review-only where they create memory or generated artifacts.
+
 ## Temporal History Commands
 
 - `state-at` reconstructs entity facts plus effective edges at a prior time
@@ -52,6 +67,7 @@ alice brief --brief-type general --query local-first
 - output format is deterministic for stable automated validation
 - provenance snippets remain visible in recall/resume responses
 - correction flow updates future recall/resume results
+- vNext scheduler smoke output is JSON and fails nonzero if any agent/scheduler gate fails
 
 See tests:
 

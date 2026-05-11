@@ -273,6 +273,54 @@ BRAIN_CHARTER_COLUMNS = """
                   updated_at
                 """
 
+AGENT_IDENTITY_COLUMNS = """
+                  id,
+                  user_id,
+                  agent_id,
+                  agent_type,
+                  permission_profile,
+                  display_name,
+                  project_scope_json,
+                  metadata_json,
+                  created_at,
+                  updated_at
+                """
+
+SCHEDULER_WORKFLOW_COLUMNS = """
+                  id,
+                  user_id,
+                  workflow_type,
+                  enabled,
+                  paused,
+                  schedule_json,
+                  timezone,
+                  next_run_at,
+                  last_run_id,
+                  last_run_at,
+                  last_result,
+                  last_error,
+                  created_at,
+                  updated_at,
+                  metadata_json
+                """
+
+SCHEDULER_RUN_COLUMNS = """
+                  id,
+                  user_id,
+                  workflow_id,
+                  workflow_type,
+                  status,
+                  triggered_by,
+                  trace_id,
+                  started_at,
+                  finished_at,
+                  artifact_id,
+                  error_message,
+                  policy_decision_json,
+                  agent_identity_json,
+                  metadata_json
+                """
+
 
 def _json_object(value: object | None) -> Jsonb:
     if value is None:
@@ -2228,6 +2276,326 @@ class PostgresVNextStore:
                 FROM brain_charters
                 LIMIT 1
                 """
+        )
+
+    def upsert_agent_identity(self, agent: JsonObject, *, actor_type: str = "agent") -> VNextRow:
+        row = self._fetch_one(
+            "upsert_agent_identity",
+            f"""
+                INSERT INTO agent_identities (
+                  id,
+                  user_id,
+                  agent_id,
+                  agent_type,
+                  permission_profile,
+                  display_name,
+                  project_scope_json,
+                  metadata_json
+                )
+                VALUES (
+                  COALESCE(%s::uuid, gen_random_uuid()),
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s
+                )
+                ON CONFLICT (user_id, agent_id)
+                DO UPDATE SET
+                  agent_type = EXCLUDED.agent_type,
+                  permission_profile = EXCLUDED.permission_profile,
+                  display_name = COALESCE(EXCLUDED.display_name, agent_identities.display_name),
+                  project_scope_json = EXCLUDED.project_scope_json,
+                  metadata_json = agent_identities.metadata_json || EXCLUDED.metadata_json,
+                  updated_at = clock_timestamp()
+                RETURNING {AGENT_IDENTITY_COLUMNS}
+                """,
+            (
+                agent.get("id"),
+                agent["agent_id"],
+                agent.get("agent_type", "unknown"),
+                agent.get("permission_profile", "read_only_agent"),
+                agent.get("display_name"),
+                _json_list(agent.get("project_scope_json") or agent.get("project_scope")),
+                _json_object(agent.get("metadata_json")),
+            ),
+        )
+        self._append_mutation_event(
+            event_type="agent.identity_upserted",
+            actor_type=actor_type,
+            actor_id=str(row["agent_id"]),
+            target_type="agent_identity",
+            target_id=row["id"],
+            payload={"operation": "upsert", "agent_id": str(row["agent_id"])},
+        )
+        return row
+
+    def list_agent_identities(self, *, limit: int = 20) -> list[VNextRow]:
+        return self._fetch_all(
+            f"""
+                SELECT {AGENT_IDENTITY_COLUMNS}
+                FROM agent_identities
+                ORDER BY updated_at DESC, id DESC
+                LIMIT %s
+                """,
+            (limit,),
+        )
+
+    def list_agent_events(self, *, agent_id: str | None = None, limit: int = 50) -> list[VNextRow]:
+        return self._fetch_all(
+            f"""
+                SELECT {EVENT_LOG_COLUMNS}
+                FROM event_log
+                WHERE actor_type = 'agent'
+                  AND (%s::text IS NULL OR actor_id = %s)
+                ORDER BY occurred_at DESC, id DESC
+                LIMIT %s
+                """,
+            (agent_id, agent_id, limit),
+        )
+
+    def upsert_scheduler_workflow(self, workflow: JsonObject, *, actor_type: str = "system") -> VNextRow:
+        row = self._fetch_one(
+            "upsert_scheduler_workflow",
+            f"""
+                INSERT INTO scheduler_workflows (
+                  id,
+                  user_id,
+                  workflow_type,
+                  enabled,
+                  paused,
+                  schedule_json,
+                  timezone,
+                  next_run_at,
+                  metadata_json
+                )
+                VALUES (
+                  COALESCE(%s::uuid, gen_random_uuid()),
+                  app.current_user_id(),
+                  %s,
+                  COALESCE(%s, false),
+                  COALESCE(%s, false),
+                  %s,
+                  COALESCE(%s, 'UTC'),
+                  %s,
+                  %s
+                )
+                ON CONFLICT (user_id, workflow_type)
+                DO UPDATE SET
+                  enabled = EXCLUDED.enabled,
+                  paused = EXCLUDED.paused,
+                  schedule_json = EXCLUDED.schedule_json,
+                  timezone = EXCLUDED.timezone,
+                  next_run_at = EXCLUDED.next_run_at,
+                  metadata_json = scheduler_workflows.metadata_json || EXCLUDED.metadata_json,
+                  updated_at = clock_timestamp()
+                RETURNING {SCHEDULER_WORKFLOW_COLUMNS}
+                """,
+            (
+                workflow.get("id"),
+                workflow["workflow_type"],
+                workflow.get("enabled"),
+                workflow.get("paused"),
+                _json_object(workflow.get("schedule_json")),
+                workflow.get("timezone"),
+                workflow.get("next_run_at"),
+                _json_object(workflow.get("metadata_json")),
+            ),
+        )
+        self._append_mutation_event(
+            event_type="scheduler.workflow_upserted",
+            actor_type=actor_type,
+            target_type="scheduler_workflow",
+            target_id=row["id"],
+            payload={
+                "operation": "upsert",
+                "workflow_type": str(row["workflow_type"]),
+                "enabled": bool(row["enabled"]),
+                "paused": bool(row["paused"]),
+            },
+        )
+        return row
+
+    def update_scheduler_workflow(self, *, workflow_type: str, patch: JsonObject, actor_type: str = "system") -> VNextRow:
+        row = self._fetch_one(
+            "update_scheduler_workflow",
+            f"""
+                UPDATE scheduler_workflows
+                SET enabled = COALESCE(%s, enabled),
+                    paused = COALESCE(%s, paused),
+                    schedule_json = COALESCE(%s, schedule_json),
+                    timezone = COALESCE(%s, timezone),
+                    next_run_at = CASE
+                      WHEN %s THEN %s::timestamptz
+                      ELSE next_run_at
+                    END,
+                    last_run_id = COALESCE(%s::uuid, last_run_id),
+                    last_run_at = COALESCE(%s::timestamptz, last_run_at),
+                    last_result = COALESCE(%s, last_result),
+                    last_error = CASE
+                      WHEN %s THEN %s
+                      ELSE last_error
+                    END,
+                    metadata_json = COALESCE(%s, metadata_json),
+                    updated_at = clock_timestamp()
+                WHERE workflow_type = %s
+                RETURNING {SCHEDULER_WORKFLOW_COLUMNS}
+                """,
+            (
+                patch.get("enabled"),
+                patch.get("paused"),
+                _json_object(patch["schedule_json"]) if "schedule_json" in patch else None,
+                patch.get("timezone"),
+                "next_run_at" in patch,
+                patch.get("next_run_at"),
+                patch.get("last_run_id"),
+                patch.get("last_run_at"),
+                patch.get("last_result"),
+                "last_error" in patch,
+                patch.get("last_error"),
+                _json_object(patch["metadata_json"]) if "metadata_json" in patch else None,
+                workflow_type,
+            ),
+        )
+        self._append_mutation_event(
+            event_type="scheduler.workflow_updated",
+            actor_type=actor_type,
+            target_type="scheduler_workflow",
+            target_id=row["id"],
+            payload={"operation": "update", "workflow_type": workflow_type, "changes": patch},
+        )
+        return row
+
+    def get_scheduler_workflow(self, workflow_type: str) -> VNextRow | None:
+        return self._fetch_optional_one(
+            f"""
+                SELECT {SCHEDULER_WORKFLOW_COLUMNS}
+                FROM scheduler_workflows
+                WHERE workflow_type = %s
+                """,
+            (workflow_type,),
+        )
+
+    def list_scheduler_workflows(self) -> list[VNextRow]:
+        return self._fetch_all(
+            f"""
+                SELECT {SCHEDULER_WORKFLOW_COLUMNS}
+                FROM scheduler_workflows
+                ORDER BY workflow_type ASC
+                """
+        )
+
+    def create_scheduler_run(self, run: JsonObject, *, actor_type: str = "scheduler") -> VNextRow:
+        row = self._fetch_one(
+            "create_scheduler_run",
+            f"""
+                INSERT INTO scheduler_runs (
+                  id,
+                  user_id,
+                  workflow_id,
+                  workflow_type,
+                  status,
+                  triggered_by,
+                  trace_id,
+                  policy_decision_json,
+                  agent_identity_json,
+                  metadata_json
+                )
+                VALUES (
+                  COALESCE(%s::uuid, gen_random_uuid()),
+                  app.current_user_id(),
+                  %s::uuid,
+                  %s,
+                  COALESCE(%s, 'started'),
+                  COALESCE(%s, 'scheduler'),
+                  %s,
+                  %s,
+                  %s,
+                  %s
+                )
+                RETURNING {SCHEDULER_RUN_COLUMNS}
+                """,
+            (
+                run.get("id"),
+                run.get("workflow_id"),
+                run["workflow_type"],
+                run.get("status"),
+                run.get("triggered_by"),
+                run["trace_id"],
+                _json_object(run.get("policy_decision_json")),
+                _json_object(run.get("agent_identity_json")),
+                _json_object(run.get("metadata_json")),
+            ),
+        )
+        self._append_mutation_event(
+            event_type="scheduler.run_started",
+            actor_type=actor_type,
+            target_type="scheduler_run",
+            target_id=row["id"],
+            trace_id=str(row["trace_id"]),
+            run_id=str(row["id"]),
+            payload={"workflow_type": str(row["workflow_type"]), "triggered_by": str(row["triggered_by"])},
+        )
+        return row
+
+    def update_scheduler_run(self, *, run_id: str, patch: JsonObject, actor_type: str = "scheduler") -> VNextRow:
+        row = self._fetch_one(
+            "update_scheduler_run",
+            f"""
+                UPDATE scheduler_runs
+                SET status = COALESCE(%s, status),
+                    finished_at = CASE
+                      WHEN %s IN ('succeeded', 'failed') THEN clock_timestamp()
+                      ELSE finished_at
+                    END,
+                    artifact_id = COALESCE(%s::uuid, artifact_id),
+                    error_message = COALESCE(%s, error_message),
+                    policy_decision_json = COALESCE(%s, policy_decision_json),
+                    agent_identity_json = COALESCE(%s, agent_identity_json),
+                    metadata_json = COALESCE(%s, metadata_json)
+                WHERE id = %s::uuid
+                RETURNING {SCHEDULER_RUN_COLUMNS}
+                """,
+            (
+                patch.get("status"),
+                patch.get("status"),
+                patch.get("artifact_id"),
+                patch.get("error_message"),
+                _json_object(patch["policy_decision_json"]) if "policy_decision_json" in patch else None,
+                _json_object(patch["agent_identity_json"]) if "agent_identity_json" in patch else None,
+                _json_object(patch["metadata_json"]) if "metadata_json" in patch else None,
+                run_id,
+            ),
+        )
+        event_type = "scheduler.run_succeeded" if row["status"] == "succeeded" else "scheduler.run_failed" if row["status"] == "failed" else "scheduler.run_updated"
+        self._append_mutation_event(
+            event_type=event_type,
+            actor_type=actor_type,
+            target_type="scheduler_run",
+            target_id=row["id"],
+            trace_id=str(row["trace_id"]),
+            run_id=str(row["id"]),
+            payload={
+                "workflow_type": str(row["workflow_type"]),
+                "status": str(row["status"]),
+                "artifact_id": str(row["artifact_id"]) if row.get("artifact_id") is not None else None,
+                "error_message": row.get("error_message"),
+            },
+        )
+        return row
+
+    def list_scheduler_runs(self, *, workflow_type: str | None = None, limit: int = 20) -> list[VNextRow]:
+        return self._fetch_all(
+            f"""
+                SELECT {SCHEDULER_RUN_COLUMNS}
+                FROM scheduler_runs
+                WHERE (%s::text IS NULL OR workflow_type = %s)
+                ORDER BY started_at DESC, id DESC
+                LIMIT %s
+                """,
+            (workflow_type, workflow_type, limit),
         )
 
 

@@ -18,7 +18,7 @@ class InMemoryVNextQueueStore:
         self.events.append(event)
         return event
 
-    def create_task(self, task: dict[str, object]) -> dict[str, object]:
+    def create_task(self, task: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {
             **task,
             "id": f"task-{len(self.tasks) + 1}",
@@ -40,6 +40,7 @@ class InMemoryVNextQueueStore:
         task_id: str,
         status: str,
         details: dict[str, object] | None = None,
+        **_kwargs,
     ) -> dict[str, object]:
         for task in self.tasks:
             if task["id"] != task_id:
@@ -50,7 +51,7 @@ class InMemoryVNextQueueStore:
             return task
         raise AssertionError(f"missing task {task_id}")
 
-    def create_artifact(self, artifact: dict[str, object]) -> dict[str, object]:
+    def create_artifact(self, artifact: dict[str, object], **_kwargs) -> dict[str, object]:
         if self.fail_artifact_create:
             raise RuntimeError("artifact renderer failed")
         row = {
@@ -63,7 +64,7 @@ class InMemoryVNextQueueStore:
     def get_artifact(self, artifact_id: str) -> dict[str, object] | None:
         return self.artifacts.get(artifact_id)
 
-    def update_artifact_status(self, *, artifact_id: str, status: str) -> dict[str, object]:
+    def update_artifact_status(self, *, artifact_id: str, status: str, **_kwargs) -> dict[str, object]:
         artifact = self.artifacts[artifact_id]
         artifact["status"] = status
         return artifact

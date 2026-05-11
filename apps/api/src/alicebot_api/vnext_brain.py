@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 import re
 from typing import Protocol
@@ -32,11 +32,11 @@ class VNextBrainValidationError(ValueError):
 class VNextBrainStore(Protocol):
     def append_event(self, event: JsonObject) -> JsonObject: ...
 
-    def create_artifact(self, artifact: JsonObject) -> JsonObject: ...
+    def create_artifact(self, artifact: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
 
-    def create_memory(self, memory: JsonObject) -> JsonObject: ...
+    def create_memory(self, memory: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
 
-    def create_open_loop(self, loop: JsonObject) -> JsonObject: ...
+    def create_open_loop(self, loop: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
 
     def search_sources(
         self,
@@ -86,6 +86,13 @@ class BrainArtifactRequest:
     artifact_limit: int = DEFAULT_ARTIFACT_LIMIT
     discover_open_loops: bool = True
     create_candidate_memories: bool = True
+    generated_by: str = "system"
+    actor_id: str | None = None
+    trace_id: str | None = None
+    run_id: str | None = None
+    agent_identity: JsonObject | None = None
+    policy_decision: JsonObject | None = None
+    metadata_json: JsonObject = field(default_factory=dict)
 
 
 def _today_iso() -> str:
@@ -251,9 +258,16 @@ class VNextBrainService:
                 "status": "needs_review",
                 "domain": _artifact_domain(request, all_rows),
                 "sensitivity": _highest_sensitivity(all_rows),
-                "generated_by": "vnext_daily_brief",
+                "generated_by": request.generated_by if request.generated_by != "system" else "vnext_daily_brief",
                 "metadata_json": {
                     "workflow": "daily_brief",
+                    "generated_by": request.generated_by,
+                    "agent_identity": request.agent_identity,
+                    "agent_id": request.agent_identity.get("agent_id") if isinstance(request.agent_identity, dict) else None,
+                    "agent_run_id": request.agent_identity.get("agent_run_id") if isinstance(request.agent_identity, dict) else None,
+                    "scheduler_run_id": request.run_id if request.generated_by == "scheduler" else None,
+                    "trace_id": request.trace_id,
+                    "policy_decision": request.policy_decision,
                     "generated_for": day.isoformat(),
                     "input_summary": _input_summary(
                         sources=sources,
@@ -262,22 +276,41 @@ class VNextBrainService:
                         artifacts=artifacts,
                     ),
                     "candidate_open_loop_ids": [str(row.get("id")) for row in candidate_open_loops],
+                    **request.metadata_json,
                 },
-            }
+            },
+            actor_type=request.generated_by,
         )
         append_event(
             self.store,
             event_type="artifact.generated",
-            actor_type="system",
+            actor_type=request.generated_by,
+            actor_id=request.actor_id,
             target_type="artifact",
             target_id=str(artifact["id"]),
+            trace_id=request.trace_id,
+            run_id=request.run_id,
             payload={
                 "workflow": "daily_brief",
                 "generated_for": day.isoformat(),
                 "artifact_type": "daily_brief",
                 "candidate_open_loop_count": len(candidate_open_loops),
+                "agent_identity": request.agent_identity,
+                "policy_decision": request.policy_decision,
             },
         )
+        if request.generated_by == "agent" and request.actor_id is not None:
+            append_event(
+                self.store,
+                event_type="agent.artifact_generated",
+                actor_type="agent",
+                actor_id=request.actor_id,
+                target_type="artifact",
+                target_id=str(artifact["id"]),
+                trace_id=request.trace_id,
+                run_id=request.run_id,
+                payload={"workflow": "daily_brief", "agent_identity": request.agent_identity},
+            )
         return artifact
 
     def generate_weekly_synthesis(self, request: BrainArtifactRequest | None = None) -> JsonObject:
@@ -304,9 +337,16 @@ class VNextBrainService:
                 "status": "needs_review",
                 "domain": _artifact_domain(request, all_rows),
                 "sensitivity": _highest_sensitivity(all_rows),
-                "generated_by": "vnext_weekly_synthesis",
+                "generated_by": request.generated_by if request.generated_by != "system" else "vnext_weekly_synthesis",
                 "metadata_json": {
                     "workflow": "weekly_synthesis",
+                    "generated_by": request.generated_by,
+                    "agent_identity": request.agent_identity,
+                    "agent_id": request.agent_identity.get("agent_id") if isinstance(request.agent_identity, dict) else None,
+                    "agent_run_id": request.agent_identity.get("agent_run_id") if isinstance(request.agent_identity, dict) else None,
+                    "scheduler_run_id": request.run_id if request.generated_by == "scheduler" else None,
+                    "trace_id": request.trace_id,
+                    "policy_decision": request.policy_decision,
                     "generated_for": day.isoformat(),
                     "week": week_label,
                     "input_summary": _input_summary(
@@ -316,23 +356,42 @@ class VNextBrainService:
                         artifacts=artifacts,
                     ),
                     "candidate_memory_ids": [str(row.get("id")) for row in candidate_memories],
+                    **request.metadata_json,
                 },
-            }
+            },
+            actor_type=request.generated_by,
         )
         append_event(
             self.store,
             event_type="artifact.generated",
-            actor_type="system",
+            actor_type=request.generated_by,
+            actor_id=request.actor_id,
             target_type="artifact",
             target_id=str(artifact["id"]),
+            trace_id=request.trace_id,
+            run_id=request.run_id,
             payload={
                 "workflow": "weekly_synthesis",
                 "generated_for": day.isoformat(),
                 "week": week_label,
                 "artifact_type": "weekly_synthesis",
                 "candidate_memory_count": len(candidate_memories),
+                "agent_identity": request.agent_identity,
+                "policy_decision": request.policy_decision,
             },
         )
+        if request.generated_by == "agent" and request.actor_id is not None:
+            append_event(
+                self.store,
+                event_type="agent.artifact_generated",
+                actor_type="agent",
+                actor_id=request.actor_id,
+                target_type="artifact",
+                target_id=str(artifact["id"]),
+                trace_id=request.trace_id,
+                run_id=request.run_id,
+                payload={"workflow": "weekly_synthesis", "agent_identity": request.agent_identity},
+            )
         return artifact
 
     def _load_inputs(
@@ -403,7 +462,8 @@ class VNextBrainService:
                             "discovered_by": "vnext_daily_brief",
                             "source_id": source.get("id"),
                         },
-                    }
+                    },
+                    actor_type=request.generated_by,
                 )
             )
         return created
@@ -433,8 +493,13 @@ class VNextBrainService:
                     "metadata_json": {
                         "candidate": True,
                         "discovered_by": "vnext_weekly_synthesis",
+                        "generated_by": request.generated_by,
+                        "agent_identity": request.agent_identity,
+                        "scheduler_run_id": request.run_id if request.generated_by == "scheduler" else None,
+                        "trace_id": request.trace_id,
                     },
-                }
+                },
+                actor_type=request.generated_by,
             )
         ]
 

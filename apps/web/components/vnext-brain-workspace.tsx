@@ -15,6 +15,7 @@ import type {
   VNextPersonRecord,
   VNextProjectDashboard,
   VNextProjectRecord,
+  VNextSchedulerStatus,
   VNextSourceRecord,
   VNextTaskRecord,
   VNextWorkspacePayload,
@@ -28,9 +29,11 @@ import {
   generateVNextProjectUpdate,
   generateVNextWeeklySynthesis,
   getVNextWorkspace,
+  patchVNextSchedulerWorkflow,
   reviewVNextArtifact,
   reviewVNextMemory,
   reviewVNextOpenLoop,
+  runVNextSchedulerWorkflowNow,
   upsertVNextBrainCharter,
 } from "../lib/api";
 import { EmptyState } from "./empty-state";
@@ -114,6 +117,8 @@ type WorkspaceView = {
   beliefs: VNextBeliefRecord[];
   tasks: VNextTaskRecord[];
   recentEvents: VNextEventRecord[];
+  agentActivity: NonNullable<VNextWorkspacePayload["agent_activity"]>;
+  scheduler: VNextSchedulerStatus;
   brainCharter: VNextBrainCharterRecord | null;
 };
 
@@ -136,6 +141,8 @@ const SURFACES = [
   "People",
   "Beliefs",
   "Open Loops",
+  "Agent Activity",
+  "Schedules",
   "Timeline",
   "Graph",
   "Connectors",
@@ -229,11 +236,31 @@ function createSummary(view: Omit<WorkspaceView, "summary">): WorkspaceSummary {
     open_loop_count: view.openLoops.filter((item) => item.status === "open").length,
     project_count: view.projects.length,
     event_count: view.recentEvents.length,
+    agent_count: view.agentActivity.agents.length,
+    scheduler_enabled_count: view.scheduler.enabled_count,
     memory_status_counts: memoryStatusCounts,
     artifact_status_counts: artifactStatusCounts,
     open_loop_status_counts: openLoopStatusCounts,
   };
 }
+
+const EMPTY_AGENT_ACTIVITY: NonNullable<VNextWorkspacePayload["agent_activity"]> = {
+  agents: [],
+  recent_events: [],
+  policy_blocks: [],
+  generated_artifacts: [],
+  pending_review_items: [],
+};
+
+const EMPTY_SCHEDULER: VNextSchedulerStatus = {
+  mode: "local_governed",
+  disabled_by_default: true,
+  workflows: [],
+  recent_runs: [],
+  enabled_count: 0,
+  paused_count: 0,
+  last_failure: null,
+};
 
 const FIXTURE_SOURCES: VNextSourceRecord[] = [
   {
@@ -410,6 +437,84 @@ const FIXTURE_EVENTS: VNextEventRecord[] = [
   },
 ];
 
+const FIXTURE_AGENT_ACTIVITY: NonNullable<VNextWorkspacePayload["agent_activity"]> = {
+  agents: [
+    {
+      id: "agent-fixture-openclaw",
+      agent_id: "openclaw",
+      agent_type: "coding_agent",
+      permission_profile: "project_scoped_agent",
+      project_scope_json: ["Alice"],
+      updated_at: "2026-05-10T08:45:00Z",
+    },
+    {
+      id: "agent-fixture-hermes",
+      agent_id: "hermes",
+      agent_type: "personal_assistant",
+      permission_profile: "trusted_local_agent",
+      project_scope_json: ["Alice"],
+      updated_at: "2026-05-10T08:42:00Z",
+    },
+  ],
+  recent_events: [
+    {
+      id: "agent-event-fixture-1",
+      event_type: "agent.context_pack_requested",
+      actor_type: "agent",
+      actor_id: "openclaw",
+      target_type: "context_pack",
+      target_id: "context-pack-fixture",
+      occurred_at: "2026-05-10T08:45:00Z",
+      payload_json: { query: "Alice project status", selected_count: 3 },
+    },
+  ],
+  policy_blocks: [
+    {
+      id: "agent-event-fixture-2",
+      event_type: "agent.policy_filtered",
+      actor_type: "agent",
+      actor_id: "openclaw",
+      target_type: "context_pack",
+      target_id: "context-pack-fixture-filtered",
+      occurred_at: "2026-05-10T08:46:00Z",
+      payload_json: { reason: "restricted_domain_filtered" },
+    },
+  ],
+  generated_artifacts: FIXTURE_ARTIFACTS,
+  pending_review_items: FIXTURE_REVIEW_ITEMS,
+};
+
+const FIXTURE_SCHEDULER: VNextSchedulerStatus = {
+  mode: "local_governed",
+  disabled_by_default: true,
+  enabled_count: 0,
+  paused_count: 0,
+  last_failure: null,
+  workflows: [
+    {
+      id: "schedule-daily",
+      workflow_type: "daily_brief",
+      enabled: false,
+      paused: false,
+      schedule_json: { kind: "daily", time_of_day: "08:00", days_of_week: ["monday", "tuesday", "wednesday", "thursday", "friday"] },
+      timezone: "UTC",
+      next_run_at: null,
+      last_result: null,
+    },
+    {
+      id: "schedule-weekly",
+      workflow_type: "weekly_synthesis",
+      enabled: false,
+      paused: false,
+      schedule_json: { kind: "weekly", day_of_week: "monday", time_of_day: "09:00" },
+      timezone: "UTC",
+      next_run_at: null,
+      last_result: null,
+    },
+  ],
+  recent_runs: [],
+};
+
 export const INITIAL_CONNECTORS: ConnectorSetting[] = [
   {
     id: "telegram",
@@ -521,6 +626,8 @@ function fixtureWorkspace(): WorkspaceView {
     beliefs: FIXTURE_BELIEFS,
     tasks: [],
     recentEvents: FIXTURE_EVENTS,
+    agentActivity: FIXTURE_AGENT_ACTIVITY,
+    scheduler: FIXTURE_SCHEDULER,
     brainCharter: {
       id: "brain-charter-fixture",
       content_markdown: "# ALICE.md\n\nKeep generated artifacts reviewable before promotion.",
@@ -542,6 +649,8 @@ function emptyWorkspace(): WorkspaceView {
     beliefs: [],
     tasks: [],
     recentEvents: [],
+    agentActivity: EMPTY_AGENT_ACTIVITY,
+    scheduler: EMPTY_SCHEDULER,
     brainCharter: null,
   };
   return { ...view, summary: createSummary(view) };
@@ -560,6 +669,8 @@ function workspaceFromPayload(payload: VNextWorkspacePayload): WorkspaceView {
     beliefs: payload.beliefs,
     tasks: payload.tasks,
     recentEvents: payload.recent_events,
+    agentActivity: payload.agent_activity ?? EMPTY_AGENT_ACTIVITY,
+    scheduler: payload.scheduler ?? EMPTY_SCHEDULER,
     brainCharter: payload.brain_charter,
   };
 }
@@ -634,6 +745,35 @@ function latestArtifact(artifacts: VNextArtifactRecord[], artifactType: string) 
   return artifacts.find((artifact) => artifact.artifact_type === artifactType) ?? null;
 }
 
+function scheduleValue(workflow: VNextSchedulerStatus["workflows"][number], key: string, fallback: string) {
+  const schedule = asRecord(workflow.schedule_json);
+  const value = schedule[key];
+  return typeof value === "string" ? value : fallback;
+}
+
+function scheduleSummary(workflow: VNextSchedulerStatus["workflows"][number]) {
+  const schedule = asRecord(workflow.schedule_json);
+  const kind = textValue(schedule.kind) || "manual";
+  if (kind === "daily") {
+    const days = Array.isArray(schedule.days_of_week) ? schedule.days_of_week.join(", ") : "configured days";
+    return `Daily at ${scheduleValue(workflow, "time_of_day", "08:00")} ${workflow.timezone} on ${days}`;
+  }
+  if (kind === "weekly") {
+    return `Weekly on ${scheduleValue(workflow, "day_of_week", "monday")} at ${scheduleValue(workflow, "time_of_day", "09:00")} ${workflow.timezone}`;
+  }
+  return "Manual only";
+}
+
+function agentDisplayName(agentId: string) {
+  if (agentId.toLowerCase() === "openclaw") {
+    return "OpenClaw";
+  }
+  if (agentId.toLowerCase() === "hermes") {
+    return "Hermes";
+  }
+  return agentId;
+}
+
 export function VNextBrainWorkspace({
   apiBaseUrl,
   userId,
@@ -698,6 +838,9 @@ export function VNextBrainWorkspace({
 
   const [charterText, setCharterText] = useState("# ALICE.md\n\nKeep generated artifacts reviewable before promotion.");
   const [charterSensitivity, setCharterSensitivity] = useState<Sensitivity>("private");
+  const [schedulerDrafts, setSchedulerDrafts] = useState<
+    Record<string, { timeOfDay: string; dayOfWeek: string; timezone: string }>
+  >({});
 
   const dailyArtifact = latestArtifact(workspace.artifacts, "daily_brief");
   const weeklyArtifact = latestArtifact(workspace.artifacts, "weekly_synthesis");
@@ -1118,6 +1261,127 @@ export function VNextBrainWorkspace({
     );
   }
 
+  async function handleSchedulerAction(
+    workflow: VNextSchedulerStatus["workflows"][number],
+    action: "enable" | "disable" | "pause" | "resume" | "run_now" | "update_schedule",
+  ) {
+    const draft = schedulerDrafts[workflow.workflow_type] ?? {
+      timeOfDay: scheduleValue(workflow, "time_of_day", workflow.workflow_type === "weekly_synthesis" ? "09:00" : "08:00"),
+      dayOfWeek: scheduleValue(workflow, "day_of_week", "monday"),
+      timezone: workflow.timezone || "UTC",
+    };
+    const scheduleJson =
+      workflow.workflow_type === "daily_brief"
+        ? { kind: "daily", time_of_day: draft.timeOfDay, days_of_week: ["monday", "tuesday", "wednesday", "thursday", "friday"] }
+        : workflow.workflow_type === "weekly_synthesis"
+          ? { kind: "weekly", day_of_week: draft.dayOfWeek, time_of_day: draft.timeOfDay }
+          : { kind: "manual" };
+
+    if (!liveModeReady || !apiBaseUrl || !userId) {
+      updateFixtureWorkspace(
+        (previous) => {
+          const now = new Date().toISOString();
+          const runId = `scheduler-run-demo-${previous.scheduler.recent_runs.length + 1}`;
+          const nextArtifact: VNextArtifactRecord | null =
+            action === "run_now"
+              ? {
+                  id: `artifact-scheduler-demo-${previous.artifacts.length + 1}`,
+                  artifact_type: workflow.workflow_type,
+                  title: `${workflow.workflow_type.replace(/_/g, " ")} - scheduler demo`,
+                  content_markdown: `# ${workflow.workflow_type}\n\nGenerated by the governed scheduler demo path.`,
+                  status: "needs_review",
+                  domain: defaultDomain,
+                  sensitivity: defaultSensitivity,
+                  generated_by: "scheduler",
+                  metadata_json: {
+                    workflow: workflow.workflow_type,
+                    scheduler_run_id: runId,
+                    trace_id: `trace-${runId}`,
+                    generated_by: "scheduler",
+                  },
+                }
+              : null;
+          const nextRun =
+            action === "run_now"
+              ? {
+                  id: runId,
+                  workflow_type: workflow.workflow_type,
+                  status: "succeeded",
+                  triggered_by: "user",
+                  trace_id: `trace-${runId}`,
+                  started_at: now,
+                  finished_at: now,
+                  artifact_id: nextArtifact?.id ?? null,
+                  metadata_json: { demo: true },
+                }
+              : null;
+          const workflows = previous.scheduler.workflows.map((item) =>
+            item.id === workflow.id
+              ? {
+                  ...item,
+                  enabled: action === "enable" ? true : action === "disable" ? false : item.enabled,
+                  paused: action === "pause" ? true : action === "resume" ? false : item.paused,
+                  schedule_json: action === "update_schedule" ? scheduleJson : item.schedule_json,
+                  timezone: action === "update_schedule" ? draft.timezone : item.timezone,
+                  last_run_id: nextRun?.id ?? item.last_run_id,
+                  last_run_at: nextRun?.finished_at ?? item.last_run_at,
+                  last_result: nextRun ? "succeeded" : item.last_result,
+                  last_error: nextRun ? null : item.last_error,
+                }
+              : item,
+          );
+          const scheduler = {
+            ...previous.scheduler,
+            workflows,
+            recent_runs: nextRun ? [nextRun, ...previous.scheduler.recent_runs] : previous.scheduler.recent_runs,
+            enabled_count: workflows.filter((item) => item.enabled).length,
+            paused_count: workflows.filter((item) => item.paused).length,
+          };
+          const event: VNextEventRecord = {
+            id: `scheduler-event-demo-${previous.recentEvents.length + 1}`,
+            event_type: action === "run_now" ? "scheduler.run_succeeded" : `scheduler.workflow_${action}`,
+            actor_type: "user",
+            target_type: "scheduler_workflow",
+            target_id: workflow.id,
+            occurred_at: now,
+            payload_json: { workflow_type: workflow.workflow_type },
+          };
+          const view = {
+            ...previous,
+            scheduler,
+            artifacts: nextArtifact ? [nextArtifact, ...previous.artifacts] : previous.artifacts,
+            recentEvents: [event, ...previous.recentEvents],
+          };
+          return { ...view, summary: createSummary(view) };
+        },
+        `Demo scheduler action applied: ${action}.`,
+      );
+      return;
+    }
+
+    await runLiveAction(
+      `Applying scheduler action: ${action}...`,
+      async () => {
+        if (action === "run_now") {
+          await runVNextSchedulerWorkflowNow(apiBaseUrl, workflow.workflow_type, {
+            user_id: userId,
+            scope: { domains: [defaultDomain] },
+            options: { sensitivity_allowed: ["public", "internal", "private", "unknown"] },
+          });
+          return;
+        }
+        await patchVNextSchedulerWorkflow(apiBaseUrl, workflow.workflow_type, {
+          user_id: userId,
+          enabled: action === "enable" ? true : action === "disable" ? false : undefined,
+          paused: action === "pause" ? true : action === "resume" ? false : undefined,
+          schedule_json: action === "update_schedule" ? scheduleJson : undefined,
+          timezone: action === "update_schedule" ? draft.timezone : undefined,
+        });
+      },
+      `Scheduler action applied: ${action}.`,
+    );
+  }
+
   async function handleArtifactAction(artifact: VNextArtifactRecord, action: "review" | "accept" | "reject" | "promote" | "archive") {
     if (!liveModeReady || !apiBaseUrl || !userId) {
       const statusMap = {
@@ -1293,6 +1557,16 @@ export function VNextBrainWorkspace({
           <div className="metric-value">{workspace.summary.project_count}</div>
           <div className="metric-label">Projects</div>
           <p className="metric-detail">Live project dashboards and update candidates.</p>
+        </SectionCard>
+        <SectionCard className="section-card--metric">
+          <div className="metric-value">{workspace.summary.agent_count ?? workspace.agentActivity.agents.length}</div>
+          <div className="metric-label">Agents</div>
+          <p className="metric-detail">Known agent identities with policy-scoped activity.</p>
+        </SectionCard>
+        <SectionCard className="section-card--metric">
+          <div className="metric-value">{workspace.summary.scheduler_enabled_count ?? workspace.scheduler.enabled_count}</div>
+          <div className="metric-label">Schedules on</div>
+          <p className="metric-detail">Governed workflows enabled for local runs.</p>
         </SectionCard>
       </section>
 
@@ -1856,6 +2130,271 @@ export function VNextBrainWorkspace({
                 </div>
               </div>
             ) : null}
+          </div>
+        </SectionCard>
+      </div>
+
+      <div id="vnext-agent-activity" className="content-grid content-grid--wide">
+        <SectionCard
+          eyebrow="Agent Activity"
+          title="Agents and policy posture"
+          description="Agent-originated requests keep identity, scope, permission profile, and policy outcomes visible to the operator."
+        >
+          <div className="list-rows">
+            {workspace.agentActivity.agents.length ? (
+              workspace.agentActivity.agents.map((agent) => (
+                <article key={agent.id} className="list-row">
+                  <div className="list-row__topline">
+                    <div>
+                      <span className="list-row__eyebrow mono">{agent.agent_type}</span>
+                      <h3 className="list-row__title">{agentDisplayName(agent.agent_id)}</h3>
+                    </div>
+                    <StatusBadge status={agent.permission_profile} />
+                  </div>
+                  <div className="list-row__meta">
+                    <span className="meta-pill mono">{agent.agent_id}</span>
+                    <span className="meta-pill">Scope: {Array.isArray(agent.project_scope_json) && agent.project_scope_json.length ? agent.project_scope_json.join(", ") : "none"}</span>
+                    <span className="meta-pill">Updated: {agent.updated_at ?? "unknown"}</span>
+                  </div>
+                </article>
+              ))
+            ) : (
+              <EmptyState title="No agent identities yet" description="Agent identities appear after MCP, API, or CLI calls include agent metadata." />
+            )}
+          </div>
+        </SectionCard>
+
+        <SectionCard
+          eyebrow="Agent Activity"
+          title="Recent agent events"
+          description="Context packs, artifacts, tasks, memory proposals, open loops, project updates, and policy decisions are auditable here."
+        >
+          <div className="list-rows">
+            {workspace.agentActivity.recent_events.length ? (
+              workspace.agentActivity.recent_events.slice(0, 8).map((event) => (
+                <article key={event.id} className="list-row">
+                  <div className="list-row__topline">
+                    <div>
+                      <span className="list-row__eyebrow mono">{event.occurred_at}</span>
+                      <h3 className="list-row__title">{event.event_type}</h3>
+                    </div>
+                    <StatusBadge status={event.actor_id ?? event.actor_type} />
+                  </div>
+                  <div className="list-row__meta">
+                    <span className="meta-pill">Target: {event.target_type ? `${event.target_type}:${event.target_id}` : "workspace"}</span>
+                    {event.trace_id ? <span className="meta-pill mono">Trace {event.trace_id}</span> : null}
+                    {event.run_id ? <span className="meta-pill mono">Run {event.run_id}</span> : null}
+                  </div>
+                </article>
+              ))
+            ) : (
+              <EmptyState title="No agent events" description="Agent context packs, proposals, generated artifacts, and queue activity will appear here." />
+            )}
+          </div>
+        </SectionCard>
+
+        <SectionCard
+          eyebrow="Agent Activity"
+          title="Policy blocks and filters"
+          description="Blocked and filtered agent requests remain visible for privacy and safety review."
+        >
+          <div className="list-rows">
+            {workspace.agentActivity.policy_blocks.length ? (
+              workspace.agentActivity.policy_blocks.map((event) => (
+                <article key={event.id} className="list-row">
+                  <div className="list-row__topline">
+                    <h3 className="list-row__title">{event.event_type}</h3>
+                    <StatusBadge status={event.actor_id ?? "agent"} />
+                  </div>
+                  <p>{JSON.stringify(event.payload_json ?? {})}</p>
+                  <div className="list-row__meta">
+                    <span className="meta-pill mono">{event.occurred_at}</span>
+                    <span className="meta-pill">Target: {event.target_type ?? "policy"}</span>
+                  </div>
+                </article>
+              ))
+            ) : (
+              <EmptyState title="No policy blocks" description="Restricted or filtered agent requests will be logged here." />
+            )}
+          </div>
+        </SectionCard>
+
+        <SectionCard
+          eyebrow="Agent Activity"
+          title="Generated and proposed work"
+          description="Agent-generated artifacts and pending review items stay in human review lanes."
+        >
+          <div className="key-value-grid key-value-grid--compact">
+            <div>
+              <dt>Generated artifacts</dt>
+              <dd>{workspace.agentActivity.generated_artifacts.length}</dd>
+            </div>
+            <div>
+              <dt>Pending review items</dt>
+              <dd>{workspace.agentActivity.pending_review_items.length}</dd>
+            </div>
+          </div>
+          <div className="list-rows">
+            {[...workspace.agentActivity.generated_artifacts.slice(0, 3), ...workspace.agentActivity.pending_review_items.slice(0, 3)].map((item) => (
+              <article key={`agent-work-${item.id}`} className="list-row">
+                <div className="list-row__topline">
+                  <h3 className="list-row__title">{"artifact_type" in item ? item.title : memoryText(item)}</h3>
+                  <StatusBadge status={item.status ?? "needs_review"} />
+                </div>
+                <div className="list-row__meta">
+                  <span className="meta-pill">Domain: {domainLabel(asDomain(item.domain))}</span>
+                  <span className="meta-pill">Sensitivity: {sensitivityLabel(asSensitivity(item.sensitivity))}</span>
+                </div>
+              </article>
+            ))}
+          </div>
+        </SectionCard>
+      </div>
+
+      <div id="vnext-schedules" className="content-grid content-grid--wide">
+        <SectionCard
+          eyebrow="Schedules"
+          title="Governed scheduler"
+          description="Local workflows are disabled by default, policy-checked, pausable, auditable, and produce reviewable artifacts only."
+        >
+          <div className="cluster">
+            <StatusBadge status={workspace.scheduler.disabled_by_default ? "requires_review" : "active"} label={workspace.scheduler.disabled_by_default ? "Disabled by default" : "Configured"} />
+            <span className="meta-pill">Mode: {workspace.scheduler.mode}</span>
+            <span className="meta-pill">Enabled: {workspace.scheduler.enabled_count}</span>
+            <span className="meta-pill">Paused: {workspace.scheduler.paused_count}</span>
+          </div>
+          {workspace.scheduler.last_failure ? (
+            <article className="list-row">
+              <div className="list-row__topline">
+                <h3 className="list-row__title">Last scheduler failure</h3>
+                <StatusBadge status="failed" />
+              </div>
+              <p>{workspace.scheduler.last_failure.error_message ?? "No error message recorded."}</p>
+            </article>
+          ) : null}
+          <div className="list-rows">
+            {workspace.scheduler.workflows.length ? (
+              workspace.scheduler.workflows.map((workflow) => {
+                const draft = schedulerDrafts[workflow.workflow_type] ?? {
+                  timeOfDay: scheduleValue(workflow, "time_of_day", workflow.workflow_type === "weekly_synthesis" ? "09:00" : "08:00"),
+                  dayOfWeek: scheduleValue(workflow, "day_of_week", "monday"),
+                  timezone: workflow.timezone || "UTC",
+                };
+                return (
+                  <article key={workflow.id} className="list-row">
+                    <div className="list-row__topline">
+                      <div>
+                        <span className="list-row__eyebrow mono">{workflow.workflow_type}</span>
+                        <h3 className="list-row__title">{workflow.workflow_type.replace(/_/g, " ")}</h3>
+                      </div>
+                      <StatusBadge status={workflow.paused ? "paused" : workflow.enabled ? "active" : "disabled"} />
+                    </div>
+                    <p>{scheduleSummary(workflow)}</p>
+                    <div className="list-row__meta">
+                      <span className="meta-pill">Next: {workflow.next_run_at ?? "manual or disabled"}</span>
+                      <span className="meta-pill">Last: {workflow.last_run_at ?? "never"}</span>
+                      <span className="meta-pill">Result: {workflow.last_result ?? "none"}</span>
+                      {workflow.last_error ? <span className="meta-pill">Error: {workflow.last_error}</span> : null}
+                    </div>
+                    {workflow.workflow_type === "daily_brief" || workflow.workflow_type === "weekly_synthesis" ? (
+                      <div className="form-field-group form-field-group--two-up">
+                        <div className="form-field">
+                          <label htmlFor={`vnext-schedule-time-${workflow.workflow_type}`}>Time of day</label>
+                          <input
+                            id={`vnext-schedule-time-${workflow.workflow_type}`}
+                            value={draft.timeOfDay}
+                            onChange={(event) =>
+                              setSchedulerDrafts((previous) => ({
+                                ...previous,
+                                [workflow.workflow_type]: { ...draft, timeOfDay: event.target.value },
+                              }))
+                            }
+                            placeholder="08:00"
+                          />
+                        </div>
+                        {workflow.workflow_type === "weekly_synthesis" ? (
+                          <div className="form-field">
+                            <label htmlFor="vnext-schedule-weekly-day">Weekly day</label>
+                            <select
+                              id="vnext-schedule-weekly-day"
+                              value={draft.dayOfWeek}
+                              onChange={(event) =>
+                                setSchedulerDrafts((previous) => ({
+                                  ...previous,
+                                  [workflow.workflow_type]: { ...draft, dayOfWeek: event.target.value },
+                                }))
+                              }
+                            >
+                              {["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"].map((day) => (
+                                <option key={day} value={day}>{day}</option>
+                              ))}
+                            </select>
+                          </div>
+                        ) : null}
+                        <div className="form-field">
+                          <label htmlFor={`vnext-schedule-zone-${workflow.workflow_type}`}>Timezone</label>
+                          <input
+                            id={`vnext-schedule-zone-${workflow.workflow_type}`}
+                            value={draft.timezone}
+                            onChange={(event) =>
+                              setSchedulerDrafts((previous) => ({
+                                ...previous,
+                                [workflow.workflow_type]: { ...draft, timezone: event.target.value },
+                              }))
+                            }
+                            placeholder="UTC"
+                          />
+                        </div>
+                      </div>
+                    ) : null}
+                    <div className="vnext-review-actions">
+                      <button type="button" className="button-secondary" onClick={() => void handleSchedulerAction(workflow, workflow.enabled ? "disable" : "enable")} disabled={Boolean(pendingAction)}>
+                        {workflow.enabled ? "Disable" : "Enable"}
+                      </button>
+                      <button type="button" className="button-secondary" onClick={() => void handleSchedulerAction(workflow, workflow.paused ? "resume" : "pause")} disabled={Boolean(pendingAction)}>
+                        {workflow.paused ? "Resume" : "Pause"}
+                      </button>
+                      <button type="button" className="button-secondary" onClick={() => void handleSchedulerAction(workflow, "update_schedule")} disabled={Boolean(pendingAction)}>
+                        Edit schedule
+                      </button>
+                      <button type="button" className="button" onClick={() => void handleSchedulerAction(workflow, "run_now")} disabled={Boolean(pendingAction)}>
+                        Run now
+                      </button>
+                    </div>
+                  </article>
+                );
+              })
+            ) : (
+              <EmptyState title="No scheduler workflows" description="The local API will create disabled workflow defaults when live scheduler status is loaded." />
+            )}
+          </div>
+        </SectionCard>
+
+        <SectionCard
+          eyebrow="Schedules"
+          title="Recent scheduler runs"
+          description="Run history records workflow, status, run ID, trace ID, output artifact, and failures."
+        >
+          <div className="timeline-list">
+            {workspace.scheduler.recent_runs.length ? (
+              workspace.scheduler.recent_runs.map((run) => (
+                <article key={run.id} className="timeline-item">
+                  <div className="timeline-item__topline">
+                    <span className="list-row__eyebrow mono">{run.started_at}</span>
+                    <h3 className="list-row__title">{run.workflow_type}</h3>
+                  </div>
+                  <div className="list-row__meta">
+                    <span className="meta-pill">Status: {run.status}</span>
+                    <span className="meta-pill mono">Run {run.id}</span>
+                    <span className="meta-pill mono">Trace {run.trace_id}</span>
+                    <span className="meta-pill">Artifact: {run.artifact_id ?? "none"}</span>
+                  </div>
+                  {run.error_message ? <p>{run.error_message}</p> : null}
+                </article>
+              ))
+            ) : (
+              <EmptyState title="No scheduler runs" description="Manual or scheduled workflow runs will appear here." />
+            )}
           </div>
         </SectionCard>
       </div>

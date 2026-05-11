@@ -23,6 +23,8 @@ const EXPECTED_SURFACES = [
   "People",
   "Beliefs",
   "Open Loops",
+  "Agent Activity",
+  "Schedules",
   "Timeline",
   "Graph",
   "Connectors",
@@ -91,6 +93,8 @@ describe("VNextPage", () => {
     expect(screen.getByText("Evidence-first answer")).toBeInTheDocument();
     expect(screen.getByText("Artifacts with review actions")).toBeInTheDocument();
     expect(screen.getByText("Belief review")).toBeInTheDocument();
+    expect(screen.getByText("Agents and policy posture")).toBeInTheDocument();
+    expect(screen.getByText("Governed scheduler")).toBeInTheDocument();
     expect(screen.getByText("Connection graph")).toBeInTheDocument();
     expect(screen.getByText("Connector settings")).toBeInTheDocument();
     expect(screen.getByText("Brain Charter")).toBeInTheDocument();
@@ -104,6 +108,9 @@ describe("VNextPage", () => {
     expect(screen.getByText("Memory sources used")).toBeInTheDocument();
     expect(screen.getAllByText("Contradictions").length).toBeGreaterThan(0);
     expect(screen.getByText("Why this answer")).toBeInTheDocument();
+    expect(screen.getByText("OpenClaw")).toBeInTheDocument();
+    expect(screen.getByText("Hermes")).toBeInTheDocument();
+    expect(screen.getByText("Recent scheduler runs")).toBeInTheDocument();
   });
 
   it("keeps fixture labels aligned to vNext schema values and connector contracts", () => {
@@ -183,6 +190,24 @@ describe("VNextPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Generate weekly synthesis" }));
     expect(screen.getAllByText("Demo weekly artifact generated.").length).toBeGreaterThan(0);
+  });
+
+  it("updates governed scheduler fixture state", async () => {
+    await renderVNextPage();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Enable" })[0]);
+    expect(screen.getAllByText("Demo scheduler action applied: enable.").length).toBeGreaterThan(0);
+
+    fireEvent.change(screen.getAllByLabelText("Time of day")[0], {
+      target: { value: "07:30" },
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: "Edit schedule" })[0]);
+    expect(screen.getAllByText("Demo scheduler action applied: update_schedule.").length).toBeGreaterThan(0);
+    expect(screen.getByText(/Daily at 07:30 UTC/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Run now" })[0]);
+    expect(screen.getAllByText("Demo scheduler action applied: run_now.").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/scheduler-run-demo-1/).length).toBeGreaterThan(0);
   });
 
   it("saves Brain Charter settings and keeps connector settings visible", async () => {

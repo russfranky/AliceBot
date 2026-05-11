@@ -47,6 +47,16 @@ def test_parser_routes_required_commands() -> None:
         (["vnext", "projects", "dashboard", "project-1"], "_run_vnext_project_dashboard"),
         (["vnext", "open-loops", "extract"], "_run_vnext_open_loops_extract"),
         (["vnext", "open-loops", "review", "loop-1", "--action", "close"], "_run_vnext_open_loop_review"),
+        (
+            ["vnext", "agents", "propose-memory", "--agent-id", "hermes", "--title", "T", "--canonical-text", "Fact"],
+            "_run_vnext_agent_propose_memory",
+        ),
+        (["vnext", "scheduler", "status"], "_run_vnext_scheduler_status"),
+        (["vnext", "scheduler", "run-now", "daily_brief"], "_run_vnext_scheduler_run_now"),
+        (["vnext", "scheduler", "run-due"], "_run_vnext_scheduler_run_due"),
+        (["vnext", "scheduler", "pause"], "_run_vnext_scheduler_pause"),
+        (["vnext", "scheduler", "resume"], "_run_vnext_scheduler_resume"),
+        (["vnext", "smoke", "agentic-scheduler"], "_run_vnext_smoke_agentic_scheduler"),
         (["mutations", "generate"], "_run_mutation_generate"),
         (["mutations", "candidates"], "_run_mutation_candidates"),
         (["mutations", "commit"], "_run_mutation_commit"),
@@ -123,46 +133,58 @@ class FakeVNextCliStore:
         self.beliefs: dict[str, dict[str, object]] = {}
         self.projects: dict[str, dict[str, object]] = {}
         self.revisions: list[dict[str, object]] = []
+        self.agent_identities: dict[str, dict[str, object]] = {}
+        self.scheduler_workflows: dict[str, dict[str, object]] = {}
+        self.scheduler_runs: list[dict[str, object]] = []
 
     def append_event(self, event: dict[str, object]) -> dict[str, object]:
         self.events.append(event)
         return event
 
+    def upsert_agent_identity(self, identity: dict[str, object], **_kwargs) -> dict[str, object]:
+        row = {
+            **identity,
+            "id": self.agent_identities.get(str(identity["agent_id"]), {}).get("id")
+            or f"agent-{len(self.agent_identities) + 1}",
+        }
+        self.agent_identities[str(identity["agent_id"])] = row
+        return row
+
     def get_source_by_content_hash(self, content_hash: str) -> dict[str, object] | None:
         return self.source_by_hash.get(content_hash)
 
-    def create_source(self, source: dict[str, object]) -> dict[str, object]:
+    def create_source(self, source: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**source, "id": f"source-{len(self.sources) + 1}"}
         self.sources.append(row)
         self.source_by_hash[str(source["content_hash"])] = row
         return row
 
-    def create_source_chunk(self, chunk: dict[str, object]) -> dict[str, object]:
+    def create_source_chunk(self, chunk: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**chunk, "id": f"chunk-{len(self.chunks) + 1}"}
         self.chunks.append(row)
         return row
 
-    def create_memory(self, memory: dict[str, object]) -> dict[str, object]:
+    def create_memory(self, memory: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**memory, "id": f"memory-{len(self.memories) + 1}"}
         self.memories.append(row)
         return row
 
-    def update_memory(self, *, memory_id: str, patch: dict[str, object]) -> dict[str, object]:
+    def update_memory(self, *, memory_id: str, patch: dict[str, object], **_kwargs) -> dict[str, object]:
         for memory in self.memories:
             if memory["id"] == memory_id:
                 memory.update(patch)
                 return memory
         raise AssertionError(memory_id)
 
-    def append_revision(self, revision: dict[str, object]) -> dict[str, object]:
+    def append_revision(self, revision: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**revision, "id": f"revision-{len(self.revisions) + 1}"}
         self.revisions.append(row)
         return row
 
-    def create_provenance_link(self, link: dict[str, object]) -> dict[str, object]:
+    def create_provenance_link(self, link: dict[str, object], **_kwargs) -> dict[str, object]:
         return {**link, "id": "provenance-1"}
 
-    def create_open_loop(self, loop: dict[str, object]) -> dict[str, object]:
+    def create_open_loop(self, loop: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**loop, "id": f"loop-{len(self.open_loops) + 1}", "status": loop.get("status", "open")}
         self.open_loops.append(row)
         return row
@@ -215,7 +237,7 @@ class FakeVNextCliStore:
                 return loop
         return None
 
-    def update_open_loop(self, *, loop_id: str, patch: dict[str, object]) -> dict[str, object]:
+    def update_open_loop(self, *, loop_id: str, patch: dict[str, object], **_kwargs) -> dict[str, object]:
         loop = self.get_open_loop(loop_id)
         if loop is None:
             raise AssertionError(loop_id)
@@ -228,6 +250,7 @@ class FakeVNextCliStore:
         loop_id: str,
         status: str,
         resolution_note: str | None = None,
+        **_kwargs,
     ) -> dict[str, object]:
         loop = self.update_open_loop(loop_id=loop_id, patch={"status": status})
         if resolution_note is not None:
@@ -238,12 +261,12 @@ class FakeVNextCliStore:
         del target_type, target_id
         return []
 
-    def create_edge(self, edge: dict[str, object]) -> dict[str, object]:
+    def create_edge(self, edge: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**edge, "id": f"edge-{len(self.edges) + 1}"}
         self.edges[str(row["id"])] = row
         return row
 
-    def update_edge_status(self, *, edge_id: str, status: str) -> dict[str, object]:
+    def update_edge_status(self, *, edge_id: str, status: str, **_kwargs) -> dict[str, object]:
         edge = self.edges[edge_id]
         metadata = edge.get("metadata_json")
         if not isinstance(metadata, dict):
@@ -263,7 +286,7 @@ class FakeVNextCliStore:
             and edge.get("valid_to") is None
         ]
 
-    def create_belief(self, belief: dict[str, object]) -> dict[str, object]:
+    def create_belief(self, belief: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**belief, "id": f"belief-{len(self.beliefs) + 1}"}
         self.beliefs[str(row["id"])] = row
         return row
@@ -290,6 +313,7 @@ class FakeVNextCliStore:
         status: str,
         confidence: float | None = None,
         superseded_by: str | None = None,
+        **_kwargs,
     ) -> dict[str, object]:
         belief = self.beliefs[belief_id]
         belief["status"] = status
@@ -315,7 +339,7 @@ class FakeVNextCliStore:
             and (target_id is None or event.get("target_id") == target_id)
         ]
 
-    def create_task(self, task: dict[str, object]) -> dict[str, object]:
+    def create_task(self, task: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**task, "id": f"task-{len(self.tasks) + 1}", "status": "pending"}
         self.tasks.append(row)
         return row
@@ -333,6 +357,7 @@ class FakeVNextCliStore:
         task_id: str,
         status: str,
         details: dict[str, object] | None = None,
+        **_kwargs,
     ) -> dict[str, object]:
         for task in self.tasks:
             if task["id"] == task_id:
@@ -342,7 +367,7 @@ class FakeVNextCliStore:
                 return task
         raise AssertionError(task_id)
 
-    def create_artifact(self, artifact: dict[str, object]) -> dict[str, object]:
+    def create_artifact(self, artifact: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**artifact, "id": f"artifact-{len(self.artifacts) + 1}"}
         self.artifacts[str(row["id"])] = row
         return row
@@ -381,15 +406,102 @@ class FakeVNextCliStore:
         rows = [row for row in self.projects.values() if status is None or row.get("status") == status]
         return rows[:limit]
 
-    def update_project(self, *, project_id: str, patch: dict[str, object]) -> dict[str, object]:
+    def update_project(self, *, project_id: str, patch: dict[str, object], **_kwargs) -> dict[str, object]:
         project = self.projects[project_id]
         project.update(patch)
         return project
 
-    def update_artifact_status(self, *, artifact_id: str, status: str) -> dict[str, object]:
+    def update_artifact_status(self, *, artifact_id: str, status: str, **_kwargs) -> dict[str, object]:
         artifact = self.artifacts[artifact_id]
         artifact["status"] = status
         return artifact
+
+    def upsert_scheduler_workflow(self, workflow: dict[str, object], **_kwargs) -> dict[str, object]:
+        workflow_type = str(workflow["workflow_type"])
+        existing = self.scheduler_workflows.get(workflow_type, {})
+        row = {
+            **existing,
+            **workflow,
+            "id": existing.get("id") or f"workflow-{len(self.scheduler_workflows) + 1}",
+        }
+        self.scheduler_workflows[workflow_type] = row
+        return row
+
+    def update_scheduler_workflow(
+        self,
+        *,
+        workflow_type: str,
+        patch: dict[str, object],
+        **_kwargs,
+    ) -> dict[str, object]:
+        workflow = self.get_scheduler_workflow(workflow_type)
+        if workflow is None:
+            workflow = self.upsert_scheduler_workflow(
+                {
+                    "workflow_type": workflow_type,
+                    "enabled": False,
+                    "paused": False,
+                    "schedule_json": {"kind": "manual"},
+                    "timezone": "UTC",
+                    "next_run_at": None,
+                    "metadata_json": {},
+                }
+            )
+        workflow.update(patch)
+        return workflow
+
+    def get_scheduler_workflow(self, workflow_type: str) -> dict[str, object] | None:
+        return self.scheduler_workflows.get(workflow_type)
+
+    def list_scheduler_workflows(self) -> list[dict[str, object]]:
+        return list(self.scheduler_workflows.values())
+
+    def create_scheduler_run(self, run: dict[str, object], **_kwargs) -> dict[str, object]:
+        row = {
+            **run,
+            "id": f"scheduler-run-{len(self.scheduler_runs) + 1}",
+            "started_at": datetime.now(UTC).isoformat(),
+        }
+        self.scheduler_runs.append(row)
+        self.append_event(
+            {
+                "event_type": "scheduler.run_started",
+                "target_type": "scheduler_run",
+                "target_id": row["id"],
+                "payload_json": {"workflow_type": row["workflow_type"]},
+            }
+        )
+        return row
+
+    def update_scheduler_run(
+        self,
+        *,
+        run_id: str,
+        patch: dict[str, object],
+        **_kwargs,
+    ) -> dict[str, object]:
+        for run in self.scheduler_runs:
+            if run["id"] == run_id:
+                run.update(patch)
+                run["finished_at"] = datetime.now(UTC).isoformat()
+                self.append_event(
+                    {
+                        "event_type": "scheduler.run_succeeded" if run.get("status") == "succeeded" else "scheduler.run_failed",
+                        "target_type": "scheduler_run",
+                        "target_id": run_id,
+                        "payload_json": {"workflow_type": run["workflow_type"]},
+                    }
+                )
+                return run
+        raise AssertionError(run_id)
+
+    def list_scheduler_runs(self, *, workflow_type: str | None = None, limit: int = 20) -> list[dict[str, object]]:
+        rows = [
+            run
+            for run in reversed(self.scheduler_runs)
+            if workflow_type is None or run.get("workflow_type") == workflow_type
+        ]
+        return rows[:limit]
 
 
 def test_vnext_capture_text_cli_uses_vnext_capture_service(monkeypatch) -> None:
@@ -594,6 +706,33 @@ def test_vnext_brain_cli_generates_daily_and_weekly_artifacts(monkeypatch) -> No
     assert weekly_payload["artifact_type"] == "weekly_synthesis"
     assert weekly_payload["metadata_json"]["candidate_memory_ids"] == ["memory-2"]
     assert store.events[-1]["event_type"] == "artifact.generated"
+
+
+def test_vnext_agentic_scheduler_smoke_cli_runs_required_gates(monkeypatch) -> None:
+    store = FakeVNextCliStore()
+
+    @contextmanager
+    def fake_vnext_store_context(_ctx):
+        yield store
+
+    monkeypatch.setattr(cli_module, "_vnext_store_context", fake_vnext_store_context)
+    ctx = cli_module.CLIContext(
+        settings=Settings(database_url="postgresql://db"),
+        database_url="postgresql://db",
+        user_id=uuid4(),
+    )
+    args = cli_module.build_parser().parse_args(["vnext", "smoke", "agentic-scheduler"])
+
+    output = args.handler(ctx, args)
+
+    payload = json.loads(output)
+    assert payload["status"] == "passed"
+    assert all(payload["gates"].values())
+    assert payload["policy_decisions"]["blocked"]["decision"] == "blocked"
+    assert store.memories[-1]["status"] == "candidate"
+    assert len(store.scheduler_runs) == 3
+    assert {run["status"] for run in store.scheduler_runs} == {"succeeded"}
+    assert any(event["event_type"] == "agent.policy_blocked" for event in store.events)
 
 
 def test_vnext_connection_cli_generates_reviews_and_lists_neighborhood(monkeypatch) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any, TypedDict, TypeVar, cast
 from uuid import UUID
@@ -1821,17 +1822,30 @@ INSERT_MEMORY_REVISION_SQL = """
                   user_id,
                   memory_id,
                   sequence_no,
+                  revision_number,
+                  revision_type,
                   action,
                   memory_key,
                   previous_value,
                   new_value,
                   source_event_ids,
-                  candidate
+                  candidate,
+                  text_before,
+                  text_after
                 )
                 SELECT
                   app.current_user_id(),
                   %s,
                   next_sequence.sequence_no,
+                  next_sequence.sequence_no,
+                  CASE %s
+                    WHEN 'ADD' THEN 'created'
+                    WHEN 'UPDATE' THEN 'edited'
+                    WHEN 'DELETE' THEN 'archived'
+                    ELSE 'edited'
+                  END,
+                  %s,
+                  %s,
                   %s,
                   %s,
                   %s,
@@ -7096,11 +7110,14 @@ class ContinuityStore:
                 memory_id,
                 memory_id,
                 action,
+                action,
                 memory_key,
                 Jsonb(previous_value),
                 Jsonb(new_value),
                 Jsonb(source_event_ids),
                 Jsonb(candidate),
+                None if previous_value is None else json.dumps(previous_value, sort_keys=True),
+                "{}" if new_value is None else json.dumps(new_value, sort_keys=True),
             ),
         )
 

@@ -24,13 +24,13 @@ class VNextCaptureStore(Protocol):
 
     def get_source_by_content_hash(self, content_hash: str) -> JsonObject | None: ...
 
-    def create_source(self, source: JsonObject) -> JsonObject: ...
+    def create_source(self, source: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
 
-    def create_source_chunk(self, chunk: JsonObject) -> JsonObject: ...
+    def create_source_chunk(self, chunk: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
 
-    def create_memory(self, memory: JsonObject) -> JsonObject: ...
+    def create_memory(self, memory: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
 
-    def create_provenance_link(self, link: JsonObject) -> JsonObject: ...
+    def create_provenance_link(self, link: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -323,9 +323,26 @@ def _extract_text_from_json_value(value: object) -> list[str]:
 
 
 class VNextCaptureService:
-    def __init__(self, store: VNextCaptureStore, *, chunk_max_chars: int = DEFAULT_CHUNK_MAX_CHARS) -> None:
+    def __init__(
+        self,
+        store: VNextCaptureStore,
+        *,
+        chunk_max_chars: int = DEFAULT_CHUNK_MAX_CHARS,
+        actor_type: str = "system",
+        actor_id: str | None = None,
+        trace_id: str | None = None,
+        run_id: str | None = None,
+        agent_identity: JsonObject | None = None,
+        policy_decision: JsonObject | None = None,
+    ) -> None:
         self.store = store
         self.chunk_max_chars = chunk_max_chars
+        self.actor_type = actor_type
+        self.actor_id = actor_id
+        self.trace_id = trace_id
+        self.run_id = run_id
+        self.agent_identity = agent_identity
+        self.policy_decision = policy_decision
 
     def _log_event(
         self,
@@ -338,8 +355,15 @@ class VNextCaptureService:
         return append_event(
             self.store,
             event_type=event_type,
-            actor_type="system",
-            payload=payload,
+            actor_type=self.actor_type,
+            actor_id=self.actor_id,
+            trace_id=self.trace_id,
+            run_id=self.run_id,
+            payload={
+                **payload,
+                "agent_identity": self.agent_identity,
+                "policy_decision": self.policy_decision,
+            },
             target_type=target_type,
             target_id=target_id,
         )
@@ -447,10 +471,16 @@ class VNextCaptureService:
                     "sensitivity": source_input.sensitivity,
                     "metadata_json": {
                         **source_input.metadata_json,
+                        "generated_by": self.actor_type,
+                        "agent_identity": self.agent_identity,
+                        "agent_id": self.actor_id if self.actor_type == "agent" else None,
+                        "trace_id": self.trace_id,
+                        "policy_decision": self.policy_decision,
                         "raw_text": normalized_text,
                         "raw_text_sha256": content_hash,
                     },
-                }
+                },
+                actor_type=self.actor_type,
             )
             source_id = str(source["id"])
             self._log_event(
@@ -474,7 +504,8 @@ class VNextCaptureService:
                         "text": chunk,
                         "token_count": len(chunk.split()),
                         "metadata_json": {"content_hash": content_hash},
-                    }
+                    },
+                    actor_type=self.actor_type,
                 )
                 chunk_rows.append(chunk_row)
 
@@ -510,8 +541,14 @@ class VNextCaptureService:
                             "source_chunk_index": candidate.source_chunk_index,
                             "extraction_rule": candidate.extraction_rule,
                             "capture_content_hash": content_hash,
+                            "generated_by": self.actor_type,
+                            "agent_identity": self.agent_identity,
+                            "agent_id": self.actor_id if self.actor_type == "agent" else None,
+                            "trace_id": self.trace_id,
+                            "policy_decision": self.policy_decision,
                         },
-                    }
+                    },
+                    actor_type=self.actor_type,
                 )
                 self.store.create_provenance_link(
                     {
@@ -522,7 +559,8 @@ class VNextCaptureService:
                         "quote": candidate.text,
                         "evidence_role": "quoted_from",
                         "confidence": candidate.confidence,
-                    }
+                    },
+                    actor_type=self.actor_type,
                 )
                 self._log_event(
                     event_type="memory.candidate_created",

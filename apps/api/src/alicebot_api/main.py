@@ -11,7 +11,7 @@ import re
 import threading
 import time
 from typing import Annotated, Awaitable, Callable, Literal, TypedDict
-from uuid import UUID
+from uuid import UUID, uuid4
 from fastapi import FastAPI, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -462,6 +462,15 @@ from alicebot_api.trusted_fact_promotions import (
     list_trusted_fact_patterns,
     list_trusted_fact_playbooks,
 )
+from alicebot_api.vnext_agent_control import (
+    AgentIdentity,
+    AgentIdentityValidationError,
+    AgentPolicyBlockedError,
+    PolicyDecision,
+    agent_metadata,
+    append_policy_events,
+    evaluate_agent_policy,
+)
 from alicebot_api.vnext_brain import BrainArtifactRequest, VNextBrainService, VNextBrainValidationError
 from alicebot_api.vnext_capture import VNextCaptureService, VNextCaptureValidationError
 from alicebot_api.vnext_connections import (
@@ -479,6 +488,7 @@ from alicebot_api.vnext_contradictions import (
     VNextContradictionService,
     VNextContradictionValidationError,
 )
+from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_projects import ProjectAutomationRequest, VNextProjectService, VNextProjectValidationError
 from alicebot_api.vnext_queue import (
     QueueTaskRequest,
@@ -487,6 +497,14 @@ from alicebot_api.vnext_queue import (
     VNextQueueValidationError,
 )
 from alicebot_api.vnext_retrieval import VNextRetrievalRequest, VNextRetrievalService, VNextRetrievalValidationError
+from alicebot_api.vnext_scheduler import (
+    SchedulerRunRequest,
+    VNextSchedulerService,
+    VNextSchedulerValidationError,
+    WORKFLOW_TYPES,
+    default_schedule,
+    validate_schedule,
+)
 from alicebot_api.vnext_store import PostgresVNextStore
 from alicebot_api.continuity_lifecycle import (
     ContinuityLifecycleNotFoundError,
@@ -1173,7 +1191,27 @@ class ContinuityCaptureRequest(BaseModel):
     explicit_signal: str | None = Field(default=None, min_length=1, max_length=100)
 
 
-class VNextSourceCaptureRequest(BaseModel):
+class VNextAgentIdentityRequest(BaseModel):
+    agent_id: str = Field(min_length=1, max_length=120)
+    agent_type: str = Field(default="unknown", min_length=1, max_length=80)
+    agent_run_id: str | None = Field(default=None, min_length=1, max_length=160)
+    task_id: str | None = Field(default=None, min_length=1, max_length=160)
+    project_scope: list[str] = Field(default_factory=list)
+    permission_profile: str | None = Field(default=None, min_length=1, max_length=80)
+
+
+class VNextAgentRequest(BaseModel):
+    agent_identity: VNextAgentIdentityRequest | None = None
+    agent_id: str | None = Field(default=None, min_length=1, max_length=120)
+    agent_type: str | None = Field(default=None, min_length=1, max_length=80)
+    agent_run_id: str | None = Field(default=None, min_length=1, max_length=160)
+    task_id: str | None = Field(default=None, min_length=1, max_length=160)
+    project_scope: list[str] = Field(default_factory=list)
+    permission_profile: str | None = Field(default=None, min_length=1, max_length=80)
+    trace_id: str | None = Field(default=None, min_length=1, max_length=160)
+
+
+class VNextSourceCaptureRequest(VNextAgentRequest):
     user_id: UUID
     raw_text: str = Field(min_length=1, max_length=200_000)
     title: str | None = Field(default=None, min_length=1, max_length=280)
@@ -1181,47 +1219,47 @@ class VNextSourceCaptureRequest(BaseModel):
     sensitivity: str = Field(default="unknown", min_length=1, max_length=80)
 
 
-class VNextConnectorSyncRequest(BaseModel):
+class VNextConnectorSyncRequest(VNextAgentRequest):
     user_id: UUID
     items: list[dict[str, object]] = Field(default_factory=list)
     default_domain: str | None = Field(default=None, min_length=1, max_length=80)
     default_sensitivity: str | None = Field(default=None, min_length=1, max_length=80)
 
 
-class VNextContextPackRequest(BaseModel):
+class VNextContextPackRequest(VNextAgentRequest):
     user_id: UUID
     query: str = Field(min_length=1, max_length=4000)
     scope: dict[str, object] = Field(default_factory=dict)
     options: dict[str, object] = Field(default_factory=dict)
 
 
-class VNextBrainArtifactGenerateRequest(BaseModel):
+class VNextBrainArtifactGenerateRequest(VNextAgentRequest):
     user_id: UUID
     scope: dict[str, object] = Field(default_factory=dict)
     options: dict[str, object] = Field(default_factory=dict)
 
 
-class VNextConnectionReportGenerateRequest(BaseModel):
-    user_id: UUID
-    query: str = Field(default="", max_length=4000)
-    scope: dict[str, object] = Field(default_factory=dict)
-    options: dict[str, object] = Field(default_factory=dict)
-
-
-class VNextContradictionReportGenerateRequest(BaseModel):
+class VNextConnectionReportGenerateRequest(VNextAgentRequest):
     user_id: UUID
     query: str = Field(default="", max_length=4000)
     scope: dict[str, object] = Field(default_factory=dict)
     options: dict[str, object] = Field(default_factory=dict)
 
 
-class VNextProjectAutomationRequest(BaseModel):
+class VNextContradictionReportGenerateRequest(VNextAgentRequest):
+    user_id: UUID
+    query: str = Field(default="", max_length=4000)
+    scope: dict[str, object] = Field(default_factory=dict)
+    options: dict[str, object] = Field(default_factory=dict)
+
+
+class VNextProjectAutomationRequest(VNextAgentRequest):
     user_id: UUID
     scope: dict[str, object] = Field(default_factory=dict)
     options: dict[str, object] = Field(default_factory=dict)
 
 
-class VNextProjectCreateRequest(BaseModel):
+class VNextProjectCreateRequest(VNextAgentRequest):
     user_id: UUID
     name: str = Field(min_length=1, max_length=280)
     slug: str | None = Field(default=None, min_length=1, max_length=280)
@@ -1232,13 +1270,13 @@ class VNextProjectCreateRequest(BaseModel):
     sensitivity: str = Field(default="private", min_length=1, max_length=80)
 
 
-class VNextProjectUpdateReviewRequest(BaseModel):
+class VNextProjectUpdateReviewRequest(VNextAgentRequest):
     user_id: UUID
     action: str = Field(min_length=1, max_length=40)
     edited_current_state: str | None = Field(default=None, min_length=1, max_length=4000)
 
 
-class VNextOpenLoopReviewRequest(BaseModel):
+class VNextOpenLoopReviewRequest(VNextAgentRequest):
     user_id: UUID
     action: str = Field(min_length=1, max_length=40)
     title: str | None = Field(default=None, min_length=1, max_length=280)
@@ -1248,7 +1286,7 @@ class VNextOpenLoopReviewRequest(BaseModel):
     resolution_note: str | None = Field(default=None, min_length=1, max_length=4000)
 
 
-class VNextOpenLoopCreateRequest(BaseModel):
+class VNextOpenLoopCreateRequest(VNextAgentRequest):
     user_id: UUID
     title: str = Field(min_length=1, max_length=280)
     description: str | None = Field(default=None, min_length=1, max_length=4000)
@@ -1261,7 +1299,7 @@ class VNextOpenLoopCreateRequest(BaseModel):
     sensitivity: str = Field(default="unknown", min_length=1, max_length=80)
 
 
-class VNextMemoryReviewRequest(BaseModel):
+class VNextMemoryReviewRequest(VNextAgentRequest):
     user_id: UUID
     action: str = Field(min_length=1, max_length=40)
     title: str | None = Field(default=None, min_length=1, max_length=280)
@@ -1273,7 +1311,7 @@ class VNextMemoryReviewRequest(BaseModel):
     reason: str | None = Field(default=None, min_length=1, max_length=4000)
 
 
-class VNextQueueTaskCreateRequest(BaseModel):
+class VNextQueueTaskCreateRequest(VNextAgentRequest):
     user_id: UUID
     title: str = Field(min_length=1, max_length=280)
     task_type: str = Field(min_length=1, max_length=80)
@@ -1285,33 +1323,33 @@ class VNextQueueTaskCreateRequest(BaseModel):
     allowed_sources_json: list[object] = Field(default_factory=list)
 
 
-class VNextQueueProcessNextRequest(BaseModel):
+class VNextQueueProcessNextRequest(VNextAgentRequest):
     user_id: UUID
 
 
-class VNextArtifactReviewRequest(BaseModel):
-    user_id: UUID
-    action: str = Field(min_length=1, max_length=40)
-
-
-class VNextGraphEdgeReviewRequest(BaseModel):
+class VNextArtifactReviewRequest(VNextAgentRequest):
     user_id: UUID
     action: str = Field(min_length=1, max_length=40)
 
 
-class VNextBeliefReviewRequest(BaseModel):
+class VNextGraphEdgeReviewRequest(VNextAgentRequest):
+    user_id: UUID
+    action: str = Field(min_length=1, max_length=40)
+
+
+class VNextBeliefReviewRequest(VNextAgentRequest):
     user_id: UUID
     action: str = Field(min_length=1, max_length=40)
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     superseded_by: str | None = Field(default=None, min_length=1, max_length=120)
 
 
-class VNextArtifactExportRequest(BaseModel):
+class VNextArtifactExportRequest(VNextAgentRequest):
     user_id: UUID
     output_dir: str = Field(min_length=1, max_length=1000)
 
 
-class VNextBrainCharterUpsertRequest(BaseModel):
+class VNextBrainCharterUpsertRequest(VNextAgentRequest):
     user_id: UUID
     content_markdown: str = Field(min_length=1, max_length=200_000)
     owner_json: dict[str, object] = Field(default_factory=dict)
@@ -1323,6 +1361,42 @@ class VNextBrainCharterUpsertRequest(BaseModel):
     autonomous_rules_json: list[object] = Field(default_factory=list)
     quality_standard_json: list[object] = Field(default_factory=list)
     sensitivity: str = Field(default="private", min_length=1, max_length=80)
+
+
+class VNextMemoryProposalRequest(VNextAgentRequest):
+    user_id: UUID
+    proposal_type: str = Field(default="candidate_memory", min_length=1, max_length=80)
+    title: str = Field(min_length=1, max_length=280)
+    canonical_text: str = Field(min_length=1, max_length=20_000)
+    source_refs: list[object] = Field(default_factory=list)
+    domain: str = Field(default="unknown", min_length=1, max_length=80)
+    sensitivity: str = Field(default="unknown", min_length=1, max_length=80)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    rationale: str | None = Field(default=None, min_length=1, max_length=4000)
+    review_required: bool = True
+
+
+class VNextSchedulerWorkflowPatchRequest(VNextAgentRequest):
+    user_id: UUID
+    enabled: bool | None = None
+    paused: bool | None = None
+    schedule_json: dict[str, object] | None = None
+    timezone: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+class VNextSchedulerRunNowRequest(VNextAgentRequest):
+    user_id: UUID
+    scope: dict[str, object] = Field(default_factory=dict)
+    options: dict[str, object] = Field(default_factory=dict)
+
+
+class VNextSchedulerRunDueRequest(VNextAgentRequest):
+    user_id: UUID
+    limit: int = Field(default=10, ge=1, le=50)
+
+
+class VNextSchedulerControlRequest(VNextAgentRequest):
+    user_id: UUID
 
 
 def _vnext_public_error_response(*, status_code: int, detail: str) -> JSONResponse:
@@ -1377,6 +1451,74 @@ def _vnext_status_counts(rows: list[dict[str, object]], *, field: str = "status"
     return counts
 
 
+def _vnext_agent_identity(request: VNextAgentRequest) -> AgentIdentity | None:
+    payload = request.model_dump(mode="json")
+    return AgentIdentity.from_payload(payload)
+
+
+def _vnext_permission_response(decision: PolicyDecision) -> JSONResponse:
+    return JSONResponse(
+        status_code=403,
+        content=jsonable_encoder(
+            {
+                "detail": "agent policy blocked this action",
+                "policy_decision": decision.to_record(),
+            }
+        ),
+    )
+
+
+def _vnext_agent_actor(identity: AgentIdentity | None, *, fallback: str = "user") -> tuple[str, str | None]:
+    if identity is None:
+        return fallback, None
+    return identity.actor_type, identity.agent_id
+
+
+def _vnext_agent_record(store: PostgresVNextStore, identity: AgentIdentity | None) -> None:
+    if identity is None:
+        return
+    store.upsert_agent_identity(
+        {
+            "agent_id": identity.agent_id,
+            "agent_type": identity.agent_type,
+            "permission_profile": identity.permission_profile,
+            "project_scope_json": list(identity.project_scope),
+            "metadata_json": {
+                "last_agent_run_id": identity.agent_run_id,
+                "last_task_id": identity.task_id,
+            },
+        },
+        actor_type="agent",
+    )
+
+
+def _vnext_policy_checked(
+    *,
+    store: PostgresVNextStore,
+    identity: AgentIdentity | None,
+    action: str,
+    domains: tuple[str, ...] = (),
+    sensitivity_allowed: tuple[str, ...] = ("public", "internal", "private", "unknown"),
+    project_scope: tuple[str, ...] = (),
+    workflow_type: str | None = None,
+    write_policy: str | None = None,
+    target_type: str | None = None,
+    target_id: str | None = None,
+) -> PolicyDecision:
+    _vnext_agent_record(store, identity)
+    decision = evaluate_agent_policy(
+        identity=identity,
+        action=action,
+        domains=domains,
+        sensitivity_allowed=sensitivity_allowed,
+        project_scope=project_scope,
+        workflow_type=workflow_type,
+        write_policy=write_policy,
+    )
+    append_policy_events(store, identity=identity, decision=decision, target_type=target_type, target_id=target_id)
+    return decision
+
+
 def _vnext_workspace_payload(store: PostgresVNextStore) -> dict[str, object]:
     sensitivity_allowed = ["public", "internal", "private", "unknown"]
     sources = store.list_sources(sensitivity_allowed=sensitivity_allowed, limit=20)
@@ -1393,6 +1535,9 @@ def _vnext_workspace_payload(store: PostgresVNextStore) -> dict[str, object]:
     beliefs = store.list_beliefs(status=None, sensitivity_allowed=sensitivity_allowed, limit=12)
     tasks = store.list_tasks(status=None, limit=12)
     recent_events = store.list_events(limit=20)
+    agent_identities = store.list_agent_identities(limit=20)
+    agent_events = store.list_agent_events(limit=50)
+    scheduler_status = VNextSchedulerService(store).status()
     project_service = VNextProjectService(store)
     project_dashboards: list[dict[str, object]] = []
     for project in projects[:5]:
@@ -1410,6 +1555,8 @@ def _vnext_workspace_payload(store: PostgresVNextStore) -> dict[str, object]:
             "open_loop_count": len([loop for loop in open_loops if loop.get("status") == "open"]),
             "project_count": len(projects),
             "event_count": len(recent_events),
+            "agent_count": len(agent_identities),
+            "scheduler_enabled_count": int(scheduler_status["enabled_count"]),
             "memory_status_counts": _vnext_status_counts(memories),
             "artifact_status_counts": _vnext_status_counts(artifacts),
             "open_loop_status_counts": _vnext_status_counts(open_loops),
@@ -1424,18 +1571,47 @@ def _vnext_workspace_payload(store: PostgresVNextStore) -> dict[str, object]:
         "beliefs": beliefs,
         "tasks": tasks,
         "recent_events": recent_events,
+        "agent_activity": {
+            "agents": agent_identities,
+            "recent_events": agent_events,
+            "policy_blocks": [
+                event
+                for event in agent_events
+                if event.get("event_type") in {"agent.policy_blocked", "agent.policy_filtered"}
+            ],
+            "generated_artifacts": [
+                artifact
+                for artifact in artifacts
+                if isinstance(artifact.get("metadata_json"), dict)
+                and artifact["metadata_json"].get("generated_by") == "agent"
+            ],
+            "pending_review_items": [
+                memory
+                for memory in review_memories
+                if isinstance(memory.get("metadata_json"), dict)
+                and memory["metadata_json"].get("agent_id") is not None
+            ],
+        },
+        "scheduler": scheduler_status,
         "brain_charter": store.get_brain_charter(),
     }
 
 
-def _vnext_brain_artifact_request(request: VNextBrainArtifactGenerateRequest) -> BrainArtifactRequest:
+def _vnext_brain_artifact_request(
+    request: VNextBrainArtifactGenerateRequest,
+    *,
+    identity: AgentIdentity | None = None,
+    decision: PolicyDecision | None = None,
+) -> BrainArtifactRequest:
     scope = request.scope
     options = request.options
     generated_for = options.get("generated_for") or scope.get("generated_for")
+    actor_type, actor_id = _vnext_agent_actor(identity, fallback="system")
     return BrainArtifactRequest(
-        domains=_vnext_string_list(scope, "domains"),
-        sensitivity_allowed=_vnext_string_list(options, "sensitivity_allowed")
-        or ("public", "internal", "private", "unknown"),
+        domains=decision.effective_domains if decision is not None else _vnext_string_list(scope, "domains"),
+        sensitivity_allowed=decision.effective_sensitivity_allowed
+        if decision is not None
+        else _vnext_string_list(options, "sensitivity_allowed") or ("public", "internal", "private", "unknown"),
         generated_for=str(generated_for) if isinstance(generated_for, str) else None,
         source_limit=_vnext_int(options, "source_limit", 8),
         memory_limit=_vnext_int(options, "memory_limit", 8),
@@ -1443,6 +1619,13 @@ def _vnext_brain_artifact_request(request: VNextBrainArtifactGenerateRequest) ->
         artifact_limit=_vnext_int(options, "artifact_limit", 4),
         discover_open_loops=_vnext_bool(options, "discover_open_loops", True),
         create_candidate_memories=_vnext_bool(options, "create_candidate_memories", True),
+        generated_by=actor_type,
+        actor_id=actor_id,
+        trace_id=request.trace_id,
+        run_id=identity.agent_run_id if identity is not None else None,
+        agent_identity=identity.to_record() if identity is not None else None,
+        policy_decision=decision.to_record() if decision is not None else None,
+        metadata_json=agent_metadata(identity, decision),
     )
 
 
@@ -1469,18 +1652,32 @@ def _vnext_contradiction_request(request: VNextContradictionReportGenerateReques
     )
 
 
-def _vnext_project_automation_request(request: VNextProjectAutomationRequest) -> ProjectAutomationRequest:
+def _vnext_project_automation_request(
+    request: VNextProjectAutomationRequest,
+    *,
+    identity: AgentIdentity | None = None,
+    decision: PolicyDecision | None = None,
+) -> ProjectAutomationRequest:
     options = request.options
     scope = request.scope
     project_id = options.get("project_id") or scope.get("project_id")
     person_id = options.get("person_id") or scope.get("person_id")
+    actor_type, actor_id = _vnext_agent_actor(identity, fallback="system")
     return ProjectAutomationRequest(
-        domains=_vnext_string_list(scope, "domains"),
-        sensitivity_allowed=_vnext_string_list(options, "sensitivity_allowed")
-        or ("public", "internal", "private", "unknown"),
+        domains=decision.effective_domains if decision is not None else _vnext_string_list(scope, "domains"),
+        sensitivity_allowed=decision.effective_sensitivity_allowed
+        if decision is not None
+        else _vnext_string_list(options, "sensitivity_allowed") or ("public", "internal", "private", "unknown"),
         project_id=str(project_id) if isinstance(project_id, str) else None,
         person_id=str(person_id) if isinstance(person_id, str) else None,
         max_items=_vnext_int(options, "max_items", 8),
+        generated_by=actor_type,
+        actor_id=actor_id,
+        trace_id=request.trace_id,
+        run_id=identity.agent_run_id if identity is not None else None,
+        agent_identity=identity.to_record() if identity is not None else None,
+        policy_decision=decision.to_record() if decision is not None else None,
+        metadata_json=agent_metadata(identity, decision),
     )
 
 
@@ -5696,17 +5893,45 @@ def get_vnext_workspace(user_id: UUID) -> JSONResponse:
 @app.post("/v0/vnext/sources")
 def create_vnext_source(request: VNextSourceCaptureRequest) -> JSONResponse:
     settings = get_settings()
+    try:
+        identity = _vnext_agent_identity(request)
+    except AgentIdentityValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
-            payload = VNextCaptureService(PostgresVNextStore(conn)).capture_text(
+            store = PostgresVNextStore(conn)
+            decision = _vnext_policy_checked(
+                store=store,
+                identity=identity,
+                action="source.capture",
+                domains=(request.domain,),
+                sensitivity_allowed=(request.sensitivity,),
+                project_scope=tuple(request.project_scope),
+            )
+            if decision.decision == "blocked":
+                return _vnext_permission_response(decision)
+            actor_type, actor_id = _vnext_agent_actor(identity, fallback="user")
+            payload = VNextCaptureService(
+                store,
+                actor_type=actor_type,
+                actor_id=actor_id,
+                trace_id=request.trace_id or decision.trace_id,
+                run_id=identity.agent_run_id if identity is not None else None,
+                agent_identity=identity.to_record() if identity is not None else None,
+                policy_decision=decision.to_record(),
+            ).capture_text(
                 request.raw_text,
                 title=request.title,
                 domain=request.domain,
                 sensitivity=request.sensitivity,
             ).to_record()
+            if identity is not None:
+                append_policy_events(store, identity=identity, decision=decision, target_type="source", target_id=str(payload.get("source_id")))
     except VNextCaptureValidationError:
         return _vnext_public_error_response(status_code=400, detail="vNext source capture request is invalid")
+    except AgentPolicyBlockedError as exc:
+        return _vnext_permission_response(exc.decision)
 
     return JSONResponse(
         status_code=201,
@@ -5823,25 +6048,68 @@ def create_vnext_context_pack(request: VNextContextPackRequest) -> JSONResponse:
     settings = get_settings()
     scope = request.scope
     options = request.options
+    try:
+        identity = _vnext_agent_identity(request)
+    except AgentIdentityValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
 
     try:
+        requested_domains = _vnext_string_list(scope, "domains")
+        requested_sensitivity = _vnext_string_list(options, "sensitivity_allowed") or (
+            "public",
+            "internal",
+            "private",
+            "unknown",
+        )
         retrieval_request = VNextRetrievalRequest(
             query=request.query,
-            domains=_vnext_string_list(scope, "domains"),
+            domains=requested_domains,
             projects=_vnext_string_list(scope, "projects"),
             people=_vnext_string_list(scope, "people"),
             time_window=str(scope.get("time_window", "all")),
-            sensitivity_allowed=_vnext_string_list(options, "sensitivity_allowed")
-            or ("public", "internal", "private", "unknown"),
+            sensitivity_allowed=requested_sensitivity,
             include_sources=_vnext_bool(options, "include_sources", True),
             include_contradictions=_vnext_bool(options, "include_contradictions", True),
             max_items=_vnext_int(options, "max_items", 8),
             max_tokens=_vnext_int(options, "max_tokens", 8000),
         )
         with user_connection(settings.database_url, request.user_id) as conn:
-            payload = VNextRetrievalService(PostgresVNextStore(conn)).compile_context_pack(retrieval_request)
+            store = PostgresVNextStore(conn)
+            decision = _vnext_policy_checked(
+                store=store,
+                identity=identity,
+                action="context_pack.request",
+                domains=requested_domains,
+                sensitivity_allowed=requested_sensitivity,
+                project_scope=tuple(request.project_scope) or _vnext_string_list(scope, "projects"),
+            )
+            if decision.decision == "blocked":
+                return _vnext_permission_response(decision)
+            actor_type, actor_id = _vnext_agent_actor(identity, fallback="system")
+            payload = VNextRetrievalService(store).compile_context_pack(
+                VNextRetrievalRequest(
+                    query=retrieval_request.query,
+                    domains=decision.effective_domains,
+                    projects=retrieval_request.projects,
+                    people=retrieval_request.people,
+                    time_window=retrieval_request.time_window,
+                    sensitivity_allowed=decision.effective_sensitivity_allowed,
+                    include_sources=retrieval_request.include_sources,
+                    include_contradictions=retrieval_request.include_contradictions,
+                    max_items=retrieval_request.max_items,
+                    max_tokens=retrieval_request.max_tokens,
+                    actor_type=actor_type,
+                    actor_id=actor_id,
+                    agent_identity=identity.to_record() if identity is not None else None,
+                    policy_decision=decision.to_record(),
+                    trace_id=request.trace_id or decision.trace_id,
+                    run_id=identity.agent_run_id if identity is not None else None,
+                )
+            )
     except VNextRetrievalValidationError:
         return _vnext_public_error_response(status_code=400, detail="vNext context-pack request is invalid")
+    except AgentPolicyBlockedError as exc:
+        return _vnext_permission_response(exc.decision)
 
     return JSONResponse(
         status_code=201,
@@ -5939,21 +6207,176 @@ def review_vnext_memory(memory_id: UUID, request: VNextMemoryReviewRequest) -> J
             },
             actor_type="user",
         )
+        review_event = {
+            "accept": "review.item_accepted",
+            "promote": "review.item_accepted",
+            "reject": "review.item_rejected",
+            "edit": "review.item_edited",
+            "private": "review.item_edited",
+            "assign_project": "review.item_edited",
+        }[action]
+        append_event(
+            store,
+            event_type=review_event,
+            actor_type="user",
+            target_type="memory",
+            target_id=str(memory_id),
+            payload={"action": action, "project_id": request.project_id},
+        )
 
     return JSONResponse(status_code=200, content=jsonable_encoder({"memory": updated}))
+
+
+def _vnext_memory_type_for_proposal(proposal_type: str) -> str:
+    mapping = {
+        "candidate_memory": "semantic",
+        "project_update": "project_state",
+        "open_loop": "open_loop",
+        "belief_update": "belief",
+        "contradiction": "contradiction",
+        "graph_edge": "semantic",
+        "artifact_summary": "artifact_summary",
+        "decision": "decision",
+        "recent_change": "semantic",
+    }
+    return mapping.get(proposal_type, "semantic")
+
+
+@app.post("/v0/vnext/memory-proposals")
+def create_vnext_memory_proposal(request: VNextMemoryProposalRequest) -> JSONResponse:
+    settings = get_settings()
+    try:
+        identity = _vnext_agent_identity(request)
+    except AgentIdentityValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+    if identity is None:
+        return _vnext_public_error_response(status_code=400, detail="agent identity is required for memory proposals")
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            store = PostgresVNextStore(conn)
+            decision = _vnext_policy_checked(
+                store=store,
+                identity=identity,
+                action="memory.propose",
+                domains=(request.domain,),
+                sensitivity_allowed=(request.sensitivity,),
+                project_scope=tuple(request.project_scope),
+            )
+            if decision.decision == "blocked":
+                return _vnext_permission_response(decision)
+            proposal_id = str(uuid4())
+            metadata = {
+                "proposal_id": proposal_id,
+                "proposal_type": request.proposal_type,
+                "source_refs": request.source_refs,
+                "project_scope": list(request.project_scope),
+                "rationale": request.rationale,
+                "review_required": True,
+                **agent_metadata(identity, decision),
+            }
+            memory = store.create_memory(
+                {
+                    "memory_type": _vnext_memory_type_for_proposal(request.proposal_type),
+                    "memory_key": f"agent_proposal.{request.proposal_type}.{proposal_id}",
+                    "value": {
+                        "proposal_type": request.proposal_type,
+                        "text": request.canonical_text,
+                        "source_refs": request.source_refs,
+                        "rationale": request.rationale,
+                    },
+                    "status": "candidate",
+                    "confidence": request.confidence,
+                    "title": request.title,
+                    "canonical_text": request.canonical_text,
+                    "summary": request.canonical_text[:280],
+                    "domain": request.domain,
+                    "sensitivity": request.sensitivity,
+                    "metadata_json": metadata,
+                },
+                actor_type="agent",
+            )
+            store.append_revision(
+                {
+                    "memory_id": str(memory["id"]),
+                    "memory_key": str(memory["memory_key"]),
+                    "new_value": memory.get("value"),
+                    "revision_type": "created",
+                    "action": "agent_memory_proposal",
+                    "text_after": request.canonical_text,
+                    "reason": request.rationale or "Agent proposed memory for human review.",
+                    "actor_type": "agent",
+                    "actor_id": identity.agent_id,
+                    "metadata_json": metadata,
+                },
+                actor_type="agent",
+            )
+            append_event(
+                store,
+                event_type="agent.memory_proposed",
+                actor_type="agent",
+                actor_id=identity.agent_id,
+                target_type="memory",
+                target_id=str(memory["id"]),
+                trace_id=request.trace_id or decision.trace_id,
+                run_id=identity.agent_run_id,
+                payload={"proposal_type": request.proposal_type, "agent_identity": identity.to_record(), "policy_decision": decision.to_record()},
+            )
+            append_event(
+                store,
+                event_type="review.item_created",
+                actor_type="agent",
+                actor_id=identity.agent_id,
+                target_type="memory",
+                target_id=str(memory["id"]),
+                trace_id=request.trace_id or decision.trace_id,
+                run_id=identity.agent_run_id,
+                payload={"review_required": True, "proposal_type": request.proposal_type},
+            )
+    except AgentPolicyBlockedError as exc:
+        return _vnext_permission_response(exc.decision)
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder({"proposal": memory, "policy_decision": decision.to_record(), "review_required": True}),
+    )
 
 
 @app.post("/v0/vnext/artifacts/generate/daily-brief")
 def generate_vnext_daily_brief(request: VNextBrainArtifactGenerateRequest) -> JSONResponse:
     settings = get_settings()
+    try:
+        identity = _vnext_agent_identity(request)
+    except AgentIdentityValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
-            payload = VNextBrainService(PostgresVNextStore(conn)).generate_daily_brief(
-                _vnext_brain_artifact_request(request)
+            store = PostgresVNextStore(conn)
+            requested_domains = _vnext_string_list(request.scope, "domains")
+            requested_sensitivity = _vnext_string_list(request.options, "sensitivity_allowed") or (
+                "public",
+                "internal",
+                "private",
+                "unknown",
+            )
+            decision = _vnext_policy_checked(
+                store=store,
+                identity=identity,
+                action="artifact.generate",
+                domains=requested_domains,
+                sensitivity_allowed=requested_sensitivity,
+                project_scope=tuple(request.project_scope) or _vnext_string_list(request.scope, "projects"),
+            )
+            if decision.decision == "blocked":
+                return _vnext_permission_response(decision)
+            payload = VNextBrainService(store).generate_daily_brief(
+                _vnext_brain_artifact_request(request, identity=identity, decision=decision)
             )
     except VNextBrainValidationError:
         return _vnext_public_error_response(status_code=400, detail="vNext daily brief request is invalid")
+    except AgentPolicyBlockedError as exc:
+        return _vnext_permission_response(exc.decision)
 
     return JSONResponse(
         status_code=201,
@@ -5964,14 +6387,38 @@ def generate_vnext_daily_brief(request: VNextBrainArtifactGenerateRequest) -> JS
 @app.post("/v0/vnext/artifacts/generate/weekly-synthesis")
 def generate_vnext_weekly_synthesis(request: VNextBrainArtifactGenerateRequest) -> JSONResponse:
     settings = get_settings()
+    try:
+        identity = _vnext_agent_identity(request)
+    except AgentIdentityValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
-            payload = VNextBrainService(PostgresVNextStore(conn)).generate_weekly_synthesis(
-                _vnext_brain_artifact_request(request)
+            store = PostgresVNextStore(conn)
+            requested_domains = _vnext_string_list(request.scope, "domains")
+            requested_sensitivity = _vnext_string_list(request.options, "sensitivity_allowed") or (
+                "public",
+                "internal",
+                "private",
+                "unknown",
+            )
+            decision = _vnext_policy_checked(
+                store=store,
+                identity=identity,
+                action="artifact.generate",
+                domains=requested_domains,
+                sensitivity_allowed=requested_sensitivity,
+                project_scope=tuple(request.project_scope) or _vnext_string_list(request.scope, "projects"),
+            )
+            if decision.decision == "blocked":
+                return _vnext_permission_response(decision)
+            payload = VNextBrainService(store).generate_weekly_synthesis(
+                _vnext_brain_artifact_request(request, identity=identity, decision=decision)
             )
     except VNextBrainValidationError:
         return _vnext_public_error_response(status_code=400, detail="vNext weekly synthesis request is invalid")
+    except AgentPolicyBlockedError as exc:
+        return _vnext_permission_response(exc.decision)
 
     return JSONResponse(
         status_code=201,
@@ -6018,24 +6465,49 @@ def generate_vnext_contradiction_report(request: VNextContradictionReportGenerat
 @app.post("/v0/vnext/queue/tasks")
 def create_vnext_queue_task(request: VNextQueueTaskCreateRequest) -> JSONResponse:
     settings = get_settings()
+    try:
+        identity = _vnext_agent_identity(request)
+    except AgentIdentityValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
-            payload = VNextQueueService(PostgresVNextStore(conn)).enqueue_task(
+            store = PostgresVNextStore(conn)
+            decision = _vnext_policy_checked(
+                store=store,
+                identity=identity,
+                action="queue_task.create",
+                domains=(request.domain,),
+                sensitivity_allowed=(request.sensitivity,),
+                project_scope=tuple(request.project_scope),
+                write_policy=request.write_policy,
+            )
+            if decision.decision == "blocked":
+                return _vnext_permission_response(decision)
+            actor_type, actor_id = _vnext_agent_actor(identity, fallback="user")
+            payload = VNextQueueService(store).enqueue_task(
                 QueueTaskRequest(
                     title=request.title,
                     task_type=request.task_type,
                     instructions=request.instructions,
-                    requested_by="api",
+                    requested_by=identity.agent_id if identity is not None else "api",
                     scope_json=request.scope_json,
                     allowed_sources_json=request.allowed_sources_json,
                     domain=request.domain,
                     sensitivity=request.sensitivity,
                     write_policy=request.write_policy,
+                    actor_type=actor_type,
+                    actor_id=actor_id,
+                    trace_id=request.trace_id or decision.trace_id,
+                    run_id=identity.agent_run_id if identity is not None else None,
+                    agent_identity=identity.to_record() if identity is not None else None,
+                    policy_decision=decision.to_record(),
                 )
             )
     except VNextQueueValidationError:
         return _vnext_public_error_response(status_code=400, detail="vNext queue task request is invalid")
+    except AgentPolicyBlockedError as exc:
+        return _vnext_permission_response(exc.decision)
 
     return JSONResponse(
         status_code=201,
@@ -6088,10 +6560,24 @@ def get_vnext_artifact(artifact_id: UUID, user_id: UUID) -> JSONResponse:
 @app.post("/v0/vnext/artifacts/{artifact_id}/review")
 def review_vnext_artifact(artifact_id: UUID, request: VNextArtifactReviewRequest) -> JSONResponse:
     settings = get_settings()
+    try:
+        identity = _vnext_agent_identity(request)
+    except AgentIdentityValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
-            payload = VNextQueueService(PostgresVNextStore(conn)).review_artifact(
+            store = PostgresVNextStore(conn)
+            decision = _vnext_policy_checked(
+                store=store,
+                identity=identity,
+                action="artifact.review",
+                target_type="artifact",
+                target_id=str(artifact_id),
+            )
+            if decision.decision == "blocked":
+                return _vnext_permission_response(decision)
+            payload = VNextQueueService(store).review_artifact(
                 artifact_id=str(artifact_id),
                 action=request.action,
             )
@@ -6099,6 +6585,8 @@ def review_vnext_artifact(artifact_id: UUID, request: VNextArtifactReviewRequest
         return _vnext_public_error_response(status_code=404, detail="vNext artifact was not found")
     except VNextQueueValidationError:
         return _vnext_public_error_response(status_code=400, detail="vNext artifact review request is invalid")
+    except AgentPolicyBlockedError as exc:
+        return _vnext_permission_response(exc.decision)
 
     return JSONResponse(
         status_code=200,
@@ -6199,14 +6687,38 @@ def get_vnext_belief_state(belief_id: str, user_id: UUID) -> JSONResponse:
 @app.post("/v0/vnext/projects/update-candidates")
 def generate_vnext_project_update_candidate(request: VNextProjectAutomationRequest) -> JSONResponse:
     settings = get_settings()
+    try:
+        identity = _vnext_agent_identity(request)
+    except AgentIdentityValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
-            payload = VNextProjectService(PostgresVNextStore(conn)).generate_project_update_candidate(
-                _vnext_project_automation_request(request)
+            store = PostgresVNextStore(conn)
+            requested_domains = _vnext_string_list(request.scope, "domains")
+            requested_sensitivity = _vnext_string_list(request.options, "sensitivity_allowed") or (
+                "public",
+                "internal",
+                "private",
+                "unknown",
+            )
+            decision = _vnext_policy_checked(
+                store=store,
+                identity=identity,
+                action="artifact.generate",
+                domains=requested_domains,
+                sensitivity_allowed=requested_sensitivity,
+                project_scope=tuple(request.project_scope) or _vnext_string_list(request.scope, "projects"),
+            )
+            if decision.decision == "blocked":
+                return _vnext_permission_response(decision)
+            payload = VNextProjectService(store).generate_project_update_candidate(
+                _vnext_project_automation_request(request, identity=identity, decision=decision)
             )
     except VNextProjectValidationError:
         return _vnext_public_error_response(status_code=400, detail="vNext project update request is invalid")
+    except AgentPolicyBlockedError as exc:
+        return _vnext_permission_response(exc.decision)
 
     return JSONResponse(status_code=201, content=jsonable_encoder(payload))
 
@@ -6244,23 +6756,57 @@ def get_vnext_project_dashboard(project_id: str, user_id: UUID) -> JSONResponse:
 @app.post("/v0/vnext/open-loops")
 def create_vnext_open_loop(request: VNextOpenLoopCreateRequest) -> JSONResponse:
     settings = get_settings()
+    try:
+        identity = _vnext_agent_identity(request)
+    except AgentIdentityValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
 
-    with user_connection(settings.database_url, request.user_id) as conn:
-        payload = PostgresVNextStore(conn).create_open_loop(
-            {
-                "title": request.title.strip(),
-                "description": request.description,
-                "due_at": request.due_at,
-                "priority": request.priority,
-                "memory_id": request.memory_id,
-                "project_id": request.project_id,
-                "source_id": request.source_id,
-                "domain": request.domain,
-                "sensitivity": request.sensitivity,
-                "metadata_json": {"created_from": "vnext_workspace"},
-            },
-            actor_type="user",
-        )
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            store = PostgresVNextStore(conn)
+            decision = _vnext_policy_checked(
+                store=store,
+                identity=identity,
+                action="open_loop.create",
+                domains=(request.domain,),
+                sensitivity_allowed=(request.sensitivity,),
+                project_scope=tuple(request.project_scope),
+            )
+            if decision.decision == "blocked":
+                return _vnext_permission_response(decision)
+            actor_type, _actor_id = _vnext_agent_actor(identity, fallback="user")
+            payload = store.create_open_loop(
+                {
+                    "title": request.title.strip(),
+                    "description": request.description,
+                    "due_at": request.due_at,
+                    "priority": request.priority,
+                    "memory_id": request.memory_id,
+                    "project_id": request.project_id,
+                    "source_id": request.source_id,
+                    "domain": request.domain,
+                    "sensitivity": request.sensitivity,
+                    "metadata_json": {
+                        "created_from": "vnext_workspace",
+                        **agent_metadata(identity, decision),
+                    },
+                },
+                actor_type=actor_type,
+            )
+            if identity is not None:
+                append_event(
+                    store,
+                    event_type="agent.open_loop_created",
+                    actor_type="agent",
+                    actor_id=identity.agent_id,
+                    target_type="open_loop",
+                    target_id=str(payload["id"]),
+                    trace_id=request.trace_id or decision.trace_id,
+                    run_id=identity.agent_run_id,
+                    payload={"agent_identity": identity.to_record(), "policy_decision": decision.to_record()},
+                )
+    except AgentPolicyBlockedError as exc:
+        return _vnext_permission_response(exc.decision)
 
     return JSONResponse(status_code=201, content=jsonable_encoder({"open_loop": payload}))
 
@@ -6297,6 +6843,195 @@ def upsert_vnext_brain_charter(request: VNextBrainCharterUpsertRequest) -> JSONR
         )
 
     return JSONResponse(status_code=200, content=jsonable_encoder({"brain_charter": payload}))
+
+
+@app.get("/v0/vnext/scheduler/status")
+def get_vnext_scheduler_status(user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = VNextSchedulerService(PostgresVNextStore(conn)).status()
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.get("/v0/vnext/scheduler/runs")
+def list_vnext_scheduler_runs(user_id: UUID, workflow_type: str | None = None, limit: int = 20) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = PostgresVNextStore(conn).list_scheduler_runs(workflow_type=workflow_type, limit=limit)
+
+    return JSONResponse(status_code=200, content=jsonable_encoder({"items": payload, "count": len(payload)}))
+
+
+@app.patch("/v0/vnext/scheduler/workflows/{workflow_type}")
+def patch_vnext_scheduler_workflow(workflow_type: str, request: VNextSchedulerWorkflowPatchRequest) -> JSONResponse:
+    settings = get_settings()
+    try:
+        identity = _vnext_agent_identity(request)
+        if request.schedule_json is not None:
+            validate_schedule(workflow_type, request.schedule_json)
+    except (AgentIdentityValidationError, VNextSchedulerValidationError) as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            store = PostgresVNextStore(conn)
+            decision = _vnext_policy_checked(
+                store=store,
+                identity=identity,
+                action="scheduler.configure",
+                workflow_type=workflow_type,
+                project_scope=tuple(request.project_scope),
+            )
+            if decision.decision == "blocked":
+                return _vnext_permission_response(decision)
+            actor_type, _actor_id = _vnext_agent_actor(identity, fallback="user")
+            payload = VNextSchedulerService(store).configure_workflow(
+                workflow_type=workflow_type,
+                enabled=request.enabled,
+                paused=request.paused,
+                schedule_json=request.schedule_json,
+                timezone=request.timezone,
+                actor_type=actor_type,
+            )
+    except VNextSchedulerValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+    except AgentPolicyBlockedError as exc:
+        return _vnext_permission_response(exc.decision)
+
+    return JSONResponse(status_code=200, content=jsonable_encoder({"workflow": payload, "policy_decision": decision.to_record()}))
+
+
+@app.post("/v0/vnext/scheduler/workflows/{workflow_type}/run-now")
+def run_vnext_scheduler_workflow_now(workflow_type: str, request: VNextSchedulerRunNowRequest) -> JSONResponse:
+    settings = get_settings()
+    try:
+        identity = _vnext_agent_identity(request)
+    except AgentIdentityValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+    scope = request.scope
+    options = request.options
+    requested_domains = _vnext_string_list(scope, "domains")
+    requested_sensitivity = _vnext_string_list(options, "sensitivity_allowed") or (
+        "public",
+        "internal",
+        "private",
+        "unknown",
+    )
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            store = PostgresVNextStore(conn)
+            decision = _vnext_policy_checked(
+                store=store,
+                identity=identity,
+                action="scheduler.run_now",
+                domains=requested_domains,
+                sensitivity_allowed=requested_sensitivity,
+                project_scope=tuple(request.project_scope) or _vnext_string_list(scope, "projects"),
+                workflow_type=workflow_type,
+            )
+            if decision.decision == "blocked":
+                return _vnext_permission_response(decision)
+            triggered_by = "agent" if identity is not None else "user"
+            payload = VNextSchedulerService(store).run_now(
+                SchedulerRunRequest(
+                    workflow_type=workflow_type,
+                    domains=decision.effective_domains,
+                    sensitivity_allowed=decision.effective_sensitivity_allowed,
+                    generated_for=str(options["generated_for"]) if isinstance(options.get("generated_for"), str) else None,
+                    triggered_by=triggered_by,
+                    agent_identity=identity,
+                    policy_decision=decision,
+                    options=options,
+                )
+            )
+    except VNextSchedulerValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+    except AgentPolicyBlockedError as exc:
+        return _vnext_permission_response(exc.decision)
+
+    return JSONResponse(status_code=201, content=jsonable_encoder({**payload, "policy_decision": decision.to_record()}))
+
+
+@app.post("/v0/vnext/scheduler/run-due")
+def run_vnext_scheduler_due(request: VNextSchedulerRunDueRequest) -> JSONResponse:
+    settings = get_settings()
+    try:
+        identity = _vnext_agent_identity(request)
+    except AgentIdentityValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            store = PostgresVNextStore(conn)
+            decision = _vnext_policy_checked(
+                store=store,
+                identity=identity,
+                action="scheduler.run_due",
+                project_scope=tuple(request.project_scope),
+            )
+            if decision.decision == "blocked":
+                return _vnext_permission_response(decision)
+            actor_type, _actor_id = _vnext_agent_actor(identity, fallback="scheduler")
+            payload = VNextSchedulerService(store).run_due_workflows(
+                limit=request.limit,
+                triggered_by=actor_type,
+                agent_identity=identity,
+                policy_decision=decision,
+            )
+    except VNextSchedulerValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+    except AgentPolicyBlockedError as exc:
+        return _vnext_permission_response(exc.decision)
+
+    return JSONResponse(status_code=201, content=jsonable_encoder({**payload, "policy_decision": decision.to_record()}))
+
+
+@app.post("/v0/vnext/scheduler/pause")
+def pause_vnext_scheduler(request: VNextSchedulerControlRequest) -> JSONResponse:
+    return _vnext_scheduler_global_control(request, action="scheduler.pause", pause=True)
+
+
+@app.post("/v0/vnext/scheduler/resume")
+def resume_vnext_scheduler(request: VNextSchedulerControlRequest) -> JSONResponse:
+    return _vnext_scheduler_global_control(request, action="scheduler.resume", pause=False)
+
+
+def _vnext_scheduler_global_control(
+    request: VNextSchedulerControlRequest,
+    *,
+    action: str,
+    pause: bool,
+) -> JSONResponse:
+    settings = get_settings()
+    try:
+        identity = _vnext_agent_identity(request)
+    except AgentIdentityValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            store = PostgresVNextStore(conn)
+            decision = _vnext_policy_checked(
+                store=store,
+                identity=identity,
+                action=action,
+                project_scope=tuple(request.project_scope),
+            )
+            if decision.decision == "blocked":
+                return _vnext_permission_response(decision)
+            actor_type, _actor_id = _vnext_agent_actor(identity, fallback="user")
+            service = VNextSchedulerService(store)
+            payload = service.pause_all(actor_type=actor_type) if pause else service.resume_all(actor_type=actor_type)
+    except VNextSchedulerValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+    except AgentPolicyBlockedError as exc:
+        return _vnext_permission_response(exc.decision)
+
+    return JSONResponse(status_code=200, content=jsonable_encoder({**payload, "policy_decision": decision.to_record()}))
 
 
 @app.post("/v0/vnext/open-loops/extract")

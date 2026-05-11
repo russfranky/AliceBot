@@ -17,17 +17,17 @@ class InMemoryVNextBrainStore:
         self.events.append(event)
         return event
 
-    def create_artifact(self, artifact: dict[str, object]) -> dict[str, object]:
+    def create_artifact(self, artifact: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**artifact, "id": f"artifact-{len(self.artifacts) + 1}"}
         self.artifacts[str(row["id"])] = row
         return row
 
-    def create_memory(self, memory: dict[str, object]) -> dict[str, object]:
+    def create_memory(self, memory: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**memory, "id": f"memory-{len(self.memories) + 1}"}
         self.memories.append(row)
         return row
 
-    def create_open_loop(self, loop: dict[str, object]) -> dict[str, object]:
+    def create_open_loop(self, loop: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**loop, "id": f"loop-{len(self.open_loops) + 1}"}
         self.open_loops.append(row)
         return row
