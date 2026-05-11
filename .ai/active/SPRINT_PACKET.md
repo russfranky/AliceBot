@@ -10,6 +10,7 @@ Alice vNext Public Preview Release Gate
 - Phase 14 is shipped.
 - `HF-001` Logging Safety And Disk Guardrails is shipped.
 - Alice vNext Sprint 1 through Sprint 12 preview scope is implemented.
+- Alice vNext live capture connectors are implemented for allowlisted Telegram, local folder/Obsidian notes, browser clips, and agent outputs.
 
 ## Sprint Type
 release-gate
@@ -35,7 +36,7 @@ The vNext preview surface has moved from incremental seed work into release pack
 - no semantic fork between API, CLI, MCP, hosted, provider-runtime, and Hermes paths
 
 ## Exact Goal
-Publish Alice vNext as the `v0.5.1-vnext-preview` public pre-release with release notes, tag plan, completed checklist evidence, and aligned control docs.
+Publish Alice vNext as the `v0.5.1-vnext-preview` public pre-release with release notes, tag plan, completed checklist evidence, aligned control docs, and the live capture connector dogfooding slice documented.
 
 ## In Scope
 - release notes for `v0.5.1-vnext-preview`
@@ -48,7 +49,7 @@ Publish Alice vNext as the `v0.5.1-vnext-preview` public pre-release with releas
 
 ## Out Of Scope
 - new vNext features
-- live connector OAuth/polling
+- managed connector OAuth or hosted connector polling
 - hosted SLA or managed cloud launch
 - automatic promotion of generated artifacts into trusted memory
 - production daily/weekly scheduler

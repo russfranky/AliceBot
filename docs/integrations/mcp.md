@@ -60,6 +60,7 @@ MCP uses the same local runtime scope as CLI:
 - `alice_vnext_scheduler_run_due`
 - `alice_vnext_scheduler_pause`
 - `alice_vnext_scheduler_resume`
+- `alice_vnext_ingest_agent_output`
 
 `alice_brief` is the default external-agent continuity lookup. It returns one continuity bundle with relevant facts, recent changes, open loops, conflicts, timeline highlights, provenance, trust posture, and a next suggested action.
 `alice_explain` now accepts either `continuity_object_id` for evidence-chain inspection or `entity_id` plus optional `at` for temporal explain output.
@@ -70,6 +71,8 @@ MCP uses the same local runtime scope as CLI:
 The `alice_vnext_*` tools carry the agentic control-plane contract. Agent callers can include `agent_id`, `agent_type`, `agent_run_id`, `task_id`, `project_scope`, `permission_profile`, domain filters, and sensitivity filters. Policy decisions are logged, restricted requests are filtered or blocked, memory writes stay proposal/review-only, and scheduler actions create governed run records with trace IDs.
 
 Model-backed artifact tools also accept `generation_mode`, `model_route_mode`, `model_provider`, `model`, `model_temperature`, and `allow_cloud_private`. Supported generation modes are `deterministic` and `model_backed`; supported route modes are `local_only`, `cloud_allowed`, `cloud_requires_approval`, and `model_disabled`. Agent-triggered model-backed generation is policy checked before a workflow runs, and private/highly sensitive scopes remain local-only or disabled unless explicitly configured.
+
+`alice_vnext_ingest_agent_output` is the live capture seam for Hermes/OpenClaw-style agent outputs. It stores the agent output as source evidence, creates a review-only generated artifact, optionally creates a candidate memory proposal, links provenance back to the captured source, and logs the agent identity and policy decision. It does not accept or promote trusted memory automatically.
 
 ## Example: Claude Desktop MCP Config
 
@@ -116,6 +119,7 @@ One-command bridge demo:
 - MCP does not widen core product semantics beyond the shipped Phase 13 baseline and Bridge `B1` through `B4`
 - `alice_brief` is the preferred first call for external runtimes that need continuity in one request
 - vNext agent tools preserve the no-auto-promotion rule and require review for agent-proposed memory
+- vNext agent-output ingestion treats agent text as untrusted source evidence and only creates reviewable artifacts/proposals
 
 See tests:
 

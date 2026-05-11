@@ -51,14 +51,31 @@ alicebot vnext scheduler resume --agent-id hermes --permission-profile trusted_l
 alicebot vnext quality rate <artifact_id> --usefulness 5 --accuracy 5 --source-grounding 5 --novel-connections 4 --actionability 4 --hallucination-risk 1 --verbosity right_sized --comments "Grounded and useful."
 alicebot vnext quality export --limit 50
 alicebot vnext agents policy-telemetry
+alicebot vnext connectors list
+alicebot vnext connectors status
+alicebot vnext connectors health
+alicebot vnext connectors telegram configure --enabled --allowed-chat-id 999001 --bot-token-env TELEGRAM_BOT_TOKEN
+alicebot vnext connectors telegram test
+alicebot vnext connectors telegram sync --allowed-chat-id 999001
+alicebot vnext connectors local-folder add-path ~/Notes/Alice --extension .md --extension .txt
+alicebot vnext connectors local-folder sync
+alicebot vnext connectors local-folder watch --once
+alicebot vnext connectors browser-clipper capture --url https://example.test/page --selected-text "Fact: browser clips are reviewable."
+alicebot vnext agents ingest-output --agent-id openclaw --agent-type coding_agent --title "Sprint summary" --content "Decision: agent output stays review-only." --propose-memory
+alicebot vnext dogfooding dashboard
+alicebot vnext quality insight <artifact_id> --useful-insight yes
 alicebot vnext smoke agentic-scheduler
 alicebot vnext smoke local-runtime
 alicebot vnext smoke model-backed
+alicebot vnext smoke live-capture-connectors
+alicebot vnext smoke capture-to-brief
 ```
 
 The vNext agent arguments are `--agent-id`, `--agent-type`, `--agent-run-id`, `--agent-task-id`, `--project-scope`, and `--permission-profile`. Agent-originated scheduler and memory-proposal commands are policy checked, logged, and kept review-only where they create memory or generated artifacts.
 
 Model-backed generation arguments are available on daily brief, weekly synthesis, connection report, contradiction report, project update candidate, and scheduler run-now commands: `--generation-mode`, `--model-route-mode`, `--model-provider`, `--model`, `--model-temperature`, and `--allow-cloud-private`. Private and highly sensitive scopes remain local-only or disabled unless explicitly configured.
+
+Live capture connector commands preserve the same trust model as manual capture: raw source text is archived, domain/sensitivity defaults are explicit, source material is treated as untrusted, agent output produces review-only artifacts/proposals, and capture-to-brief promotion still requires human review.
 
 ## Temporal History Commands
 

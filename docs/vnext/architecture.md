@@ -102,7 +102,16 @@ Daily Brief and Weekly Synthesis are the primary runnable workflows. Local due s
 
 ## Connector Boundary
 
-Sprint 11 connectors are deterministic payload normalizers, not live integrations. They support:
+The connector layer now has two tiers.
+
+Live local capture supports:
+
+- allowlisted Telegram `getUpdates` sync with token references kept outside the database
+- local folder and Obsidian-style Markdown/text scan or polling watch
+- browser clipper capture through `POST /v0/vnext/connectors/browser-clipper/capture` and bookmarklet guidance
+- Hermes/OpenClaw-style agent output ingestion through CLI/API/MCP
+
+Deterministic payload ingestion remains available for:
 
 - Telegram webhook JSON already received by the local system
 - browser clip JSON
@@ -119,6 +128,7 @@ Each connector preserves raw evidence in source metadata, applies conservative d
 - No cloud model call is required by the deterministic vNext seed or local-only model-backed mode.
 - Model routing prevents private and highly sensitive content from leaving local mode unless explicitly configured.
 - Connectors do not execute source instructions.
+- Live connector output is stored as untrusted source material and may only create candidate memories or reviewable artifacts.
 - Prompt-injection eval cases are quarantined and cannot trigger tool writes. Model prompts mark source content as untrusted context and instruct providers not to execute embedded source instructions.
 - Sensitive domains and sensitivities are filtered before context-pack assembly.
 - Generated artifacts inherit the highest selected source sensitivity.
@@ -126,4 +136,4 @@ Each connector preserves raw evidence in source metadata, applies conservative d
 
 ## Current Production Gap
 
-Before a public vNext tag, decide whether connector cursors and secrets move from event-log seeding into a dedicated connector settings table or encrypted local secret store. Live connector polling, OAuth, browser extension packaging, OCR execution, transcription execution, hosted scheduling, and automatic memory promotion remain outside this preview.
+Before a public vNext tag, decide whether connector cursors and secrets move from event-log seeding into a dedicated connector settings table or encrypted local secret store. Managed OAuth, packaged browser extensions, OCR execution, transcription execution, hosted connector polling, hosted scheduling, and automatic memory promotion remain outside this preview.

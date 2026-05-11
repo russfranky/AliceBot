@@ -24,6 +24,7 @@ class FakeVNextStore:
         self.edges: dict[str, dict[str, object]] = {}
         self.beliefs: dict[str, dict[str, object]] = {}
         self.projects: dict[str, dict[str, object]] = {}
+        self.agent_identities: dict[str, dict[str, object]] = {}
         self.revisions: list[dict[str, object]] = []
 
     def append_event(self, event: dict[str, object]) -> dict[str, object]:
@@ -46,6 +47,9 @@ class FakeVNextStore:
             return source
         return None
 
+    def list_sources(self, **kwargs) -> list[dict[str, object]]:
+        return list(self.sources.values())[: kwargs.get("limit", 20)]
+
     def delete_source(self, *, source_id: str, **_kwargs) -> dict[str, object]:
         source = self.sources[source_id]
         source["deleted_at"] = "now"
@@ -60,6 +64,9 @@ class FakeVNextStore:
         row = {**memory, "id": f"memory-{len(self.memories) + 1}"}
         self.memories.append(row)
         return row
+
+    def list_memories(self, *, status: str | None = None) -> list[dict[str, object]]:
+        return [memory for memory in self.memories if status is None or memory.get("status") == status]
 
     def update_memory(self, *, memory_id: str, patch: dict[str, object], **_kwargs) -> dict[str, object]:
         for memory in self.memories:
@@ -323,13 +330,27 @@ class FakeVNextStore:
         )
         return belief
 
-    def list_events(self, *, target_type: str | None = None, target_id: str | None = None) -> list[dict[str, object]]:
-        return [
+    def list_events(
+        self,
+        *,
+        target_type: str | None = None,
+        target_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, object]]:
+        rows = [
             event
             for event in self.events
             if (target_type is None or event.get("target_type") == target_type)
             and (target_id is None or event.get("target_id") == target_id)
         ]
+        return rows[:limit] if limit is not None else rows
+
+    def upsert_agent_identity(self, identity: dict[str, object], **_kwargs) -> dict[str, object]:
+        self.agent_identities[str(identity["agent_id"])] = identity
+        return identity
+
+    def list_scheduler_runs(self, **_kwargs) -> list[dict[str, object]]:
+        return []
 
 
 def _install_fake_vnext_store(monkeypatch, store: FakeVNextStore) -> None:
@@ -804,3 +825,120 @@ def test_vnext_artifact_review_endpoint_maps_validation_errors(monkeypatch) -> N
 
     assert invalid_response.status_code == 400
     assert missing_response.status_code == 404
+
+
+def test_live_capture_connector_api_endpoints(monkeypatch) -> None:
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    user_id = uuid4()
+
+    config_response = main_module.update_vnext_connector_config(
+        "telegram",
+        main_module.VNextConnectorConfigRequest(
+            user_id=user_id,
+            enabled=True,
+            secret_ref="env:TELEGRAM_BOT_TOKEN",
+            config_json={"allowed_chat_ids": ["999001"]},
+        ),
+    )
+    telegram_response = main_module.sync_vnext_telegram_connector(
+        main_module.VNextTelegramSyncRequest(
+            user_id=user_id,
+            updates=[
+                {
+                    "update_id": 1,
+                    "message": {
+                        "message_id": 10,
+                        "date": 1_778_400_000,
+                        "chat": {"id": 999001},
+                        "from": {"id": 1001, "username": "samir"},
+                        "text": "Fact: API Telegram capture works.",
+                    },
+                }
+            ],
+        )
+    )
+    browser_response = main_module.capture_vnext_browser_clip(
+        main_module.VNextBrowserClipperCaptureRequest(
+            user_id=user_id,
+            url="https://example.test/clip",
+            title="Clip",
+            selected_text="Fact: Browser API clip works.",
+            user_note="Remember: keep this reviewable.",
+        )
+    )
+    health_response = main_module.get_vnext_connectors_health(user_id=user_id)
+
+    assert config_response.status_code == 200
+    assert telegram_response.status_code == 201
+    assert browser_response.status_code == 201
+    assert json.loads(telegram_response.body)["imported_count"] == 1
+    assert json.loads(browser_response.body)["imported_count"] == 1
+    health_payload = json.loads(health_response.body)
+    assert health_payload["count"] >= 4
+    assert any(item["connector_name"] == "telegram" for item in health_payload["items"])
+
+
+def test_agent_output_ingest_api_creates_review_only_records(monkeypatch) -> None:
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    user_id = uuid4()
+
+    response = main_module.ingest_vnext_agent_output(
+        main_module.VNextAgentOutputIngestRequest(
+            user_id=user_id,
+            agent_id="openclaw",
+            agent_type="coding_agent",
+            permission_profile="project_scoped_agent",
+            agent_run_id="run-1",
+            project_scope=["Alice"],
+            title="Sprint summary",
+            content="Decision: API agent output ingestion is review-only.",
+            output_type="sprint_summary",
+            propose_memory=True,
+        )
+    )
+
+    payload = json.loads(response.body)
+    assert response.status_code == 201
+    assert payload["status"] == "imported"
+    assert payload["artifact_id"] in store.artifacts
+    assert store.artifacts[payload["artifact_id"]]["status"] == "needs_review"
+    assert payload["memory_id"] is not None
+    assert any(memory["status"] == "candidate" for memory in store.memories)
+
+
+def test_dogfooding_dashboard_and_insight_feedback_api(monkeypatch) -> None:
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    user_id = uuid4()
+    artifact = store.create_artifact(
+        {
+            "artifact_type": "daily_brief",
+            "title": "Daily",
+            "content_markdown": "# Daily",
+            "status": "needs_review",
+            "domain": "project",
+            "sensitivity": "private",
+        }
+    )
+    store.create_artifact_quality_rating(
+        {
+            "artifact_id": artifact["id"],
+            "usefulness": 5,
+            "verbosity": "right_sized",
+            "metadata_json": {},
+        }
+    )
+
+    feedback_response = main_module.record_vnext_artifact_insight_feedback(
+        main_module.UUID(str(artifact["id"])),
+        main_module.VNextArtifactInsightFeedbackRequest(user_id=user_id, useful_insight="yes", surfaced_missed="yes"),
+    )
+    dashboard_response = main_module.get_vnext_dogfooding_dashboard(user_id=user_id)
+    dashboard = json.loads(dashboard_response.body)
+
+    assert feedback_response.status_code == 201
+    assert dashboard_response.status_code == 200
+    assert dashboard["artifact_quality_rating_count"] == 1
+    assert dashboard["insight_feedback"]["useful_yes"] == 1

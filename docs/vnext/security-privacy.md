@@ -14,16 +14,19 @@ Alice vNext is built around private, correctable, inspectable continuity. This d
 
 ## Connector Safety
 
-Sprint 11 connectors are deterministic payload ingestion paths. They do not perform live OAuth, polling, remote fetches, browser extension actions, OCR model execution, or transcription model execution.
+The live capture connector slice is local-first and intentionally narrow. Alice can poll Telegram `getUpdates` with an operator-supplied token reference, scan or poll configured local folders, accept browser clipper captures through the local API, and ingest Hermes/OpenClaw-style agent output. It does not perform managed OAuth, packaged browser extension actions, OCR model execution, transcription model execution, hosted connector polling, or cloud sync.
 
 Connector invariants:
 
 - raw payload or extracted evidence is preserved in source metadata
 - default domain and sensitivity are stored with the source
+- all connector text is marked as untrusted source material
 - sync cursors prevent duplicate ingestion
+- local folder scanning is constrained to allowed local roots; by default those are the user home, repo working directory, and system temp directory, with `ALICE_VNEXT_LOCAL_FOLDER_ROOTS` available for operator override
 - cursor advancement stops when a failed item could otherwise be skipped
 - failed items are logged and not imported as broken memories
 - connector payload text cannot trigger tool writes
+- live connector captures produce candidate memory/review artifacts only; they do not auto-promote trusted memory
 
 ## Secrets
 

@@ -17,6 +17,8 @@ Use this checklist before cutting a vNext preview tag or public announcement. Do
 - [x] New user can install locally and generate a first daily brief in under 20 minutes.
 - [x] `/vnext` renders the fixture-backed workspace.
 - [x] Connector settings are visible in the UI.
+- [x] Connector health and dogfooding capture metrics are visible in the UI.
+- [x] Live local capture works for allowlisted Telegram, local folder/Obsidian notes, browser clips, and agent outputs.
 - [x] Connector payload ingestion preserves raw evidence, default domain/sensitivity, and cursor posture.
 - [x] Generated artifacts remain reviewable and are not auto-promoted to trusted memory.
 - [x] Model-backed artifacts remain source-grounded, policy-routed, and reviewable.
@@ -48,7 +50,7 @@ Use this checklist before cutting a vNext preview tag or public announcement. Do
 - [x] Changelog entry prepared.
 - [x] Tag plan prepared: `docs/release/v0.5.1-vnext-preview-tag-plan.md`.
 - [x] Rollback path documented.
-- [x] Known limitations documented: no live connector OAuth/polling, no hosted SLA, no automatic memory promotion, no production scheduler.
+- [x] Known limitations documented: no managed connector OAuth, no packaged browser extension, no hosted connector polling, no hosted SLA, no automatic memory promotion, no production scheduler.
 - [x] Release owner signs off.
 
 ## Evidence
@@ -57,7 +59,9 @@ Current evidence recorded on 2026-05-11:
 
 - Real Postgres vNext smoke passed for source capture, connector ingest, scoped and unscoped context packs, daily brief generation, project update review, open-loop close, API context packs, API project dashboard, MCP context pack, and MCP project dashboard.
 - Real Postgres scheduled model-backed smoke passed for local routing, provider metadata, review status, source refs, and grounded output sections.
-- `./.venv/bin/python -m pytest tests/unit -q`: `1096 passed`.
+- Real Postgres live-capture connector smoke passed for allowlisted Telegram sync, rejected chat isolation, local folder generated-folder ignore behavior, browser clip capture, review-only agent output ingestion, and connector health telemetry.
+- Real Postgres capture-to-brief smoke passed for browser clip capture, context-pack inclusion, Daily Brief generation, source references, quality rating recording, and dogfooding telemetry.
+- `./.venv/bin/python -m pytest tests/unit -q`: `1108 passed`.
 - `./.venv/bin/python -m pytest tests/integration -q`: `370 passed`.
 - `pnpm --dir apps/web test`: `207 passed`.
 - `pnpm --dir apps/web lint`: passed.

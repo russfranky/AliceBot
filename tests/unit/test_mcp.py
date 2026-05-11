@@ -65,6 +65,7 @@ def test_mcp_tool_surface_is_adr_aligned_and_deterministic() -> None:
         "alice_open_loop_extract",
         "alice_open_loop_review",
         "alice_vnext_capture",
+        "alice_vnext_ingest_agent_output",
         "alice_vnext_queue_task",
         "alice_vnext_generate_artifact",
         "alice_vnext_project_dashboard",
@@ -111,6 +112,8 @@ def test_call_mcp_tool_requires_object_arguments() -> None:
 class FakeVNextMCPStore:
     def __init__(self) -> None:
         self.events: list[dict[str, object]] = []
+        self.sources: list[dict[str, object]] = []
+        self.chunks: list[dict[str, object]] = []
         self.memories: list[dict[str, object]] = []
         self.artifacts: dict[str, dict[str, object]] = {}
         self.open_loops: list[dict[str, object]] = []
@@ -152,6 +155,19 @@ class FakeVNextMCPStore:
     def create_artifact(self, artifact: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**artifact, "id": f"artifact-{len(self.artifacts) + 1}"}
         self.artifacts[str(row["id"])] = row
+        return row
+
+    def get_source_by_content_hash(self, content_hash: str) -> dict[str, object] | None:
+        return next((source for source in self.sources if source.get("content_hash") == content_hash), None)
+
+    def create_source(self, source: dict[str, object], **_kwargs) -> dict[str, object]:
+        row = {**source, "id": f"source-{len(self.sources) + 1}"}
+        self.sources.append(row)
+        return row
+
+    def create_source_chunk(self, chunk: dict[str, object], **_kwargs) -> dict[str, object]:
+        row = {**chunk, "id": f"chunk-{len(self.chunks) + 1}"}
+        self.chunks.append(row)
         return row
 
     def get_artifact(self, artifact_id: str) -> dict[str, object] | None:
@@ -340,6 +356,10 @@ class FakeVNextMCPStore:
     def list_provenance_links(self, **_kwargs) -> list[dict[str, object]]:
         return []
 
+    def create_provenance_link(self, link: dict[str, object], **_kwargs) -> dict[str, object]:
+        row = {**link, "id": f"provenance-{len(self.events) + 1}"}
+        return row
+
 
 def test_alice_vnext_context_pack_mcp_tool(monkeypatch) -> None:
     store = FakeVNextMCPStore()
@@ -493,6 +513,45 @@ def test_alice_vnext_generate_artifact_supports_model_backed_agent_options(monke
     assert payload["metadata_json"]["agent_id"] == "hermes"
     assert payload["metadata_json"]["policy_decision"]["decision"] == "allowed"
     assert "source:source-1" in payload["metadata_json"]["source_refs"]
+
+
+def test_alice_vnext_ingest_agent_output_creates_review_only_records(monkeypatch) -> None:
+    store = FakeVNextMCPStore()
+
+    @contextmanager
+    def fake_vnext_store_context(_context):
+        yield store
+
+    monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fake_vnext_store_context)
+    context = MCPRuntimeContext(
+        database_url="postgresql://localhost/alicebot",
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+
+    payload = call_mcp_tool(
+        context,
+        name="alice_vnext_ingest_agent_output",
+        arguments={
+            "agent_id": "openclaw",
+            "agent_type": "coding_agent",
+            "permission_profile": "project_scoped_agent",
+            "agent_run_id": "run-1",
+            "title": "Sprint summary",
+            "content": "Decision: Agent outputs remain review-only.",
+            "output_type": "sprint_summary",
+            "domain": "project",
+            "sensitivity": "private",
+            "propose_memory": True,
+        },
+    )
+
+    assert payload["status"] == "imported"
+    assert payload["source_id"] == "source-1"
+    assert payload["artifact_id"] == "artifact-1"
+    assert payload["memory_id"] is not None
+    assert store.artifacts["artifact-1"]["status"] == "needs_review"
+    assert store.memories[-1]["status"] == "candidate"
+    assert any(event["event_type"] == "agent.output_ingested" for event in store.events)
 
 
 def test_alice_generate_connections_and_graph_mcp_tools(monkeypatch) -> None:

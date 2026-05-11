@@ -25,6 +25,11 @@ alicebot vnext scheduler failures
 alicebot vnext agents policy-telemetry
 alicebot vnext smoke local-runtime
 alicebot vnext smoke model-backed
+alicebot vnext connectors status
+alicebot vnext connectors health
+alicebot vnext dogfooding dashboard
+alicebot vnext smoke live-capture-connectors
+alicebot vnext smoke capture-to-brief
 ```
 
 Useful options:
@@ -51,6 +56,8 @@ Useful options:
 
 The `/vnext` Schedules surface shows daemon posture, last due scan, next due workflow, currently running workflow, recent failures, last successful run per workflow, and run history. The Timeline surface remains backed by the append-only event log. Agent Activity includes policy blocks, filters, review-gated decisions, workflow triggers, memory proposals, and artifact generation telemetry.
 
+The `/vnext` Home and Connectors surfaces also show dogfooding and capture health: captures by connector, captures today/week, candidate memory creation, artifact ratings, useful-insight feedback, connector enabled/configured state, cursors, dedupe, failures, and last sync posture.
+
 The API exposes the same local runtime posture through:
 
 - `GET /v0/vnext/scheduler/status`
@@ -58,6 +65,8 @@ The API exposes the same local runtime posture through:
 - `GET /v0/vnext/scheduler/failures`
 - `POST /v0/vnext/scheduler/run-due`
 - `GET /v0/vnext/agents/policy-telemetry`
+- `GET /v0/vnext/connectors/health`
+- `GET /v0/vnext/dogfooding`
 
 Scheduler workflow configuration can also carry `model_options` so due scans run model-backed workflows only when policy and routing allow them.
 
@@ -89,8 +98,12 @@ The local runtime smoke is Postgres-backed:
 ```bash
 alicebot vnext smoke local-runtime
 alicebot vnext smoke model-backed
+alicebot vnext smoke live-capture-connectors
+alicebot vnext smoke capture-to-brief
 ```
 
 It seeds a small local-runtime fixture, marks all six scheduler workflows due, runs the foreground daemon once, and checks that each workflow produces a reviewable artifact with scheduler metadata.
 
 The model-backed smoke seeds a scheduled model-backed workflow and verifies that the due scan creates a reviewable artifact with local-only routing, provider metadata, source references, and the required grounded output sections.
+
+The live-capture connector smoke verifies allowlisted Telegram import, rejected Telegram chat isolation, local folder import with generated-folder ignore rules, browser clipper capture, review-only agent output ingestion, and connector health telemetry. The capture-to-brief smoke verifies that a fresh browser clip can enter retrieval, produce a reviewable Daily Brief, record a quality rating, and show up in dogfooding telemetry.

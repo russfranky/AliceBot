@@ -9,7 +9,8 @@ PASS
 - Release notes, tag plan, rollback path, changelog entry, and completed vNext release checklist are present.
 - README and vNext docs link the preview overview, quickstart, architecture, security/privacy, demo script, release checklist, release notes, and tag plan.
 - Control docs now describe the vNext public-preview release gate instead of stale Sprint 1 active status.
-- Known limitations remain explicit: no hosted SLA, no live connector OAuth/polling, no automatic generated-artifact promotion, no production scheduler, no live-backed `/vnext`, and no model-backed eval scoring.
+- Live capture connector paths preserve raw evidence, untrusted-source labeling, candidate/review-only outputs, domain/sensitivity defaults, and provenance.
+- Known limitations remain explicit: no hosted SLA, no managed connector OAuth, no hosted connector polling, no automatic generated-artifact promotion, no production scheduler, no broad live-write `/vnext`, and no model-backed eval scoring.
 - Current validation evidence is recorded in the release checklist and build report.
 
 ## criteria missed
@@ -20,8 +21,8 @@ PASS
 - GitHub Actions reports a non-blocking Node.js 20 deprecation notice for existing actions; track separately as maintenance work
 
 ## regression risks
-- low for this release-packaging scope because changes are docs, release metadata, and control-doc alignment only
-- vNext runtime risk was covered separately by the real Postgres CLI/API/MCP smoke and unit/web/eval gates
+- moderate for live capture because new CLI/API/MCP/UI paths touch the vNext source/artifact/event pipeline
+- covered by unit coverage, integration coverage, live-capture smoke, capture-to-brief smoke, web test/lint/build, and eval gates
 
 ## docs issues
 - none blocking

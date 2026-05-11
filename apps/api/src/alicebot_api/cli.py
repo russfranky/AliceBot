@@ -4,12 +4,13 @@ import argparse
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 from uuid import UUID, uuid4
 
 import psycopg
@@ -214,6 +215,7 @@ from alicebot_api.vnext_contradictions import (
     VNextContradictionService,
     VNextContradictionValidationError,
 )
+from alicebot_api.vnext_dogfooding import VNextDogfoodingService
 from alicebot_api.vnext_evals import (
     run_vnext_evals,
     write_vnext_benchmark_corpus,
@@ -662,6 +664,242 @@ def _run_vnext_connectors_ingest(ctx: CLIContext, args: argparse.Namespace) -> s
             default_sensitivity=args.sensitivity,
         )
     return _json_dumps(result.to_record())
+
+
+def _path_identity(value: object) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return str(Path(value).expanduser().resolve(strict=False))
+    except OSError:
+        return value.strip()
+
+
+def _run_vnext_connectors_configure(ctx: CLIContext, args: argparse.Namespace) -> str:
+    config_json: dict[str, object] = {}
+    if getattr(args, "allowed_chat_id", None):
+        config_json["allowed_chat_ids"] = list(args.allowed_chat_id)
+    if getattr(args, "path", None):
+        config_json["paths"] = list(args.path)
+    if getattr(args, "recursive", None) is not None:
+        config_json["recursive"] = bool(args.recursive)
+    if getattr(args, "extension", None):
+        config_json["extensions"] = list(args.extension)
+    if getattr(args, "ignore_pattern", None):
+        config_json["ignore_patterns"] = list(args.ignore_pattern)
+    with _vnext_store_context(ctx) as store:
+        service = VNextConnectorService(store)
+        if args.connector_name == "local_folder" and (
+            getattr(args, "merge_paths", False) or getattr(args, "remove_paths", False)
+        ):
+            existing_config = service.get_config("local_folder")
+            existing_json = existing_config.get("config_json")
+            if isinstance(existing_json, dict):
+                config_json = {**existing_json, **config_json}
+            existing_paths = [
+                str(path)
+                for path in (existing_json.get("paths", []) if isinstance(existing_json, dict) else [])
+                if isinstance(path, str)
+            ]
+            requested_paths = [str(path) for path in getattr(args, "path", []) if isinstance(path, str)]
+            if getattr(args, "merge_paths", False):
+                merged_paths = list(dict.fromkeys([*existing_paths, *requested_paths]))
+            else:
+                remove_keys = set(requested_paths)
+                remove_keys.update(key for path in requested_paths if (key := _path_identity(path)) is not None)
+                merged_paths = [
+                    path
+                    for path in existing_paths
+                    if path not in remove_keys and (_path_identity(path) or path) not in remove_keys
+                ]
+            config_json["paths"] = merged_paths
+            if getattr(args, "remove_paths", False) and getattr(args, "enabled", None) is None:
+                args.enabled = bool(merged_paths)
+        payload = service.update_config(
+            args.connector_name,
+            enabled=args.enabled,
+            default_domain=args.domain,
+            default_sensitivity=args.sensitivity,
+            secret_ref=args.secret_ref,
+            config_json=config_json,
+        )
+    return _json_dumps(payload)
+
+
+def _run_vnext_connectors_status(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        service = VNextConnectorService(store)
+        if args.connector_name:
+            payload = {
+                "config": service.get_config(args.connector_name),
+                "health": service.connector_health(args.connector_name),
+            }
+        else:
+            payload = service.connector_health_all()
+    return _json_dumps(payload)
+
+
+def _run_vnext_connectors_health(ctx: CLIContext, _args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        payload = VNextConnectorService(store).connector_health_all()
+    return _json_dumps(payload)
+
+
+def _run_vnext_telegram_configure(ctx: CLIContext, args: argparse.Namespace) -> str:
+    args.connector_name = "telegram"
+    args.secret_ref = args.secret_ref or f"env:{args.bot_token_env}"
+    return _run_vnext_connectors_configure(ctx, args)
+
+
+def _run_vnext_telegram_test(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        service = VNextConnectorService(store)
+        config = service.get_config("telegram")
+        payload = {
+            "connector_name": "telegram",
+            "configured": bool(config.get("configured")),
+            "enabled": bool(config.get("enabled")),
+            "secret_ref": config.get("secret_ref") or f"env:{args.bot_token_env}",
+            "allowed_chat_ids_configured": bool((config.get("config_json") or {}).get("allowed_chat_ids"))
+            if isinstance(config.get("config_json"), dict)
+            else False,
+            "cursor": service.get_cursor("telegram"),
+        }
+    return _json_dumps(payload)
+
+
+def _run_vnext_telegram_sync(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        service = VNextConnectorService(store)
+        if args.payload_path:
+            updates = load_connector_items_from_file(args.payload_path)
+        else:
+            updates = service.fetch_telegram_updates(bot_token_env=args.bot_token_env, timeout=args.timeout, limit=args.limit)
+        config = service.get_config("telegram")
+        config_json = config.get("config_json") if isinstance(config.get("config_json"), dict) else {}
+        configured_allowed = config_json.get("allowed_chat_ids") if isinstance(config_json, dict) else []
+        allowed_chat_ids = tuple(args.allowed_chat_id or [str(value) for value in configured_allowed if isinstance(value, (str, int))])
+        result = service.sync_telegram_updates(
+            updates,
+            allowed_chat_ids=allowed_chat_ids,
+            default_domain=args.domain,
+            default_sensitivity=args.sensitivity,
+        )
+    return _json_dumps(result.to_record())
+
+
+def _run_vnext_local_folder_sync(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        paths = list(args.path)
+        if not paths:
+            config = VNextConnectorService(store).get_config("local_folder")
+            config_json = config.get("config_json") if isinstance(config.get("config_json"), dict) else {}
+            configured_paths = config_json.get("paths") if isinstance(config_json, dict) else []
+            paths = [str(path) for path in configured_paths if isinstance(path, str)]
+        result = VNextConnectorService(store).sync_local_folder(
+            paths,
+            recursive=not args.no_recursive,
+            extensions=tuple(args.extension),
+            ignore_patterns=tuple(args.ignore_pattern),
+            default_domain=args.domain,
+            default_sensitivity=args.sensitivity,
+        )
+    return _json_dumps(result.to_record())
+
+
+def _run_vnext_local_folder_watch(ctx: CLIContext, args: argparse.Namespace) -> str:
+    if args.once:
+        return _run_vnext_local_folder_sync(ctx, args)
+    runs: list[dict[str, object]] = []
+    for _index in range(args.max_runs):
+        runs.append(json.loads(_run_vnext_local_folder_sync(ctx, args)))
+        time.sleep(args.interval_seconds)
+    return _json_dumps({"status": "stopped", "runs": runs, "watch_mode": "polling"})
+
+
+def _run_vnext_browser_clip(ctx: CLIContext, args: argparse.Namespace) -> str:
+    selected_text = args.selected_text
+    page_text = args.page_text
+    user_note = args.user_note
+    if args.file:
+        page_text = Path(args.file).read_text(encoding="utf-8")
+    with _vnext_store_context(ctx) as store:
+        result = VNextConnectorService(store).capture_browser_clip(
+            {
+                "url": args.url,
+                "title": args.title,
+                "selected_text": selected_text,
+                "page_text": page_text,
+                "user_note": user_note,
+                "captured_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            },
+            default_domain=args.domain,
+            default_sensitivity=args.sensitivity,
+        )
+    return _json_dumps(result.to_record())
+
+
+def _run_vnext_agents_ingest_output(ctx: CLIContext, args: argparse.Namespace) -> str:
+    content = Path(args.file).read_text(encoding="utf-8") if args.file else " ".join(args.content or ()).strip()
+    if not content:
+        raise VNextConnectorValidationError("agent output content is required")
+    identity = AgentIdentity.from_payload(
+        {
+            "agent_id": args.agent_id,
+            "agent_type": args.agent_type,
+            "agent_run_id": args.agent_run_id,
+            "task_id": args.task_id,
+            "project_scope": args.project_scope,
+            "permission_profile": args.permission_profile,
+        }
+    )
+    with _vnext_store_context(ctx) as store:
+        decision = evaluate_agent_policy(
+            identity=identity,
+            action="source.capture",
+            domains=(args.domain,),
+            sensitivity_allowed=(args.sensitivity,),
+            project_scope=tuple(args.project_scope),
+            write_policy="proposal_only" if args.propose_memory else None,
+        )
+        append_policy_events(store, identity=identity, decision=decision, target_type="connector", target_id="agent_output")
+        ensure_policy_allowed(decision)
+        result = VNextConnectorService(store).ingest_agent_output(
+            {
+                "agent_id": args.agent_id,
+                "agent_type": args.agent_type,
+                "agent_run_id": args.agent_run_id,
+                "task_id": args.task_id,
+                "project_scope": args.project_scope,
+                "title": args.title,
+                "content": content,
+                "output_type": args.output_type,
+                "domain": args.domain,
+                "sensitivity": args.sensitivity,
+                "source_refs": args.source_ref,
+                "rationale": args.rationale,
+                "propose_memory": args.propose_memory,
+            },
+            policy_decision=decision.to_record(),
+        )
+    return _json_dumps(result.to_record())
+
+
+def _run_vnext_dogfooding_dashboard(ctx: CLIContext, _args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        payload = VNextDogfoodingService(store).dashboard()
+    return _json_dumps(payload)
+
+
+def _run_vnext_artifact_insight_feedback(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        payload = VNextDogfoodingService(store).record_insight_feedback(
+            artifact_id=args.artifact_id,
+            useful_insight=args.useful_insight,
+            surfaced_missed=args.surfaced_missed,
+            comments=args.comments,
+        )
+    return _json_dumps(payload)
 
 
 def _run_context_pack(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -1382,6 +1620,144 @@ def _run_vnext_smoke_model_backed(ctx: CLIContext, _args: argparse.Namespace) ->
     if result["status"] != "passed":
         raise RuntimeError(_json_dumps(result))
     return _json_dumps(result)
+
+
+def _run_vnext_smoke_live_capture_connectors(ctx: CLIContext, _args: argparse.Namespace) -> str:
+    smoke_id = str(uuid4())
+    telegram_update_id = int(time.time() * 1000)
+    with tempfile.TemporaryDirectory(prefix="alice-live-capture-") as temp_dir:
+        note_path = Path(temp_dir) / "daily.md"
+        ignored_dir = Path(temp_dir) / "generated"
+        ignored_dir.mkdir()
+        note_path.write_text(f"Fact: live capture smoke {smoke_id} reaches Alice.\n", encoding="utf-8")
+        (ignored_dir / "skip.md").write_text("Fact: generated output should be ignored.\n", encoding="utf-8")
+        with _vnext_store_context(ctx) as store:
+            service = VNextConnectorService(store)
+            service.update_config(
+                "telegram",
+                enabled=True,
+                secret_ref="env:TELEGRAM_BOT_TOKEN",
+                config_json={"allowed_chat_ids": ["999001"]},
+            )
+            telegram = service.sync_telegram_updates(
+                [
+                    {
+                        "update_id": telegram_update_id,
+                        "message": {
+                            "message_id": telegram_update_id + 1,
+                            "date": 1_778_400_000,
+                            "chat": {"id": 999001, "type": "private"},
+                            "from": {"id": 1001, "username": "samir"},
+                            "text": f"Fact: Telegram smoke {smoke_id} should be reviewable.",
+                        },
+                    },
+                    {
+                        "update_id": telegram_update_id + 2,
+                        "message": {
+                            "message_id": telegram_update_id + 3,
+                            "date": 1_778_400_010,
+                            "chat": {"id": 123, "type": "private"},
+                            "from": {"id": 1002},
+                            "text": "Fact: rejected chat should not import.",
+                        },
+                    },
+                ],
+                allowed_chat_ids=("999001",),
+            )
+            local = service.sync_local_folder((temp_dir,), default_domain="project", default_sensitivity="private")
+            browser = service.capture_browser_clip(
+                {
+                    "url": "https://example.test/live-capture",
+                    "title": "Live capture smoke",
+                    "selected_text": f"Fact: Browser clip smoke {smoke_id} is untrusted source material.",
+                    "user_note": "Remember: verify capture health.",
+                },
+                default_domain="professional",
+                default_sensitivity="private",
+            )
+            agent = service.ingest_agent_output(
+                {
+                    "agent_id": "openclaw",
+                    "agent_type": "coding_agent",
+                    "agent_run_id": f"smoke-{smoke_id}",
+                    "project_scope": ["Alice"],
+                    "title": "Live capture smoke agent output",
+                    "content": f"Decision: Agent output smoke {smoke_id} should stay review-only.",
+                    "output_type": "sprint_summary",
+                    "domain": "project",
+                    "sensitivity": "private",
+                    "propose_memory": True,
+                },
+                policy_decision={"decision": "allowed", "action": "source.capture"},
+            )
+            health = service.connector_health_all()
+    health_items = {str(item["connector_name"]): item for item in health["items"]} if isinstance(health.get("items"), list) else {}
+    gates = {
+        "telegram_imported_allowlisted": telegram.imported_count == 1 and telegram.skipped_count == 1,
+        "local_folder_imported_and_ignored_generated": local.imported_count == 1,
+        "browser_clip_imported": browser.imported_count == 1,
+        "agent_output_review_only": agent.artifact_id is not None and agent.memory_id is not None,
+        "health_telemetry_present": all(
+            name in health_items for name in ("telegram", "local_folder", "browser_clipper", "agent_output")
+        ),
+    }
+    payload = {"status": "passed" if all(gates.values()) else "failed", "smoke": "live-capture-connectors", "gates": gates}
+    if payload["status"] != "passed":
+        raise RuntimeError(_json_dumps(payload))
+    return _json_dumps(payload)
+
+
+def _run_vnext_smoke_capture_to_brief(ctx: CLIContext, _args: argparse.Namespace) -> str:
+    smoke_id = str(uuid4())
+    with _vnext_store_context(ctx) as store:
+        connector_service = VNextConnectorService(store)
+        capture = connector_service.capture_browser_clip(
+            {
+                "url": "https://example.test/capture-to-brief",
+                "title": "Capture to brief smoke",
+                "selected_text": f"Fact: capture to brief smoke {smoke_id} should appear in Daily Brief.",
+                "user_note": "TODO: rate the generated brief.",
+            },
+            default_domain="project",
+            default_sensitivity="private",
+        )
+        source_id = capture.source_ids[0] if capture.source_ids else None
+        pack = VNextRetrievalService(store).compile_context_pack(
+            VNextRetrievalRequest(query=smoke_id, domains=("project",), sensitivity_allowed=("private", "unknown"))
+        )
+        artifact = VNextBrainService(store).generate_daily_brief(
+            BrainArtifactRequest(domains=("project",), sensitivity_allowed=("private", "unknown"), generated_for="2026-05-11")
+        )
+        rating = store.create_artifact_quality_rating(
+            {
+                "artifact_id": artifact["id"],
+                "reviewer_id": "smoke",
+                "usefulness": 5,
+                "accuracy": 5,
+                "source_grounding": 5,
+                "novel_connections": 3,
+                "actionability": 4,
+                "hallucination_risk": 1,
+                "verbosity": "right_sized",
+                "metadata_json": {"smoke": "capture-to-brief", "source_id": source_id},
+            },
+            actor_type="system",
+        )
+        dogfooding = VNextDogfoodingService(store).dashboard()
+    artifact_refs = artifact.get("metadata_json", {}).get("source_refs") if isinstance(artifact.get("metadata_json"), dict) else []
+    pack_source_ids = [str(source.get("id")) for source in pack.get("sources", []) if isinstance(source, dict)]
+    gates = {
+        "source_captured": source_id is not None,
+        "context_pack_includes_source": source_id in pack_source_ids,
+        "daily_brief_created": artifact.get("artifact_type") == "daily_brief" and artifact.get("status") == "needs_review",
+        "artifact_has_source_reference": bool(artifact_refs),
+        "rating_recorded": str(rating.get("artifact_id")) == str(artifact["id"]),
+        "dogfooding_reflects_rating": dogfooding.get("artifact_quality_rating_count", 0) >= 1,
+    }
+    payload = {"status": "passed" if all(gates.values()) else "failed", "smoke": "capture-to-brief", "gates": gates}
+    if payload["status"] != "passed":
+        raise RuntimeError(_json_dumps(payload))
+    return _json_dumps(payload)
 
 
 def _connection_finder_request_from_args(args: argparse.Namespace) -> ConnectionFinderRequest:
@@ -2481,6 +2857,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     vnext_connectors_list_parser.set_defaults(handler=_run_vnext_connectors_list)
 
+    vnext_connectors_configure_parser = vnext_connectors_subparsers.add_parser(
+        "configure",
+        help="Configure a vNext connector without storing raw secrets.",
+    )
+    vnext_connectors_configure_parser.add_argument("connector_name", help="Connector name.")
+    vnext_connectors_configure_parser.add_argument("--enabled", action="store_true", help="Enable connector.")
+    vnext_connectors_configure_parser.add_argument("--secret-ref", default=None, help="Secret reference such as env:TELEGRAM_BOT_TOKEN.")
+    vnext_connectors_configure_parser.add_argument("--domain", default=None, help="Default domain.")
+    vnext_connectors_configure_parser.add_argument("--sensitivity", default=None, help="Default sensitivity.")
+    vnext_connectors_configure_parser.add_argument("--allowed-chat-id", action="append", default=[], help="Allowed Telegram chat id. Repeatable.")
+    vnext_connectors_configure_parser.add_argument("--path", action="append", default=[], help="Watched local folder path. Repeatable.")
+    vnext_connectors_configure_parser.add_argument("--recursive", action="store_true", default=None, help="Enable recursive local folder scans.")
+    vnext_connectors_configure_parser.add_argument("--extension", action="append", default=[], help="Allowed local file extension. Repeatable.")
+    vnext_connectors_configure_parser.add_argument("--ignore-pattern", action="append", default=[], help="Local folder ignore glob. Repeatable.")
+    vnext_connectors_configure_parser.set_defaults(handler=_run_vnext_connectors_configure)
+
+    vnext_connectors_status_parser = vnext_connectors_subparsers.add_parser("status", help="Show connector status.")
+    vnext_connectors_status_parser.add_argument("connector_name", nargs="?", default=None, help="Optional connector name.")
+    vnext_connectors_status_parser.set_defaults(handler=_run_vnext_connectors_status)
+
+    vnext_connectors_health_parser = vnext_connectors_subparsers.add_parser("health", help="Show connector health telemetry.")
+    vnext_connectors_health_parser.set_defaults(handler=_run_vnext_connectors_health)
+
     vnext_connectors_ingest_parser = vnext_connectors_subparsers.add_parser(
         "ingest",
         help="Ingest already-exported connector payload items into vNext sources.",
@@ -2494,6 +2893,100 @@ def build_parser() -> argparse.ArgumentParser:
         help="Connector default sensitivity override.",
     )
     vnext_connectors_ingest_parser.set_defaults(handler=_run_vnext_connectors_ingest)
+
+    vnext_connectors_telegram_parser = vnext_connectors_subparsers.add_parser("telegram", help="Live Telegram capture controls.")
+    vnext_telegram_subparsers = vnext_connectors_telegram_parser.add_subparsers(dest="vnext_telegram_command", required=True)
+    vnext_telegram_configure_parser = vnext_telegram_subparsers.add_parser("configure", help="Configure local Telegram bot capture.")
+    vnext_telegram_configure_parser.add_argument("--enabled", action="store_true", help="Enable Telegram capture.")
+    vnext_telegram_configure_parser.add_argument("--bot-token-env", default="TELEGRAM_BOT_TOKEN", help="Environment variable holding bot token.")
+    vnext_telegram_configure_parser.add_argument("--secret-ref", default=None, help="Secret reference.")
+    vnext_telegram_configure_parser.add_argument("--allowed-chat-id", action="append", default=[], required=True, help="Allowed chat id. Repeatable.")
+    vnext_telegram_configure_parser.add_argument("--domain", default="personal", help="Default domain.")
+    vnext_telegram_configure_parser.add_argument("--sensitivity", default="private", help="Default sensitivity.")
+    vnext_telegram_configure_parser.set_defaults(handler=_run_vnext_telegram_configure)
+    vnext_telegram_test_parser = vnext_telegram_subparsers.add_parser("test", help="Check Telegram connector local configuration.")
+    vnext_telegram_test_parser.add_argument("--bot-token-env", default="TELEGRAM_BOT_TOKEN", help="Environment variable holding bot token.")
+    vnext_telegram_test_parser.set_defaults(handler=_run_vnext_telegram_test)
+    vnext_telegram_sync_parser = vnext_telegram_subparsers.add_parser("sync", help="Poll or ingest Telegram updates.")
+    vnext_telegram_sync_parser.add_argument("--payload-path", default=None, help="Optional JSON file of Telegram updates.")
+    vnext_telegram_sync_parser.add_argument("--allowed-chat-id", action="append", default=[], help="Allowed chat id. Repeatable.")
+    vnext_telegram_sync_parser.add_argument("--bot-token-env", default="TELEGRAM_BOT_TOKEN", help="Environment variable holding bot token.")
+    vnext_telegram_sync_parser.add_argument("--timeout", type=int, default=10, help="Telegram polling timeout.")
+    vnext_telegram_sync_parser.add_argument("--limit", type=int, default=100, help="Telegram update limit.")
+    vnext_telegram_sync_parser.add_argument("--domain", default=None, help="Default domain.")
+    vnext_telegram_sync_parser.add_argument("--sensitivity", default=None, help="Default sensitivity.")
+    vnext_telegram_sync_parser.set_defaults(handler=_run_vnext_telegram_sync)
+    vnext_telegram_status_parser = vnext_telegram_subparsers.add_parser("status", help="Show Telegram connector status.")
+    vnext_telegram_status_parser.set_defaults(connector_name="telegram", handler=_run_vnext_connectors_status)
+
+    vnext_connectors_local_parser = vnext_connectors_subparsers.add_parser("local-folder", help="Local folder and Obsidian capture controls.")
+    vnext_local_subparsers = vnext_connectors_local_parser.add_subparsers(dest="vnext_local_folder_command", required=True)
+    vnext_local_add_parser = vnext_local_subparsers.add_parser("add-path", help="Configure a watched folder path.")
+    vnext_local_add_parser.add_argument("path", action="append", help="Watched folder path.")
+    vnext_local_add_parser.add_argument("--enabled", action="store_true", default=True, help="Enable local folder connector.")
+    vnext_local_add_parser.add_argument("--domain", default="project", help="Default domain.")
+    vnext_local_add_parser.add_argument("--sensitivity", default="private", help="Default sensitivity.")
+    vnext_local_add_parser.add_argument("--extension", action="append", default=[".md", ".txt"], help="Allowed extension.")
+    vnext_local_add_parser.add_argument("--ignore-pattern", action="append", default=[], help="Ignore glob.")
+    vnext_local_add_parser.set_defaults(
+        connector_name="local_folder",
+        recursive=True,
+        secret_ref=None,
+        merge_paths=True,
+        remove_paths=False,
+        handler=_run_vnext_connectors_configure,
+    )
+    vnext_local_remove_parser = vnext_local_subparsers.add_parser("remove-path", help="Record a watched folder removal.")
+    vnext_local_remove_parser.add_argument("path", action="append", help="Path to remove from config.")
+    vnext_local_remove_parser.add_argument("--domain", default="project")
+    vnext_local_remove_parser.add_argument("--sensitivity", default="private")
+    vnext_local_remove_parser.set_defaults(
+        connector_name="local_folder",
+        enabled=None,
+        secret_ref=None,
+        recursive=True,
+        extension=[],
+        ignore_pattern=[],
+        merge_paths=False,
+        remove_paths=True,
+        handler=_run_vnext_connectors_configure,
+    )
+    vnext_local_sync_parser = vnext_local_subparsers.add_parser("sync", help="Scan watched folder paths now.")
+    vnext_local_sync_parser.add_argument("--path", action="append", default=[], help="Folder path. Repeatable.")
+    vnext_local_sync_parser.add_argument("--no-recursive", action="store_true", help="Disable recursive scan.")
+    vnext_local_sync_parser.add_argument("--extension", action="append", default=[".md", ".txt"], help="Allowed extension.")
+    vnext_local_sync_parser.add_argument("--ignore-pattern", action="append", default=[], help="Ignore glob.")
+    vnext_local_sync_parser.add_argument("--domain", default=None, help="Default domain.")
+    vnext_local_sync_parser.add_argument("--sensitivity", default=None, help="Default sensitivity.")
+    vnext_local_sync_parser.set_defaults(handler=_run_vnext_local_folder_sync)
+    vnext_local_watch_parser = vnext_local_subparsers.add_parser("watch", help="Poll watched folders for changes.")
+    vnext_local_watch_parser.add_argument("--path", action="append", default=[], help="Folder path. Repeatable.")
+    vnext_local_watch_parser.add_argument("--once", action="store_true", help="Run one scan and exit.")
+    vnext_local_watch_parser.add_argument("--max-runs", type=int, default=1, help="Maximum polling scans for non-daemon use.")
+    vnext_local_watch_parser.add_argument("--interval-seconds", type=float, default=2.0, help="Polling interval.")
+    vnext_local_watch_parser.add_argument("--no-recursive", action="store_true", help="Disable recursive scan.")
+    vnext_local_watch_parser.add_argument("--extension", action="append", default=[".md", ".txt"], help="Allowed extension.")
+    vnext_local_watch_parser.add_argument("--ignore-pattern", action="append", default=[], help="Ignore glob.")
+    vnext_local_watch_parser.add_argument("--domain", default=None, help="Default domain.")
+    vnext_local_watch_parser.add_argument("--sensitivity", default=None, help="Default sensitivity.")
+    vnext_local_watch_parser.set_defaults(handler=_run_vnext_local_folder_watch)
+    vnext_local_status_parser = vnext_local_subparsers.add_parser("status", help="Show local folder connector status.")
+    vnext_local_status_parser.set_defaults(connector_name="local_folder", handler=_run_vnext_connectors_status)
+
+    vnext_browser_parser = vnext_connectors_subparsers.add_parser("browser-clipper", help="Browser clipper MVP controls.")
+    vnext_browser_subparsers = vnext_browser_parser.add_subparsers(dest="vnext_browser_command", required=True)
+    vnext_browser_capture_parser = vnext_browser_subparsers.add_parser("capture", help="Capture a browser clip.")
+    vnext_browser_capture_parser.add_argument("--url", required=True, help="Page URL.")
+    vnext_browser_capture_parser.add_argument("--title", default=None, help="Page title.")
+    vnext_browser_capture_parser.add_argument("--selected-text", default=None, help="Selected text.")
+    vnext_browser_capture_parser.add_argument("--page-text", default=None, help="Optional page text.")
+    vnext_browser_capture_parser.add_argument("--user-note", default=None, help="User note.")
+    vnext_browser_capture_parser.add_argument("--file", default=None, help="Optional file containing page text.")
+    vnext_browser_capture_parser.add_argument("--domain", default="professional", help="Default domain.")
+    vnext_browser_capture_parser.add_argument("--sensitivity", default="private", help="Default sensitivity.")
+    vnext_browser_capture_parser.set_defaults(handler=_run_vnext_browser_clip)
+    vnext_browser_status_parser = vnext_browser_subparsers.add_parser("status", help="Show browser clipper status.")
+    vnext_browser_status_parser.set_defaults(connector_name="browser_clipper", handler=_run_vnext_connectors_status)
 
     vnext_sources_parser = vnext_subparsers.add_parser("sources", help="Capture and import vNext sources.")
     vnext_sources_subparsers = vnext_sources_parser.add_subparsers(dest="vnext_sources_command", required=True)
@@ -2598,6 +3091,27 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_quality_export_parser.add_argument("--artifact-id", default=None, help="Optional artifact id filter.")
     vnext_quality_export_parser.add_argument("--limit", type=int, default=100, help="Maximum ratings to export.")
     vnext_quality_export_parser.set_defaults(handler=_run_vnext_quality_export)
+    vnext_quality_insight_parser = vnext_quality_subparsers.add_parser("insight", help="Record a quick useful-insight signal.")
+    vnext_quality_insight_parser.add_argument("artifact_id", help="Artifact id.")
+    vnext_quality_insight_parser.add_argument(
+        "--useful-insight",
+        required=True,
+        choices=("yes", "no", "not_sure"),
+        help="Whether the artifact produced a useful insight.",
+    )
+    vnext_quality_insight_parser.add_argument(
+        "--surfaced-missed",
+        choices=("yes", "no", "not_sure"),
+        default=None,
+        help="Whether Alice surfaced something the user would have missed.",
+    )
+    vnext_quality_insight_parser.add_argument("--comments", default=None, help="Optional feedback comments.")
+    vnext_quality_insight_parser.set_defaults(handler=_run_vnext_artifact_insight_feedback)
+
+    vnext_dogfooding_parser = vnext_subparsers.add_parser("dogfooding", help="Show vNext dogfooding metrics.")
+    vnext_dogfooding_subparsers = vnext_dogfooding_parser.add_subparsers(dest="vnext_dogfooding_command", required=True)
+    vnext_dogfooding_dashboard_parser = vnext_dogfooding_subparsers.add_parser("dashboard", help="Show capture and usefulness metrics.")
+    vnext_dogfooding_dashboard_parser.set_defaults(handler=_run_vnext_dogfooding_dashboard)
 
     vnext_graph_parser = vnext_subparsers.add_parser("graph", help="Review and inspect vNext graph edges.")
     vnext_graph_subparsers = vnext_graph_parser.add_subparsers(dest="vnext_graph_command", required=True)
@@ -2769,6 +3283,31 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_agent_propose_parser.add_argument("--confidence", type=float, default=0.5, help="Proposal confidence.")
     vnext_agent_propose_parser.add_argument("--rationale", default=None, help="Proposal rationale.")
     vnext_agent_propose_parser.set_defaults(handler=_run_vnext_agent_propose_memory)
+    vnext_agent_ingest_parser = vnext_agents_subparsers.add_parser(
+        "ingest-output",
+        help="Capture an agent output as source/artifact evidence.",
+    )
+    vnext_agent_ingest_parser.add_argument("--agent-id", required=True, help="Agent id.")
+    vnext_agent_ingest_parser.add_argument("--agent-type", default="unknown", help="Agent type.")
+    vnext_agent_ingest_parser.add_argument("--agent-run-id", default=None, help="Agent run id.")
+    vnext_agent_ingest_parser.add_argument("--task-id", default=None, help="Task id.")
+    vnext_agent_ingest_parser.add_argument("--project-scope", action="append", default=[], help="Project scope. Repeatable.")
+    vnext_agent_ingest_parser.add_argument("--permission-profile", default="project_scoped_agent", help="Agent permission profile.")
+    vnext_agent_ingest_parser.add_argument("--title", required=True, help="Output title.")
+    vnext_agent_ingest_parser.add_argument("--file", default=None, help="File containing output content.")
+    vnext_agent_ingest_parser.add_argument("content", nargs="*", help="Inline output content.")
+    vnext_agent_ingest_parser.add_argument(
+        "--output-type",
+        choices=("sprint_summary", "research_summary", "code_review", "project_update", "decision", "general"),
+        default="general",
+        help="Agent output type.",
+    )
+    vnext_agent_ingest_parser.add_argument("--domain", default="project", help="Domain label.")
+    vnext_agent_ingest_parser.add_argument("--sensitivity", default="private", help="Sensitivity label.")
+    vnext_agent_ingest_parser.add_argument("--source-ref", action="append", default=[], help="Source reference. Repeatable.")
+    vnext_agent_ingest_parser.add_argument("--rationale", default=None, help="Optional rationale.")
+    vnext_agent_ingest_parser.add_argument("--propose-memory", action="store_true", help="Create review-only memory proposal.")
+    vnext_agent_ingest_parser.set_defaults(handler=_run_vnext_agents_ingest_output)
     vnext_agent_telemetry_parser = vnext_agents_subparsers.add_parser(
         "policy-telemetry",
         help="Summarize vNext agent policy blocks, filters, reviews, workflows, and proposals.",
@@ -2849,6 +3388,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run a Postgres-backed scheduled model-backed workflow smoke.",
     )
     vnext_smoke_model_backed_parser.set_defaults(handler=_run_vnext_smoke_model_backed)
+    vnext_smoke_live_capture_parser = vnext_smoke_subparsers.add_parser(
+        "live-capture-connectors",
+        help="Run live connector capture framework smoke.",
+    )
+    vnext_smoke_live_capture_parser.set_defaults(handler=_run_vnext_smoke_live_capture_connectors)
+    vnext_smoke_capture_to_brief_parser = vnext_smoke_subparsers.add_parser(
+        "capture-to-brief",
+        help="Run capture-to-context-to-artifact dogfooding smoke.",
+    )
+    vnext_smoke_capture_to_brief_parser.set_defaults(handler=_run_vnext_smoke_capture_to_brief)
 
     mutations_parser = subparsers.add_parser("mutations", help="Generate, inspect, and apply memory operations.")
     mutations_subparsers = mutations_parser.add_subparsers(dest="mutations_command", required=True)

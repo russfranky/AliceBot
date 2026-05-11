@@ -76,15 +76,56 @@ alicebot vnext sources capture-text "TODO: confirm launch checklist owner" --dom
 alicebot daily-brief --generate --domain project --generated-for 2026-05-11
 ```
 
-## Connector Payload Demo
+## Live Capture Connector Demo
 
-List deterministic vNext connectors:
+List vNext connectors and health:
 
 ```bash
 ./.venv/bin/python -c 'from alicebot_api.cli import main; raise SystemExit(main(["vnext", "connectors", "list"]))'
+alicebot vnext connectors health
 ```
 
-Ingest a browser clip payload after creating `clip.json`:
+Capture a browser clip directly into the review path:
+
+```bash
+alicebot vnext connectors browser-clipper capture \
+  --url https://example.test/launch-note \
+  --selected-text "Fact: Alice vNext live browser clips preserve raw evidence." \
+  --user-note "Review this before promotion." \
+  --domain project \
+  --sensitivity private
+```
+
+Scan a local Markdown/Text folder:
+
+```bash
+alicebot vnext connectors local-folder add-path ~/Notes/Alice --extension .md --extension .txt
+alicebot vnext connectors local-folder sync
+```
+
+Ingest an agent output as review-only source evidence:
+
+```bash
+alicebot vnext agents ingest-output \
+  --agent-id openclaw \
+  --agent-type coding_agent \
+  --title "Sprint summary" \
+  --content "Decision: agent output should remain review-only." \
+  --propose-memory \
+  --domain project \
+  --sensitivity private
+```
+
+Run the live connector smoke:
+
+```bash
+alicebot vnext smoke live-capture-connectors
+alicebot vnext smoke capture-to-brief
+```
+
+## Connector Payload Demo
+
+Ingest a deterministic browser clip payload after creating `clip.json`:
 
 ```json
 {

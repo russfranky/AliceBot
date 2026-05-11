@@ -405,6 +405,58 @@ export type VNextAgentActivity = {
   pending_review_items: VNextMemoryRecord[];
 };
 
+export type VNextConnectorHealthRecord = {
+  connector_name: string;
+  display_name?: string;
+  enabled: boolean;
+  configured: boolean;
+  default_domain?: string;
+  default_sensitivity?: string;
+  last_sync_at?: string | null;
+  last_success_at?: string | null;
+  last_failure_at?: string | null;
+  last_error?: string | null;
+  last_captured_item?: JsonObject | null;
+  items_seen: number;
+  items_captured: number;
+  items_deduped: number;
+  items_failed: number;
+  cursor_state?: string | null;
+  average_processing_time?: number | null;
+};
+
+export type VNextDogfoodingDashboard = {
+  captures_by_connector: Array<{ connector_name: string; count: number }>;
+  captures_today: number;
+  captures_this_week: number;
+  candidate_memories_created: number;
+  memory_status_counts: Record<string, number>;
+  generated_artifacts_created: number;
+  artifact_status_counts: Record<string, number>;
+  artifact_quality_average?: number | null;
+  artifact_quality_rating_count: number;
+  daily_brief_review_status?: string | null;
+  weekly_synthesis_review_status?: string | null;
+  connections_surfaced: number;
+  contradictions_surfaced: number;
+  open_loop_status_counts: Record<string, number>;
+  open_loops_created: number;
+  open_loops_closed: number;
+  agent_context_packs_requested: number;
+  agent_memory_proposals: number;
+  policy_blocks_filters: number;
+  connector_failures: number;
+  last_successful_scheduler_run?: JsonObject | null;
+  connector_health: { items: VNextConnectorHealthRecord[]; count: number; order: string[] };
+  insight_feedback: {
+    count: number;
+    useful_yes: number;
+    useful_no: number;
+    useful_not_sure: number;
+    missed_something_yes: number;
+  };
+};
+
 export type VNextTelemetryCounter = {
   count: number;
   [key: string]: unknown;
@@ -451,6 +503,8 @@ export type VNextWorkspacePayload = {
   recent_events: VNextEventRecord[];
   quality_evals?: VNextArtifactQualityEvalRecord[];
   agent_activity?: VNextAgentActivity;
+  connector_health?: { items: VNextConnectorHealthRecord[]; count: number; order: string[] };
+  dogfooding?: VNextDogfoodingDashboard;
   policy_telemetry?: VNextPolicyTelemetrySummary;
   scheduler?: VNextSchedulerStatus;
   brain_charter: VNextBrainCharterRecord | null;
@@ -4073,6 +4127,59 @@ export function getVNextQualityEvals(
     undefined,
     query,
   );
+}
+
+export function captureVNextBrowserClip(
+  apiBaseUrl: string,
+  payload: {
+    user_id: string;
+    url: string;
+    title?: string | null;
+    selected_text?: string | null;
+    page_text?: string | null;
+    user_note?: string | null;
+    domain?: string;
+    sensitivity?: string;
+  },
+) {
+  return requestJson<JsonObject>(apiBaseUrl, "/v0/vnext/connectors/browser-clipper/capture", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getVNextConnectorsHealth(apiBaseUrl: string, userId: string) {
+  return requestJson<{ items: VNextConnectorHealthRecord[]; count: number; order: string[] }>(
+    apiBaseUrl,
+    "/v0/vnext/connectors/health",
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function getVNextDogfoodingDashboard(apiBaseUrl: string, userId: string) {
+  return requestJson<VNextDogfoodingDashboard>(
+    apiBaseUrl,
+    "/v0/vnext/dogfooding",
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function recordVNextArtifactInsightFeedback(
+  apiBaseUrl: string,
+  artifactId: string,
+  payload: {
+    user_id: string;
+    useful_insight: "yes" | "no" | "not_sure";
+    surfaced_missed?: "yes" | "no" | "not_sure" | null;
+    comments?: string | null;
+  },
+) {
+  return requestJson<VNextEventRecord>(apiBaseUrl, `/v0/vnext/artifacts/${artifactId}/insight-feedback`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export function reviewVNextMemory(

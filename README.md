@@ -39,7 +39,7 @@ Alice vNext is the next release candidate for the true second-brain product. It 
 - **Alice Brain**: user-facing second-brain workflows such as daily briefs, weekly syntheses, context packs, contradiction reports, project updates, open loops, and reviewable artifacts.
 - **Alice Agent Memory**: CLI, API, and MCP surfaces that let agents capture, retrieve, resume, explain, generate context, propose memory, and trigger governed workflows without owning the memory store.
 
-The vNext preview currently includes deterministic source capture, retrieval/context packs, queue/artifact workflows, daily and weekly brain artifacts, connection/contradiction/project/open-loop workflows, model-backed source-grounded synthesis, human artifact quality ratings, deterministic-vs-model comparison controls, synthetic evals, deterministic connector payload ingestion, agent identity/policy auditing, a governed local scheduler with due scans, a local scheduler daemon, policy telemetry, and a live/fixture-backed `/vnext` operator workspace.
+The vNext preview currently includes deterministic source capture, retrieval/context packs, queue/artifact workflows, daily and weekly brain artifacts, connection/contradiction/project/open-loop workflows, model-backed source-grounded synthesis, human artifact quality ratings, deterministic-vs-model comparison controls, synthetic evals, live local capture connectors for Telegram, local folders/Obsidian notes, browser clips, and Hermes/OpenClaw-style agent outputs, deterministic document connector payload ingestion, agent identity/policy auditing, a governed local scheduler with due scans, a local scheduler daemon, policy telemetry, dogfooding capture-health telemetry, and a live/fixture-backed `/vnext` operator workspace.
 
 Start with:
 
@@ -56,6 +56,7 @@ Start with:
 - [Agentic control plane CTO summary](docs/vnext-agentic-control-plane-cto-summary.md)
 - [Local runtime CTO summary](docs/vnext-local-runtime-cto-summary.md)
 - [Model-backed intelligence CTO summary](docs/vnext-model-backed-intelligence-cto-summary.md)
+- [Live capture connectors CTO summary](docs/vnext-live-capture-connectors-cto-summary.md)
 
 ## Release Boundary (`v0.5.1`)
 

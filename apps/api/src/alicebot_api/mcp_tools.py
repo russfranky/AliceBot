@@ -135,6 +135,7 @@ from alicebot_api.vnext_agent_control import (
 from alicebot_api.vnext_brain import BrainArtifactRequest, VNextBrainService
 from alicebot_api.vnext_capture import VNextCaptureService
 from alicebot_api.vnext_connections import ConnectionFinderRequest, VNextConnectionService
+from alicebot_api.vnext_connectors import VNextConnectorService
 from alicebot_api.vnext_contradictions import ContradictionFinderRequest, VNextContradictionService
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_projects import ProjectAutomationRequest, VNextProjectService
@@ -1973,6 +1974,53 @@ def _handle_alice_vnext_capture(context: MCPRuntimeContext, arguments: Mapping[s
     return payload
 
 
+def _handle_alice_vnext_ingest_agent_output(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    identity = _agent_identity_from_arguments(arguments)
+    if identity is None:
+        raise MCPToolError("agent_id is required for alice_vnext_ingest_agent_output")
+    domain = _parse_optional_text(arguments, "domain") or "project"
+    sensitivity = _parse_optional_text(arguments, "sensitivity") or "private"
+    blocked_decision: PolicyDecision | None = None
+    payload: JsonObject | None = None
+    with _vnext_store_context(context) as store:
+        _actor_type, _actor_id, decision = _policy_checked(
+            store,
+            identity=identity,
+            action="source.capture",
+            domains=(domain,),
+            sensitivity_allowed=(sensitivity,),
+            project_scope=_parse_string_list(arguments, "project_scope"),
+            write_policy="proposal_only" if _parse_bool(arguments, key="propose_memory", default=False) else None,
+        )
+        if decision.decision == "blocked":
+            blocked_decision = decision
+        else:
+            payload = VNextConnectorService(store).ingest_agent_output(
+                {
+                    "agent_id": identity.agent_id,
+                    "agent_type": identity.agent_type,
+                    "agent_run_id": identity.agent_run_id,
+                    "task_id": identity.task_id,
+                    "project_scope": list(identity.project_scope or _parse_string_list(arguments, "project_scope")),
+                    "title": _parse_required_text(arguments, "title"),
+                    "content": _parse_required_text(arguments, "content"),
+                    "output_type": _parse_optional_text(arguments, "output_type") or "general",
+                    "domain": domain,
+                    "sensitivity": sensitivity,
+                    "source_refs": list(_parse_string_list(arguments, "source_refs")),
+                    "rationale": _parse_optional_text(arguments, "rationale"),
+                    "propose_memory": _parse_bool(arguments, key="propose_memory", default=False),
+                },
+                policy_decision=decision.to_record(),
+            ).to_record()
+            append_policy_events(store, identity=identity, decision=decision, target_type="connector", target_id="agent_output")
+    if blocked_decision is not None:
+        _raise_mcp_policy_blocked(blocked_decision)
+    if payload is None:
+        raise MCPToolError("agent output ingestion did not complete")
+    return payload
+
+
 def _handle_alice_vnext_queue_task(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
     identity = _agent_identity_from_arguments(arguments)
     domain = _parse_optional_text(arguments, "domain") or "unknown"
@@ -3233,6 +3281,26 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
         ),
     },
     {
+        "name": "alice_vnext_ingest_agent_output",
+        "description": "Capture Hermes/OpenClaw agent output as source/artifact evidence with optional review-only memory proposal.",
+        "inputSchema": _vnext_agent_tool_schema(
+            {
+                "title": {"type": "string"},
+                "content": {"type": "string"},
+                "output_type": {
+                    "type": "string",
+                    "enum": ["sprint_summary", "research_summary", "code_review", "project_update", "decision", "general"],
+                },
+                "domain": {"type": "string"},
+                "sensitivity": {"type": "string"},
+                "source_refs": {"type": "array", "items": {"type": "string"}},
+                "rationale": {"type": "string"},
+                "propose_memory": {"type": "boolean"},
+            },
+            required=["agent_id", "title", "content"],
+        ),
+    },
+    {
         "name": "alice_vnext_queue_task",
         "description": "Create a vNext queue task with optional agent identity and policy checks.",
         "inputSchema": _vnext_agent_tool_schema(
@@ -3440,6 +3508,7 @@ _TOOL_HANDLERS = {
     "alice_open_loop_extract": _handle_alice_open_loop_extract,
     "alice_open_loop_review": _handle_alice_open_loop_review,
     "alice_vnext_capture": _handle_alice_vnext_capture,
+    "alice_vnext_ingest_agent_output": _handle_alice_vnext_ingest_agent_output,
     "alice_vnext_queue_task": _handle_alice_vnext_queue_task,
     "alice_vnext_generate_artifact": _handle_alice_vnext_generate_artifact,
     "alice_vnext_project_dashboard": _handle_alice_project_dashboard,

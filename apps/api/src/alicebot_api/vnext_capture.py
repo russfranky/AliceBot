@@ -97,6 +97,7 @@ class SourceCaptureInput:
     external_id: str | None = None
     domain: str = "unknown"
     sensitivity: str = "unknown"
+    captured_at: str | None = None
     source_created_at: str | None = None
     source_modified_at: str | None = None
     metadata_json: JsonObject = field(default_factory=dict)
@@ -463,6 +464,7 @@ class VNextCaptureService:
                     "uri": source_input.uri,
                     "raw_path": source_input.raw_path,
                     "content_hash": content_hash,
+                    "captured_at": source_input.captured_at,
                     "source_created_at": source_input.source_created_at,
                     "source_modified_at": source_input.source_modified_at,
                     "connector_name": source_input.connector_name,

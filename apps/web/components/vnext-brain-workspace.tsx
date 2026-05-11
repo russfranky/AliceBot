@@ -9,7 +9,9 @@ import type {
   VNextArtifactRecord,
   VNextBeliefRecord,
   VNextBrainCharterRecord,
+  VNextConnectorHealthRecord,
   VNextContextPack,
+  VNextDogfoodingDashboard,
   VNextEventRecord,
   VNextMemoryRecord,
   VNextOpenLoopRecord,
@@ -74,6 +76,8 @@ export const VNEXT_SENSITIVITY_OPTIONS = [
 export const VNEXT_SUPPORTED_CONNECTOR_IDS = [
   "telegram",
   "browser_clipper",
+  "local_folder",
+  "agent_output",
   "pdf_document",
   "docx_document",
   "csv_table",
@@ -122,6 +126,8 @@ type WorkspaceView = {
   tasks: VNextTaskRecord[];
   recentEvents: VNextEventRecord[];
   qualityEvals: VNextArtifactQualityEvalRecord[];
+  connectorHealth: { items: VNextConnectorHealthRecord[]; count: number; order: string[] };
+  dogfooding: VNextDogfoodingDashboard;
   agentActivity: NonNullable<VNextWorkspacePayload["agent_activity"]>;
   policyTelemetry: VNextPolicyTelemetrySummary;
   scheduler: VNextSchedulerStatus;
@@ -286,6 +292,38 @@ const EMPTY_SCHEDULER: VNextSchedulerStatus = {
   currently_running_workflow: null,
   last_success_by_workflow: {},
   daemon: { configured: false, running: false },
+};
+
+const EMPTY_CONNECTOR_HEALTH: { items: VNextConnectorHealthRecord[]; count: number; order: string[] } = {
+  items: [],
+  count: 0,
+  order: [],
+};
+
+const EMPTY_DOGFOODING: VNextDogfoodingDashboard = {
+  captures_by_connector: [],
+  captures_today: 0,
+  captures_this_week: 0,
+  candidate_memories_created: 0,
+  memory_status_counts: {},
+  generated_artifacts_created: 0,
+  artifact_status_counts: {},
+  artifact_quality_average: null,
+  artifact_quality_rating_count: 0,
+  daily_brief_review_status: null,
+  weekly_synthesis_review_status: null,
+  connections_surfaced: 0,
+  contradictions_surfaced: 0,
+  open_loop_status_counts: {},
+  open_loops_created: 0,
+  open_loops_closed: 0,
+  agent_context_packs_requested: 0,
+  agent_memory_proposals: 0,
+  policy_blocks_filters: 0,
+  connector_failures: 0,
+  last_successful_scheduler_run: null,
+  connector_health: EMPTY_CONNECTOR_HEALTH,
+  insight_feedback: { count: 0, useful_yes: 0, useful_no: 0, useful_not_sure: 0, missed_something_yes: 0 },
 };
 
 const FIXTURE_SOURCES: VNextSourceRecord[] = [
@@ -682,13 +720,35 @@ export const INITIAL_CONNECTORS: ConnectorSetting[] = [
   {
     id: "browser_clipper",
     name: "Browser clipper",
-    stage: "Phase 2",
-    status: "Clip payloads",
-    defaultDomain: "learning",
+    stage: "Live capture",
+    status: "Local endpoint",
+    defaultDomain: "professional",
     defaultSensitivity: "private",
     cursor: "captured_at or external id",
     evidence: "URL, selection, page text, and optional HTML",
     failureMode: "Bad clips stay out of memory.",
+  },
+  {
+    id: "local_folder",
+    name: "Local folder watcher",
+    stage: "Live capture",
+    status: "Polling watcher",
+    defaultDomain: "project",
+    defaultSensitivity: "private",
+    cursor: "file mtime and path",
+    evidence: "Markdown/text file content plus path metadata",
+    failureMode: "Generated/export folders are ignored by default.",
+  },
+  {
+    id: "agent_output",
+    name: "Agent output ingestion",
+    stage: "Live capture",
+    status: "API/MCP/CLI",
+    defaultDomain: "project",
+    defaultSensitivity: "private",
+    cursor: "agent run id or external id",
+    evidence: "Hermes/OpenClaw summaries, decisions, plans, and review findings",
+    failureMode: "Agent proposals remain review-only.",
   },
   {
     id: "pdf_document",
@@ -747,6 +807,63 @@ export const INITIAL_CONNECTORS: ConnectorSetting[] = [
   },
 ];
 
+const FIXTURE_CONNECTOR_HEALTH = {
+  items: INITIAL_CONNECTORS.filter((connector) => ["telegram", "local_folder", "browser_clipper", "agent_output"].includes(connector.id)).map(
+    (connector, index) => ({
+      connector_name: connector.id,
+      display_name: connector.name,
+      enabled: index < 3,
+      configured: true,
+      default_domain: connector.defaultDomain,
+      default_sensitivity: connector.defaultSensitivity,
+      last_sync_at: `2026-05-11T0${index + 8}:00:00Z`,
+      last_success_at: `2026-05-11T0${index + 8}:00:00Z`,
+      last_failure_at: null,
+      last_error: null,
+      last_captured_item: { external_id: `${connector.id}-fixture`, source_id: `source-fixture-${index + 1}` },
+      items_seen: 4 + index,
+      items_captured: 3 + index,
+      items_deduped: 1,
+      items_failed: 0,
+      cursor_state: `${index + 1}`,
+      average_processing_time: 12.4 + index,
+    }),
+  ),
+  count: 4,
+  order: ["telegram", "local_folder", "browser_clipper", "agent_output"],
+};
+
+const FIXTURE_DOGFOODING: VNextDogfoodingDashboard = {
+  captures_by_connector: [
+    { connector_name: "telegram", count: 3 },
+    { connector_name: "local_folder", count: 4 },
+    { connector_name: "browser_clipper", count: 2 },
+    { connector_name: "agent_output", count: 1 },
+  ],
+  captures_today: 10,
+  captures_this_week: 24,
+  candidate_memories_created: 8,
+  memory_status_counts: { candidate: 8, accepted: 3, rejected: 1 },
+  generated_artifacts_created: FIXTURE_ARTIFACTS.length,
+  artifact_status_counts: { needs_review: FIXTURE_ARTIFACTS.length },
+  artifact_quality_average: 4.3,
+  artifact_quality_rating_count: FIXTURE_QUALITY_EVALS.length,
+  daily_brief_review_status: "needs_review",
+  weekly_synthesis_review_status: "needs_review",
+  connections_surfaced: 2,
+  contradictions_surfaced: 1,
+  open_loop_status_counts: { open: 2, resolved: 1 },
+  open_loops_created: 3,
+  open_loops_closed: 1,
+  agent_context_packs_requested: 5,
+  agent_memory_proposals: 2,
+  policy_blocks_filters: 1,
+  connector_failures: 0,
+  last_successful_scheduler_run: null,
+  connector_health: FIXTURE_CONNECTOR_HEALTH,
+  insight_feedback: { count: 3, useful_yes: 2, useful_no: 0, useful_not_sure: 1, missed_something_yes: 1 },
+};
+
 function fixtureWorkspace(): WorkspaceView {
   const projectDashboards: VNextProjectDashboard[] = FIXTURE_PROJECTS.map((project) => {
     const openLoops = FIXTURE_OPEN_LOOPS.filter((loop) => loop.project_id === project.id);
@@ -779,6 +896,8 @@ function fixtureWorkspace(): WorkspaceView {
     tasks: [],
     recentEvents: FIXTURE_EVENTS,
     qualityEvals: FIXTURE_QUALITY_EVALS,
+    connectorHealth: FIXTURE_CONNECTOR_HEALTH,
+    dogfooding: FIXTURE_DOGFOODING,
     agentActivity: FIXTURE_AGENT_ACTIVITY,
     policyTelemetry: FIXTURE_POLICY_TELEMETRY,
     scheduler: FIXTURE_SCHEDULER,
@@ -804,6 +923,8 @@ function emptyWorkspace(): WorkspaceView {
     tasks: [],
     recentEvents: [],
     qualityEvals: [],
+    connectorHealth: EMPTY_CONNECTOR_HEALTH,
+    dogfooding: EMPTY_DOGFOODING,
     agentActivity: EMPTY_AGENT_ACTIVITY,
     policyTelemetry: EMPTY_POLICY_TELEMETRY,
     scheduler: EMPTY_SCHEDULER,
@@ -826,6 +947,8 @@ function workspaceFromPayload(payload: VNextWorkspacePayload): WorkspaceView {
     tasks: payload.tasks,
     recentEvents: payload.recent_events,
     qualityEvals: payload.quality_evals ?? [],
+    connectorHealth: payload.connector_health ?? EMPTY_CONNECTOR_HEALTH,
+    dogfooding: payload.dogfooding ?? EMPTY_DOGFOODING,
     agentActivity: payload.agent_activity ?? EMPTY_AGENT_ACTIVITY,
     policyTelemetry: payload.policy_telemetry ?? EMPTY_POLICY_TELEMETRY,
     scheduler: payload.scheduler ?? EMPTY_SCHEDULER,
@@ -923,11 +1046,18 @@ function latestArtifactByMode(artifacts: VNextArtifactRecord[], artifactType: st
   );
 }
 
+function connectorHealth(workspace: WorkspaceView, connectorId: string) {
+  return workspace.connectorHealth.items.find((item) => item.connector_name === connectorId) ?? null;
+}
+
 const COMPARISON_ARTIFACT_TYPES = [
   { artifactType: "daily_brief", label: "Daily Brief" },
   { artifactType: "connection_report", label: "Connection Report" },
   { artifactType: "contradiction_report", label: "Contradiction Report" },
 ];
+
+const BROWSER_CLIPPER_BOOKMARKLET =
+  'javascript:(async()=>{const endpoint=prompt("Alice API endpoint","http://127.0.0.1:8000/v0/vnext/connectors/browser-clipper/capture");if(!endpoint)return;const user_id=prompt("Alice user id","00000000-0000-0000-0000-000000000001");if(!user_id)return;const s=window.getSelection().toString();const body={user_id,url:location.href,title:document.title,selected_text:s||null,page_text:s?null:document.body.innerText.slice(0,20000),domain:"professional",sensitivity:"private"};await fetch(endpoint,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});})();';
 
 function scheduleValue(workflow: VNextSchedulerStatus["workflows"][number], key: string, fallback: string) {
   const schedule = asRecord(workflow.schedule_json);
@@ -1854,7 +1984,9 @@ export function VNextBrainWorkspace({
   }
 
   const selectedLoop = workspace.openLoops.find((loop) => loop.id === selectedOpenLoopId) ?? workspace.openLoops[0] ?? null;
-  const selectedConnector = INITIAL_CONNECTORS[0];
+  const selectedConnector =
+    INITIAL_CONNECTORS.find((connector) => connector.id === "browser_clipper") ?? INITIAL_CONNECTORS[0];
+  const browserClipperEndpoint = `${apiBaseUrl || "http://127.0.0.1:8000"}/v0/vnext/connectors/browser-clipper/capture`;
   const activeSourceLabel = dataSource === "live" ? "Live API" : "Demo fixture";
   const status = pendingAction ? "loading" : statusTone === "success" ? "success" : statusTone === "danger" ? "error" : isRefreshing ? "loading" : dataSource;
 
@@ -1933,6 +2065,46 @@ export function VNextBrainWorkspace({
           ) : (
             <EmptyState title="No vNext activity yet" description="Capture a note to create the first live event-log entry." />
           )}
+        </SectionCard>
+
+        <SectionCard
+          eyebrow="Dogfooding"
+          title="Capture health loop"
+          description="Shows whether Alice is being fed, reviewed, rated, and used by agents."
+        >
+          <div className="key-value-grid key-value-grid--compact">
+            <div>
+              <dt>Captures today</dt>
+              <dd>{workspace.dogfooding.captures_today}</dd>
+            </div>
+            <div>
+              <dt>This week</dt>
+              <dd>{workspace.dogfooding.captures_this_week}</dd>
+            </div>
+            <div>
+              <dt>Quality avg</dt>
+              <dd>{workspace.dogfooding.artifact_quality_average ?? "n/a"}</dd>
+            </div>
+            <div>
+              <dt>Useful insight</dt>
+              <dd>{workspace.dogfooding.insight_feedback.useful_yes}/{workspace.dogfooding.insight_feedback.count}</dd>
+            </div>
+            <div>
+              <dt>Agent proposals</dt>
+              <dd>{workspace.dogfooding.agent_memory_proposals}</dd>
+            </div>
+            <div>
+              <dt>Connector failures</dt>
+              <dd>{workspace.dogfooding.connector_failures}</dd>
+            </div>
+          </div>
+          <div className="cluster">
+            {workspace.dogfooding.captures_by_connector.map((item) => (
+              <span key={item.connector_name} className="meta-pill">
+                {item.connector_name}: {item.count}
+              </span>
+            ))}
+          </div>
         </SectionCard>
 
         <SectionCard
@@ -2988,19 +3160,24 @@ export function VNextBrainWorkspace({
         <SectionCard
           eyebrow="Connectors"
           title="Connector settings"
-          description="Connector settings remain read-only or partially live in this sprint; OAuth and polling are explicitly deferred."
+          description="Live capture connectors expose enabled state, cursors, failures, dedupe, and last sync posture."
         >
           <div className="list-rows">
             {INITIAL_CONNECTORS.map((connector) => (
               <article key={connector.id} className="list-row">
                 <div className="list-row__topline">
                   <h3 className="list-row__title">{connector.name}</h3>
-                  <StatusBadge status={connector.status} />
+                  <StatusBadge
+                    status={connectorHealth(workspace, connector.id)?.enabled ? "accepted" : "needs_review"}
+                    label={connectorHealth(workspace, connector.id)?.enabled ? "Enabled" : "Disabled"}
+                  />
                 </div>
                 <div className="list-row__meta">
                   <span className="meta-pill">{connector.stage}</span>
                   <span className="meta-pill">Default domain: {domainLabel(connector.defaultDomain)}</span>
                   <span className="meta-pill">Default sensitivity: {sensitivityLabel(connector.defaultSensitivity)}</span>
+                  <span className="meta-pill">Captured: {connectorHealth(workspace, connector.id)?.items_captured ?? 0}</span>
+                  <span className="meta-pill">Failed: {connectorHealth(workspace, connector.id)?.items_failed ?? 0}</span>
                 </div>
               </article>
             ))}
@@ -3009,27 +3186,33 @@ export function VNextBrainWorkspace({
 
         <SectionCard
           eyebrow="Selected Connector"
-          title={selectedConnector.name}
+          title="Connector details"
           description="Cursor posture and evidence handling are visible before live polling is added."
         >
           <div className="key-value-grid key-value-grid--compact">
             <div>
               <dt>Cursor</dt>
-              <dd>{selectedConnector.cursor}</dd>
+              <dd>{connectorHealth(workspace, selectedConnector.id)?.cursor_state ?? selectedConnector.cursor}</dd>
             </div>
             <div>
-              <dt>Raw evidence</dt>
-              <dd>{selectedConnector.evidence}</dd>
+              <dt>Last sync</dt>
+              <dd>{connectorHealth(workspace, selectedConnector.id)?.last_sync_at ?? "No sync yet"}</dd>
             </div>
             <div>
               <dt>Failure posture</dt>
-              <dd>{selectedConnector.failureMode}</dd>
+              <dd>{connectorHealth(workspace, selectedConnector.id)?.last_error ?? selectedConnector.failureMode}</dd>
             </div>
             <div>
-              <dt>Deferred</dt>
-              <dd>Live OAuth, polling, OCR execution, and transcription execution.</dd>
+              <dt>Browser Clipper</dt>
+              <dd>{browserClipperEndpoint}</dd>
             </div>
           </div>
+          {selectedConnector.id === "browser_clipper" ? (
+            <div className="form-field">
+              <label htmlFor="vnext-browser-bookmarklet">Bookmarklet</label>
+              <textarea id="vnext-browser-bookmarklet" readOnly value={BROWSER_CLIPPER_BOOKMARKLET} />
+            </div>
+          ) : null}
         </SectionCard>
       </div>
 

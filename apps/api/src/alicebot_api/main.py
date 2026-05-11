@@ -489,6 +489,7 @@ from alicebot_api.vnext_contradictions import (
     VNextContradictionService,
     VNextContradictionValidationError,
 )
+from alicebot_api.vnext_dogfooding import VNextDogfoodingService
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_projects import ProjectAutomationRequest, VNextProjectService, VNextProjectValidationError
 from alicebot_api.vnext_queue import (
@@ -1228,6 +1229,69 @@ class VNextConnectorSyncRequest(VNextAgentRequest):
     default_sensitivity: str | None = Field(default=None, min_length=1, max_length=80)
 
 
+class VNextConnectorConfigRequest(VNextAgentRequest):
+    user_id: UUID
+    enabled: bool | None = None
+    default_domain: str | None = Field(default=None, min_length=1, max_length=80)
+    default_sensitivity: str | None = Field(default=None, min_length=1, max_length=80)
+    secret_ref: str | None = Field(default=None, min_length=1, max_length=240)
+    config_json: dict[str, object] = Field(default_factory=dict)
+
+
+class VNextTelegramSyncRequest(VNextAgentRequest):
+    user_id: UUID
+    updates: list[dict[str, object]] = Field(default_factory=list)
+    allowed_chat_ids: list[str] = Field(default_factory=list)
+    default_domain: str | None = Field(default=None, min_length=1, max_length=80)
+    default_sensitivity: str | None = Field(default=None, min_length=1, max_length=80)
+
+
+class VNextLocalFolderSyncRequest(VNextAgentRequest):
+    user_id: UUID
+    paths: list[str] = Field(default_factory=list)
+    recursive: bool = True
+    extensions: list[str] = Field(default_factory=lambda: [".md", ".txt"])
+    ignore_patterns: list[str] = Field(default_factory=list)
+    default_domain: str | None = Field(default=None, min_length=1, max_length=80)
+    default_sensitivity: str | None = Field(default=None, min_length=1, max_length=80)
+
+
+class VNextBrowserClipperCaptureRequest(VNextAgentRequest):
+    user_id: UUID
+    url: str = Field(min_length=1, max_length=4000)
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+    selected_text: str | None = Field(default=None, min_length=1, max_length=200_000)
+    page_text: str | None = Field(default=None, min_length=1, max_length=500_000)
+    user_note: str | None = Field(default=None, min_length=1, max_length=20_000)
+    captured_at: str | None = Field(default=None, min_length=1, max_length=120)
+    domain: str = Field(default="professional", min_length=1, max_length=80)
+    sensitivity: str = Field(default="private", min_length=1, max_length=80)
+
+
+class VNextAgentOutputIngestRequest(VNextAgentRequest):
+    user_id: UUID
+    agent_id: str = Field(min_length=1, max_length=160)
+    agent_type: str = Field(default="unknown", min_length=1, max_length=80)
+    agent_run_id: str | None = Field(default=None, min_length=1, max_length=160)
+    task_id: str | None = Field(default=None, min_length=1, max_length=160)
+    project_scope: list[str] = Field(default_factory=list)
+    title: str = Field(min_length=1, max_length=500)
+    content: str = Field(min_length=1, max_length=500_000)
+    output_type: str = Field(default="general", min_length=1, max_length=80)
+    domain: str = Field(default="project", min_length=1, max_length=80)
+    sensitivity: str = Field(default="private", min_length=1, max_length=80)
+    source_refs: list[object] = Field(default_factory=list)
+    rationale: str | None = Field(default=None, min_length=1, max_length=4000)
+    propose_memory: bool = False
+
+
+class VNextArtifactInsightFeedbackRequest(VNextAgentRequest):
+    user_id: UUID
+    useful_insight: str = Field(min_length=1, max_length=20)
+    surfaced_missed: str | None = Field(default=None, min_length=1, max_length=20)
+    comments: str | None = Field(default=None, min_length=1, max_length=4000)
+
+
 class VNextContextPackRequest(VNextAgentRequest):
     user_id: UUID
     query: str = Field(min_length=1, max_length=4000)
@@ -1578,6 +1642,8 @@ def _vnext_workspace_payload(store: PostgresVNextStore) -> dict[str, object]:
     agent_events = store.list_agent_events(limit=50)
     scheduler_status = VNextSchedulerService(store).status()
     scheduler_status = {**scheduler_status, "daemon": daemon_status()}
+    connector_health = VNextConnectorService(store).connector_health_all()
+    dogfooding = VNextDogfoodingService(store).dashboard()
     policy_telemetry = summarize_agent_policy_telemetry(
         agent_events=agent_events,
         artifacts=artifacts,
@@ -1611,6 +1677,8 @@ def _vnext_workspace_payload(store: PostgresVNextStore) -> dict[str, object]:
         "review_memories": review_memories,
         "artifacts": artifacts,
         "quality_evals": quality_evals,
+        "connector_health": connector_health,
+        "dogfooding": dogfooding,
         "projects": projects,
         "project_dashboards": project_dashboards,
         "open_loops": open_loops,
@@ -6057,13 +6125,76 @@ def list_vnext_projects(user_id: UUID, status: str | None = "active", limit: int
 
 @app.get("/v0/vnext/connectors")
 def list_vnext_connectors(user_id: UUID) -> JSONResponse:
-    del user_id
-    definitions = list_connector_definitions()
-    payload = {
-        "items": [definition.to_record() for definition in definitions],
-        "count": len(definitions),
-        "order": [definition.name for definition in definitions],
-    }
+    settings = get_settings()
+    with user_connection(settings.database_url, user_id) as conn:
+        service = VNextConnectorService(PostgresVNextStore(conn))
+        definitions = list_connector_definitions()
+        payload = {
+            "items": [
+                {
+                    **definition.to_record(),
+                    "config": service.get_config(definition.name),
+                    "health": service.connector_health(definition.name),
+                }
+                for definition in definitions
+            ],
+            "count": len(definitions),
+            "order": [definition.name for definition in definitions],
+        }
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.get("/v0/vnext/connectors/health")
+def get_vnext_connectors_health(user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = VNextConnectorService(PostgresVNextStore(conn)).connector_health_all()
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.get("/v0/vnext/connectors/{connector_name}/status")
+def get_vnext_connector_status(connector_name: str, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            store = PostgresVNextStore(conn)
+            service = VNextConnectorService(store)
+            sources = [
+                source
+                for source in store.list_sources(limit=50)
+                if source.get("connector_name") == connector_name
+            ]
+            failures = [
+                event
+                for event in store.list_events(target_type="connector", target_id=connector_name, limit=50)
+                if event.get("event_type") in {"connector.item_failed", "connector.sync_failed"}
+            ]
+            payload = {
+                "config": service.get_config(connector_name),
+                "health": service.connector_health(connector_name),
+                "recent_captures": sources[:10],
+                "recent_failures": failures[:10],
+            }
+    except VNextConnectorValidationError:
+        return _vnext_public_error_response(status_code=404, detail="vNext connector was not found")
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.patch("/v0/vnext/connectors/{connector_name}/config")
+def update_vnext_connector_config(connector_name: str, request: VNextConnectorConfigRequest) -> JSONResponse:
+    settings = get_settings()
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = VNextConnectorService(PostgresVNextStore(conn)).update_config(
+                connector_name,
+                enabled=request.enabled,
+                default_domain=request.default_domain,
+                default_sensitivity=request.default_sensitivity,
+                secret_ref=request.secret_ref,
+                config_json=request.config_json,
+            )
+    except VNextConnectorValidationError:
+        return _vnext_public_error_response(status_code=400, detail="vNext connector config request is invalid")
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
 
@@ -6088,6 +6219,126 @@ def sync_vnext_connector(connector_name: str, request: VNextConnectorSyncRequest
     elif payload["status"] == "failed":
         status_code = 400
     return JSONResponse(status_code=status_code, content=jsonable_encoder(payload))
+
+
+@app.post("/v0/vnext/connectors/telegram/sync")
+def sync_vnext_telegram_connector(request: VNextTelegramSyncRequest) -> JSONResponse:
+    settings = get_settings()
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            store = PostgresVNextStore(conn)
+            service = VNextConnectorService(store)
+            config = service.get_config("telegram")
+            config_json = config.get("config_json") if isinstance(config.get("config_json"), dict) else {}
+            configured_allowed = config_json.get("allowed_chat_ids") if isinstance(config_json, dict) else []
+            allowed_chat_ids = request.allowed_chat_ids or [
+                str(value) for value in configured_allowed if isinstance(value, (str, int))
+            ]
+            payload = service.sync_telegram_updates(
+                request.updates,
+                allowed_chat_ids=allowed_chat_ids,
+                default_domain=request.default_domain,
+                default_sensitivity=request.default_sensitivity,
+            ).to_record()
+    except VNextConnectorValidationError:
+        return _vnext_public_error_response(status_code=400, detail="vNext Telegram sync request is invalid")
+    return JSONResponse(status_code=201 if payload["status"] in {"ok", "partial"} else 400, content=jsonable_encoder(payload))
+
+
+@app.post("/v0/vnext/connectors/local-folder/sync")
+def sync_vnext_local_folder_connector(request: VNextLocalFolderSyncRequest) -> JSONResponse:
+    settings = get_settings()
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = VNextConnectorService(PostgresVNextStore(conn)).sync_local_folder(
+                request.paths,
+                recursive=request.recursive,
+                extensions=request.extensions,
+                ignore_patterns=request.ignore_patterns,
+                default_domain=request.default_domain,
+                default_sensitivity=request.default_sensitivity,
+            ).to_record()
+    except VNextConnectorValidationError:
+        return _vnext_public_error_response(status_code=400, detail="vNext local folder sync request is invalid")
+    return JSONResponse(status_code=201 if payload["status"] in {"ok", "partial", "duplicate"} else 400, content=jsonable_encoder(payload))
+
+
+@app.post("/v0/vnext/connectors/browser-clipper/capture")
+def capture_vnext_browser_clip(request: VNextBrowserClipperCaptureRequest) -> JSONResponse:
+    settings = get_settings()
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = VNextConnectorService(PostgresVNextStore(conn)).capture_browser_clip(
+                request.model_dump(mode="json"),
+                default_domain=request.domain,
+                default_sensitivity=request.sensitivity,
+            ).to_record()
+    except VNextConnectorValidationError:
+        return _vnext_public_error_response(status_code=400, detail="vNext browser clip capture request is invalid")
+    return JSONResponse(status_code=201 if payload["status"] in {"ok", "partial", "duplicate"} else 400, content=jsonable_encoder(payload))
+
+
+@app.post("/v0/vnext/agents/ingest-output")
+def ingest_vnext_agent_output(request: VNextAgentOutputIngestRequest) -> JSONResponse:
+    settings = get_settings()
+    try:
+        identity = _vnext_agent_identity(request)
+        with user_connection(settings.database_url, request.user_id) as conn:
+            store = PostgresVNextStore(conn)
+            _vnext_agent_record(store, identity)
+            decision = _vnext_policy_checked(
+                store=store,
+                identity=identity,
+                action="source.capture",
+                domains=(request.domain,),
+                sensitivity_allowed=(request.sensitivity,),
+                project_scope=tuple(request.project_scope),
+                target_type="connector",
+                target_id="agent_output",
+                write_policy="proposal_only" if request.propose_memory else None,
+            )
+            payload = VNextConnectorService(store).ingest_agent_output(
+                request.model_dump(mode="json"),
+                policy_decision=decision.to_record(),
+            ).to_record()
+    except AgentPolicyBlockedError as exc:
+        return _vnext_permission_response(exc.decision)
+    except (AgentIdentityValidationError, VNextConnectorValidationError):
+        return _vnext_public_error_response(status_code=400, detail="vNext agent output ingest request is invalid")
+    return JSONResponse(status_code=201, content=jsonable_encoder(payload))
+
+
+@app.get("/v0/vnext/dogfooding")
+def get_vnext_dogfooding_dashboard(user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = VNextDogfoodingService(PostgresVNextStore(conn)).dashboard()
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.post("/v0/vnext/artifacts/{artifact_id}/insight-feedback")
+def record_vnext_artifact_insight_feedback(
+    artifact_id: UUID,
+    request: VNextArtifactInsightFeedbackRequest,
+) -> JSONResponse:
+    settings = get_settings()
+    try:
+        identity = _vnext_agent_identity(request)
+        actor_type, actor_id = _vnext_agent_actor(identity)
+        with user_connection(settings.database_url, request.user_id) as conn:
+            store = PostgresVNextStore(conn)
+            _vnext_agent_record(store, identity)
+            payload = VNextDogfoodingService(store).record_insight_feedback(
+                artifact_id=str(artifact_id),
+                useful_insight=request.useful_insight,
+                surfaced_missed=request.surfaced_missed,
+                comments=request.comments,
+                actor_type=actor_type,
+                actor_id=actor_id,
+            )
+    except ValueError:
+        return _vnext_public_error_response(status_code=400, detail="vNext artifact insight feedback request is invalid")
+    return JSONResponse(status_code=201, content=jsonable_encoder(payload))
 
 
 @app.get("/v0/vnext/sources/{source_id}")

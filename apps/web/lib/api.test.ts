@@ -8,6 +8,7 @@ import {
   connectGmailAccount,
   createThread,
   createContinuityCapture,
+  captureVNextBrowserClip,
   applyContinuityCorrection,
   createVNextContextPack,
   createVNextOpenLoop,
@@ -35,6 +36,8 @@ import {
   getMemoryRevisions,
   getTaskSteps,
   getVNextBrainCharter,
+  getVNextConnectorsHealth,
+  getVNextDogfoodingDashboard,
   getVNextPolicyTelemetry,
   getVNextQualityEvals,
   getVNextSchedulerFailures,
@@ -79,6 +82,7 @@ import {
   isLocalApiBaseUrl,
   pageModeLabel,
   rateVNextArtifactQuality,
+  recordVNextArtifactInsightFeedback,
   resolveApproval,
   reviewVNextArtifact,
   reviewVNextMemory,
@@ -3703,6 +3707,23 @@ describe("api helpers", () => {
     await runVNextSchedulerDue("https://api.example.com", { user_id: "user-1", limit: 10 });
     await getVNextQualityEvals("https://api.example.com", "user-1", { artifactId: "artifact-1", limit: 5 });
     await getVNextPolicyTelemetry("https://api.example.com", "user-1");
+    await captureVNextBrowserClip("https://api.example.com", {
+      user_id: "user-1",
+      url: "https://example.com/live-capture",
+      title: "Live capture",
+      selected_text: "Fact: browser clips enter the review queue.",
+      user_note: "Review this source.",
+      domain: "professional",
+      sensitivity: "private",
+    });
+    await getVNextConnectorsHealth("https://api.example.com", "user-1");
+    await getVNextDogfoodingDashboard("https://api.example.com", "user-1");
+    await recordVNextArtifactInsightFeedback("https://api.example.com", "artifact-1", {
+      user_id: "user-1",
+      useful_insight: "yes",
+      surfaced_missed: "no",
+      comments: "Grounded in captured evidence.",
+    });
 
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
       "https://api.example.com/v0/vnext/workspace?user_id=user-1",
@@ -3724,6 +3745,10 @@ describe("api helpers", () => {
       "https://api.example.com/v0/vnext/scheduler/run-due",
       "https://api.example.com/v0/vnext/quality-evals?user_id=user-1&limit=5&artifact_id=artifact-1",
       "https://api.example.com/v0/vnext/agents/policy-telemetry?user_id=user-1",
+      "https://api.example.com/v0/vnext/connectors/browser-clipper/capture",
+      "https://api.example.com/v0/vnext/connectors/health?user_id=user-1",
+      "https://api.example.com/v0/vnext/dogfooding?user_id=user-1",
+      "https://api.example.com/v0/vnext/artifacts/artifact-1/insight-feedback",
     ]);
     expect(fetchMock.mock.calls[1]?.[1]).toEqual(
       expect.objectContaining({ method: "POST" }),
@@ -3737,6 +3762,12 @@ describe("api helpers", () => {
     expect(fetchMock.mock.calls[16]?.[1]).toEqual(
       expect.objectContaining({ method: "POST" }),
     );
+    expect(fetchMock.mock.calls[19]?.[1]).toEqual(
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(fetchMock.mock.calls[22]?.[1]).toEqual(
+      expect.objectContaining({ method: "POST" }),
+    );
     expect(JSON.parse(String(fetchMock.mock.calls[7]?.[1]?.body))).toEqual({
       user_id: "user-1",
       action: "assign_project",
@@ -3747,6 +3778,21 @@ describe("api helpers", () => {
       user_id: "user-1",
       action: "snooze",
       due_at: "2026-05-12T09:00:00Z",
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[19]?.[1]?.body))).toEqual({
+      user_id: "user-1",
+      url: "https://example.com/live-capture",
+      title: "Live capture",
+      selected_text: "Fact: browser clips enter the review queue.",
+      user_note: "Review this source.",
+      domain: "professional",
+      sensitivity: "private",
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[22]?.[1]?.body))).toEqual({
+      user_id: "user-1",
+      useful_insight: "yes",
+      surfaced_missed: "no",
+      comments: "Grounded in captured evidence.",
     });
   });
 });

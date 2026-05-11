@@ -3,11 +3,18 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 import csv
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
+import fnmatch
+from hashlib import sha256
 import io
 import json
+import os
 from pathlib import Path
+import tempfile
+import time
 from typing import Any, Protocol, cast
+from urllib import parse, request
+from uuid import uuid4
 
 from alicebot_api.telegram_channels import normalize_telegram_update
 from alicebot_api.vnext_capture import SourceCaptureInput, VNextCaptureService, VNextCaptureStore
@@ -21,6 +28,8 @@ class VNextConnectorValidationError(ValueError):
 
 class VNextConnectorStore(VNextCaptureStore, Protocol):
     def list_events(self, *, target_type: str | None = None, target_id: str | None = None) -> list[JsonObject]: ...
+
+    def create_artifact(self, artifact: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +73,7 @@ class NormalizedConnectorItem:
     author: str | None = None
     uri: str | None = None
     raw_path: str | None = None
+    captured_at: str | None = None
     source_created_at: str | None = None
     source_modified_at: str | None = None
     metadata_json: JsonObject = field(default_factory=dict)
@@ -101,6 +111,24 @@ class ConnectorSyncResult:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class AgentOutputIngestResult:
+    status: str
+    source_id: str | None
+    artifact_id: str | None
+    memory_id: str | None
+    policy_decision: JsonObject | None
+
+    def to_record(self) -> JsonObject:
+        return {
+            "status": self.status,
+            "source_id": self.source_id,
+            "artifact_id": self.artifact_id,
+            "memory_id": self.memory_id,
+            "policy_decision": self.policy_decision,
+        }
+
+
 SUPPORTED_CONNECTORS: tuple[ConnectorDefinition, ...] = (
     ConnectorDefinition(
         name="telegram",
@@ -116,13 +144,35 @@ SUPPORTED_CONNECTORS: tuple[ConnectorDefinition, ...] = (
     ConnectorDefinition(
         name="browser_clipper",
         display_name="Browser clipper",
-        phase="phase_2",
+        phase="live_capture",
         source_type="browser_clip",
-        default_domain="learning",
+        default_domain="professional",
         default_sensitivity="private",
         raw_evidence_kind="browser_clip_json",
         cursor_field="captured_at_or_external_id",
         description="Captures clipped page text, URL, selection, and optional HTML snapshots.",
+    ),
+    ConnectorDefinition(
+        name="local_folder",
+        display_name="Local folder watcher",
+        phase="live_capture",
+        source_type="local_file",
+        default_domain="project",
+        default_sensitivity="private",
+        raw_evidence_kind="local_text_file",
+        cursor_field="mtime_ns_path",
+        description="Backfills and incrementally scans configured Markdown/text folders such as Obsidian vaults.",
+    ),
+    ConnectorDefinition(
+        name="agent_output",
+        display_name="Agent output ingestion",
+        phase="live_capture",
+        source_type="agent_output",
+        default_domain="project",
+        default_sensitivity="private",
+        raw_evidence_kind="agent_output_json",
+        cursor_field="agent_run_id_or_external_id",
+        description="Captures Hermes/OpenClaw outputs as reviewable source evidence and optional proposals.",
     ),
     ConnectorDefinition(
         name="pdf_document",
@@ -180,6 +230,16 @@ SUPPORTED_CONNECTORS: tuple[ConnectorDefinition, ...] = (
         description="Captures transcript text and segment metadata from a configured transcription pipeline.",
     ),
 )
+
+DEFAULT_LOCAL_FOLDER_IGNORES = (
+    ".alice",
+    "generated",
+    "alice export",
+    "07 generated",
+    "08 queue",
+)
+DEFAULT_LOCAL_FOLDER_EXTENSIONS = (".md", ".txt")
+LOCAL_FOLDER_ROOTS_ENV = "ALICE_VNEXT_LOCAL_FOLDER_ROOTS"
 
 _CONNECTOR_BY_NAME = {definition.name: definition for definition in SUPPORTED_CONNECTORS}
 _VALID_DOMAINS = frozenset(
@@ -265,6 +325,18 @@ def _optional_iso(value: object) -> str | None:
     return None
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _redacted_error(error: Exception) -> str:
+    message = str(error)
+    for marker in ("bot", "token", "secret"):
+        if marker in message.casefold():
+            return type(error).__name__
+    return message
+
+
 def _external_id(payload: Mapping[str, object], *, fallback: str) -> str:
     value = _first_text(payload, ("external_id", "id", "message_id", "filename", "path", "url"))
     return value or fallback
@@ -287,6 +359,11 @@ def _cursor_sort_key(cursor: str) -> tuple[int, int | str]:
     if cursor.isdecimal():
         return (0, int(cursor))
     return (1, cursor)
+
+
+def _stable_external_id(*parts: str) -> str:
+    joined = "|".join(parts)
+    return "sha256:" + sha256(joined.encode("utf-8")).hexdigest()
 
 
 def _csv_rows_to_text(rows: object) -> str | None:
@@ -317,6 +394,128 @@ def _csv_rows_to_text(rows: object) -> str | None:
     return output.getvalue().strip()
 
 
+def _telegram_attachment_metadata(payload: Mapping[str, object]) -> list[JsonObject]:
+    message = payload.get("message")
+    if not isinstance(message, Mapping):
+        return []
+    attachments: list[JsonObject] = []
+    for key in ("photo", "document", "voice", "audio", "video"):
+        value = message.get(key)
+        if value is None:
+            continue
+        if key == "photo" and isinstance(value, list):
+            attachments.append({"type": key, "count": len(value)})
+        elif isinstance(value, Mapping):
+            metadata: JsonObject = {"type": key}
+            for field_name in ("file_id", "file_unique_id", "file_name", "mime_type", "duration", "file_size"):
+                field_value = value.get(field_name)
+                if isinstance(field_value, (str, int, float, bool)) or field_value is None:
+                    metadata[field_name] = field_value
+            attachments.append(metadata)
+    return attachments
+
+
+def _telegram_chat_id(payload: Mapping[str, object]) -> str | None:
+    for key in ("message", "edited_message", "channel_post"):
+        message = payload.get(key)
+        if not isinstance(message, Mapping):
+            continue
+        chat = message.get("chat")
+        if isinstance(chat, Mapping):
+            chat_id = chat.get("id")
+            if isinstance(chat_id, (str, int)):
+                return str(chat_id)
+    return None
+
+
+def _is_ignored_local_file(relative_path: Path, *, ignore_patterns: Sequence[str]) -> bool:
+    normalized_parts = tuple(part.casefold() for part in relative_path.parts)
+    if any(part in DEFAULT_LOCAL_FOLDER_IGNORES for part in normalized_parts):
+        return True
+    normalized_path = str(relative_path).replace("\\", "/")
+    for pattern in ignore_patterns:
+        cleaned = pattern.strip()
+        if cleaned and fnmatch.fnmatch(normalized_path, cleaned):
+            return True
+    return False
+
+
+def _path_within(path: Path, root: Path) -> bool:
+    try:
+        return os.path.commonpath((str(path), str(root))) == str(root)
+    except ValueError:
+        return False
+
+
+def _allowed_local_folder_roots() -> tuple[Path, ...]:
+    configured = os.environ.get(LOCAL_FOLDER_ROOTS_ENV)
+    if configured:
+        candidates = [Path(value).expanduser() for value in configured.split(os.pathsep) if value.strip()]
+    else:
+        candidates = [Path.home(), Path.cwd(), Path(tempfile.gettempdir())]
+
+    roots: list[Path] = []
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve(strict=False)
+        except OSError:
+            continue
+        if resolved not in roots:
+            roots.append(resolved)
+    return tuple(roots)
+
+
+def _relative_parts_under_allowed_root(raw_root: str | Path, allowed_root: Path) -> tuple[str, ...] | None:
+    raw_text = os.fspath(raw_root).strip()
+    if not raw_text or "\x00" in raw_text:
+        return None
+    expanded = os.path.realpath(os.path.abspath(os.path.expanduser(raw_text)))
+    allowed_text = str(allowed_root)
+    if expanded == allowed_text:
+        return ()
+    prefix = allowed_text + os.sep
+    if not expanded.startswith(prefix):
+        return None
+
+    parts: list[str] = []
+    for raw_part in expanded[len(prefix) :].split(os.sep):
+        if raw_part in {"", ".", ".."}:
+            return None
+        safe_part = os.path.basename(raw_part)
+        if safe_part != raw_part:
+            return None
+        parts.append(safe_part)
+    return tuple(parts)
+
+
+def _resolve_local_folder_root(raw_root: str | Path) -> Path:
+    allowed_roots = _allowed_local_folder_roots()
+    for allowed_root in allowed_roots:
+        relative_parts = _relative_parts_under_allowed_root(raw_root, allowed_root)
+        if relative_parts is None:
+            continue
+        root = allowed_root.joinpath(*relative_parts).resolve(strict=True)
+        if not _path_within(root, allowed_root) or not root.is_dir():
+            break
+        return root
+
+    allowed = ", ".join(str(allowed_root) for allowed_root in allowed_roots)
+    raise VNextConnectorValidationError(
+        f"local_folder watched path must be an existing directory under an allowed root; set {LOCAL_FOLDER_ROOTS_ENV} "
+        f"to override. Allowed roots: {allowed}"
+    )
+
+
+def _agent_artifact_type(output_type: str | None) -> str:
+    if output_type == "research_summary":
+        return "research_brief"
+    if output_type == "project_update":
+        return "project_update"
+    if output_type in {"sprint_summary", "code_review", "decision", "generated_plan", "meeting_summary"}:
+        return "system_report"
+    return "system_report"
+
+
 def _normalize_telegram_item(payload: JsonObject) -> NormalizedConnectorItem:
     normalized = normalize_telegram_update(cast(dict[str, Any], payload), bot_username=None)
     text = normalized["message_text"].strip()
@@ -332,7 +531,7 @@ def _normalize_telegram_item(payload: JsonObject) -> NormalizedConnectorItem:
         external_id=external_id,
         cursor=cursor,
         raw_text=text,
-        title=f"Telegram message {normalized['provider_message_id']}",
+        title=f"Telegram capture - {str(normalized['sent_at']).replace('T', ' ')[:16]}",
         author=author,
         source_created_at=_optional_iso(normalized["sent_at"]),
         metadata_json={
@@ -342,13 +541,31 @@ def _normalize_telegram_item(payload: JsonObject) -> NormalizedConnectorItem:
             "provider_message_id": normalized["provider_message_id"],
             "external_chat_id": normalized["external_chat_id"],
             "idempotency_key": normalized["idempotency_key"],
+            "chat_id": normalized["external_chat_id"],
+            "message_id": normalized["provider_message_id"],
+            "sender_id": normalized["external_user_id"],
+            "sender_username": username,
+            "message_date": _optional_iso(normalized["sent_at"]),
+            "contains_links": "http://" in text.casefold() or "https://" in text.casefold(),
+            "attachment_metadata": _telegram_attachment_metadata(payload),
+            "untrusted_source_material": True,
             "raw_evidence_preserved": True,
         },
     )
 
 
 def _normalize_browser_clip_item(payload: JsonObject) -> NormalizedConnectorItem:
-    text = _required_text(payload, ("text", "selection", "markdown", "excerpt"), connector_name="browser_clipper")
+    selected_text = _first_text(payload, ("selected_text", "selection", "excerpt"))
+    user_note = _first_text(payload, ("user_note", "note"))
+    page_text = _first_text(payload, ("page_text", "text", "markdown"))
+    parts = [
+        f"Selected text:\n{selected_text}" if selected_text else "",
+        f"User note:\n{user_note}" if user_note else "",
+        f"Page text:\n{page_text}" if page_text else "",
+    ]
+    text = "\n\n".join(part for part in parts if part)
+    if text.strip() == "":
+        raise VNextConnectorValidationError("browser_clipper item requires selected_text, user_note, page_text, or text")
     url = _as_optional_text(payload.get("url"))
     title = _first_text(payload, ("title", "page_title")) or "Browser clip"
     external_id = _external_id(payload, fallback=url or title)
@@ -362,11 +579,90 @@ def _normalize_browser_clip_item(payload: JsonObject) -> NormalizedConnectorItem
         raw_text=text,
         title=title,
         uri=url,
+        captured_at=captured_at,
         source_created_at=captured_at,
         metadata_json={
             "raw_payload": payload,
-            "selection": _as_optional_text(payload.get("selection")),
+            "url": url,
+            "title": title,
+            "selected_text_present": selected_text is not None,
+            "user_note_present": user_note is not None,
+            "captured_from_browser": True,
+            "selection": selected_text,
             "html": _as_optional_text(payload.get("html")),
+            "untrusted_source_material": True,
+            "raw_evidence_preserved": True,
+        },
+    )
+
+
+def _normalize_local_folder_item(payload: JsonObject) -> NormalizedConnectorItem:
+    text = _required_text(payload, ("text", "content"), connector_name="local_folder")
+    path = _required_text(payload, ("path",), connector_name="local_folder")
+    title = _first_text(payload, ("title", "filename")) or Path(path).name
+    external_id = _external_id(payload, fallback=path)
+    mtime_ns = payload.get("mtime_ns")
+    cursor = _cursor_value(
+        payload,
+        external_id=external_id,
+        keys=("cursor", "mtime_ns", "source_modified_at", "mtime"),
+    )
+    if isinstance(mtime_ns, int):
+        cursor = f"{mtime_ns}:{external_id}"
+    return NormalizedConnectorItem(
+        connector_name="local_folder",
+        source_type="local_file",
+        external_id=external_id,
+        cursor=cursor,
+        raw_text=text,
+        title=title,
+        raw_path=path,
+        source_modified_at=_optional_iso(payload.get("source_modified_at") or payload.get("mtime")),
+        metadata_json={
+            "raw_payload": payload,
+            "path": path,
+            "relative_path": _as_optional_text(payload.get("relative_path")),
+            "file_size": payload.get("file_size") if isinstance(payload.get("file_size"), int) else None,
+            "mtime": payload.get("mtime"),
+            "extension": _as_optional_text(payload.get("extension")),
+            "watched_root": _as_optional_text(payload.get("watched_root")),
+            "untrusted_source_material": True,
+            "raw_evidence_preserved": True,
+        },
+    )
+
+
+def _normalize_agent_output_item(payload: JsonObject) -> NormalizedConnectorItem:
+    content = _required_text(payload, ("content", "text", "summary"), connector_name="agent_output")
+    title = _first_text(payload, ("title",)) or "Agent output"
+    agent_id = _required_text(payload, ("agent_id",), connector_name="agent_output")
+    external_id = _external_id(
+        payload,
+        fallback=_stable_external_id(agent_id, _first_text(payload, ("agent_run_id", "task_id")) or title, content),
+    )
+    captured_at = _optional_iso(payload.get("captured_at")) or _utc_now_iso()
+    cursor = _cursor_value(payload, external_id=external_id, keys=("cursor", "agent_run_id", "captured_at"))
+    return NormalizedConnectorItem(
+        connector_name="agent_output",
+        source_type="agent_output",
+        external_id=external_id,
+        cursor=cursor,
+        raw_text=content,
+        title=title,
+        author=agent_id,
+        captured_at=captured_at,
+        source_created_at=captured_at,
+        metadata_json={
+            "raw_payload": payload,
+            "agent_id": agent_id,
+            "agent_type": _as_optional_text(payload.get("agent_type")),
+            "agent_run_id": _as_optional_text(payload.get("agent_run_id")),
+            "task_id": _as_optional_text(payload.get("task_id")),
+            "project_scope": payload.get("project_scope") if isinstance(payload.get("project_scope"), list) else [],
+            "output_type": _as_optional_text(payload.get("output_type")) or "general",
+            "rationale": _as_optional_text(payload.get("rationale")),
+            "source_refs": payload.get("source_refs") if isinstance(payload.get("source_refs"), list) else [],
+            "untrusted_source_material": True,
             "raw_evidence_preserved": True,
         },
     )
@@ -394,6 +690,7 @@ def _normalize_document_item(connector_name: str, source_type: str, payload: Jso
         metadata_json={
             "raw_payload": payload,
             "filename": filename,
+            "untrusted_source_material": True,
             "raw_evidence_preserved": True,
         },
     )
@@ -426,6 +723,7 @@ def _normalize_csv_item(payload: JsonObject) -> NormalizedConnectorItem:
         metadata_json={
             "raw_payload": payload,
             "row_count": len(cast(list[object], payload.get("rows"))) if isinstance(payload.get("rows"), list) else None,
+            "untrusted_source_material": True,
             "raw_evidence_preserved": True,
         },
     )
@@ -449,6 +747,7 @@ def _normalize_screenshot_item(payload: JsonObject) -> NormalizedConnectorItem:
         metadata_json={
             "raw_payload": payload,
             "image_hash": _as_optional_text(payload.get("image_hash")),
+            "untrusted_source_material": True,
             "raw_evidence_preserved": True,
         },
     )
@@ -498,6 +797,7 @@ def _normalize_voice_item(payload: JsonObject) -> NormalizedConnectorItem:
             "raw_payload": payload,
             "segments": payload.get("segments") if isinstance(payload.get("segments"), list) else None,
             "transcription_provider": _as_optional_text(payload.get("transcription_provider")),
+            "untrusted_source_material": True,
             "raw_evidence_preserved": True,
         },
     )
@@ -510,6 +810,10 @@ def normalize_connector_item(connector_name: str, payload: Mapping[str, object])
         return _normalize_telegram_item(item)
     if definition.name == "browser_clipper":
         return _normalize_browser_clip_item(item)
+    if definition.name == "local_folder":
+        return _normalize_local_folder_item(item)
+    if definition.name == "agent_output":
+        return _normalize_agent_output_item(item)
     if definition.name == "pdf_document":
         return _normalize_document_item("pdf_document", "pdf_document", item)
     if definition.name == "docx_document":
@@ -599,6 +903,454 @@ class VNextConnectorService:
             payload=payload,
         )
 
+    def update_config(
+        self,
+        connector_name: str,
+        *,
+        enabled: bool | None = None,
+        default_domain: str | None = None,
+        default_sensitivity: str | None = None,
+        secret_ref: str | None = None,
+        config_json: JsonObject | None = None,
+    ) -> JsonObject:
+        definition = get_connector_definition(connector_name)
+        domain = default_domain or definition.default_domain
+        sensitivity = default_sensitivity or definition.default_sensitivity
+        if domain not in _VALID_DOMAINS:
+            raise VNextConnectorValidationError(f"invalid connector default domain: {domain}")
+        if sensitivity not in _VALID_SENSITIVITIES:
+            raise VNextConnectorValidationError(f"invalid connector default sensitivity: {sensitivity}")
+        config = {
+            "connector_name": definition.name,
+            "enabled": bool(enabled) if enabled is not None else False,
+            "configured": True,
+            "secret_ref": secret_ref,
+            "default_domain": domain,
+            "default_sensitivity": sensitivity,
+            "config_json": config_json or {},
+            "updated_at": _utc_now_iso(),
+        }
+        self._log_event(
+            event_type="connector.config_updated",
+            connector_name=definition.name,
+            payload=config,
+        )
+        return config
+
+    def get_config(self, connector_name: str) -> JsonObject:
+        definition = get_connector_definition(connector_name)
+        events = [
+            event
+            for event in self.store.list_events(target_type="connector", target_id=definition.name)
+            if event.get("event_type") == "connector.config_updated"
+        ]
+        events.sort(key=lambda event: str(event.get("occurred_at") or ""), reverse=True)
+        if events:
+            payload = events[0].get("payload_json")
+            if isinstance(payload, dict):
+                return cast(JsonObject, payload)
+        return {
+            "connector_name": definition.name,
+            "enabled": False,
+            "configured": False,
+            "secret_ref": None,
+            "default_domain": definition.default_domain,
+            "default_sensitivity": definition.default_sensitivity,
+            "config_json": {},
+            "updated_at": None,
+        }
+
+    def connector_health(self, connector_name: str) -> JsonObject:
+        definition = get_connector_definition(connector_name)
+        config = self.get_config(definition.name)
+        events = self.store.list_events(target_type="connector", target_id=definition.name)
+        events.sort(key=lambda event: str(event.get("occurred_at") or ""), reverse=True)
+        sync_events = [
+            event
+            for event in events
+            if event.get("event_type") in {"connector.sync_completed", "connector.sync_failed"}
+            and isinstance(event.get("payload_json"), dict)
+        ]
+        latest_success = next((event for event in sync_events if event.get("event_type") == "connector.sync_completed"), None)
+        latest_failure = next((event for event in sync_events if event.get("event_type") == "connector.sync_failed"), None)
+        latest_item_failure = next((event for event in events if event.get("event_type") == "connector.item_failed"), None)
+        latest_import = next((event for event in events if event.get("event_type") == "connector.item_imported"), None)
+
+        items_seen = 0
+        items_captured = 0
+        items_deduped = 0
+        items_failed = 0
+        processing_times: list[float] = []
+        cursor_state: str | None = None
+        for event in sync_events:
+            payload = cast(JsonObject, event["payload_json"])
+            items_seen += int(payload.get("item_count", 0) or 0)
+            items_captured += int(payload.get("imported_count", 0) or 0)
+            items_deduped += int(payload.get("duplicate_count", 0) or 0)
+            items_failed += int(payload.get("failed_count", 0) or 0)
+            cursor = _as_optional_text(payload.get("sync_cursor"))
+            if cursor_state is None and cursor is not None:
+                cursor_state = cursor
+            processing_time = payload.get("processing_time_ms")
+            if isinstance(processing_time, (int, float)) and not isinstance(processing_time, bool):
+                processing_times.append(float(processing_time))
+        last_error = None
+        if latest_failure is not None and isinstance(latest_failure.get("payload_json"), dict):
+            errors = latest_failure["payload_json"].get("errors")  # type: ignore[index]
+            last_error = str(errors[0]) if isinstance(errors, list) and errors else None
+        if last_error is None and latest_item_failure is not None and isinstance(latest_item_failure.get("payload_json"), dict):
+            last_error = _as_optional_text(latest_item_failure["payload_json"].get("error_message"))  # type: ignore[index]
+
+        latest_import_payload = latest_import.get("payload_json") if latest_import is not None else None
+        return {
+            "connector_name": definition.name,
+            "display_name": definition.display_name,
+            "enabled": bool(config.get("enabled")),
+            "configured": bool(config.get("configured")),
+            "default_domain": config.get("default_domain") or definition.default_domain,
+            "default_sensitivity": config.get("default_sensitivity") or definition.default_sensitivity,
+            "last_sync_at": sync_events[0].get("occurred_at") if sync_events else None,
+            "last_success_at": latest_success.get("occurred_at") if latest_success is not None else None,
+            "last_failure_at": latest_failure.get("occurred_at") if latest_failure is not None else None,
+            "last_error": last_error,
+            "last_captured_item": latest_import_payload if isinstance(latest_import_payload, dict) else None,
+            "items_seen": items_seen,
+            "items_captured": items_captured,
+            "items_deduped": items_deduped,
+            "items_failed": items_failed,
+            "cursor_state": cursor_state or self.get_cursor(definition.name),
+            "average_processing_time": round(sum(processing_times) / len(processing_times), 3)
+            if processing_times
+            else None,
+        }
+
+    def connector_health_all(self) -> JsonObject:
+        items = [self.connector_health(definition.name) for definition in list_connector_definitions()]
+        return {"items": items, "count": len(items), "order": [str(item["connector_name"]) for item in items]}
+
+    def sync_telegram_updates(
+        self,
+        updates: Sequence[Mapping[str, object]],
+        *,
+        allowed_chat_ids: Sequence[str],
+        default_domain: str | None = None,
+        default_sensitivity: str | None = None,
+    ) -> ConnectorSyncResult:
+        allowed = {str(chat_id) for chat_id in allowed_chat_ids if str(chat_id).strip()}
+        if not allowed:
+            raise VNextConnectorValidationError("telegram connector requires at least one allowed chat id")
+        accepted: list[Mapping[str, object]] = []
+        rejected_count = 0
+        for update in updates:
+            chat_id = _telegram_chat_id(update)
+            if chat_id is None or chat_id not in allowed:
+                rejected_count += 1
+                self._log_event(
+                    event_type="connector.item_rejected",
+                    connector_name="telegram",
+                    payload={
+                        "connector_name": "telegram",
+                        "external_id": _first_text(update, ("update_id", "id")) or "unknown",
+                        "reason": "chat_not_allowlisted",
+                        "chat_id": chat_id,
+                    },
+                )
+                continue
+            accepted.append(update)
+        result = self.sync_items(
+            "telegram",
+            accepted,
+            default_domain=default_domain,
+            default_sensitivity=default_sensitivity,
+        )
+        if rejected_count == 0:
+            return result
+        return ConnectorSyncResult(
+            status="partial" if result.status == "ok" else result.status,
+            connector_name=result.connector_name,
+            item_count=len(updates),
+            imported_count=result.imported_count,
+            duplicate_count=result.duplicate_count,
+            skipped_count=result.skipped_count + rejected_count,
+            failed_count=result.failed_count,
+            previous_cursor=result.previous_cursor,
+            sync_cursor=result.sync_cursor,
+            source_ids=result.source_ids,
+            failed_external_ids=result.failed_external_ids,
+            errors=result.errors,
+        )
+
+    def fetch_telegram_updates(
+        self,
+        *,
+        bot_token: str | None = None,
+        bot_token_env: str = "TELEGRAM_BOT_TOKEN",
+        timeout: int = 10,
+        limit: int = 100,
+    ) -> list[JsonObject]:
+        token = bot_token or os.environ.get(bot_token_env)
+        if not token:
+            raise VNextConnectorValidationError(f"telegram bot token is not configured in {bot_token_env}")
+        cursor = self.get_cursor("telegram")
+        query: dict[str, str] = {"timeout": str(timeout), "limit": str(limit)}
+        if cursor is not None and cursor.isdecimal():
+            query["offset"] = str(int(cursor) + 1)
+        url = f"https://api.telegram.org/bot{parse.quote(token)}/getUpdates?{parse.urlencode(query)}"
+        try:
+            with request.urlopen(url, timeout=timeout + 5) as response:  # noqa: S310 - local operator supplied bot API URL.
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            self._log_event(
+                event_type="connector.sync_failed",
+                connector_name="telegram",
+                payload={
+                    "connector_name": "telegram",
+                    "error_type": type(exc).__name__,
+                    "error_message": _redacted_error(exc),
+                    "sync_cursor": cursor,
+                },
+            )
+            raise VNextConnectorValidationError("telegram polling failed") from exc
+        if not isinstance(payload, dict) or payload.get("ok") is not True or not isinstance(payload.get("result"), list):
+            raise VNextConnectorValidationError("telegram polling returned an invalid response")
+        return [cast(JsonObject, item) for item in payload["result"] if isinstance(item, dict)]
+
+    def sync_local_folder(
+        self,
+        paths: Sequence[str | Path],
+        *,
+        recursive: bool = True,
+        extensions: Sequence[str] = DEFAULT_LOCAL_FOLDER_EXTENSIONS,
+        ignore_patterns: Sequence[str] = (),
+        default_domain: str | None = None,
+        default_sensitivity: str | None = None,
+    ) -> ConnectorSyncResult:
+        normalized_extensions = tuple(extension.casefold() for extension in extensions)
+        if not normalized_extensions:
+            raise VNextConnectorValidationError("local_folder requires at least one file extension")
+        items: list[JsonObject] = []
+        ignored_count = 0
+        for raw_root in paths:
+            root = _resolve_local_folder_root(raw_root)
+            iterator = root.rglob("*") if recursive else root.glob("*")
+            for file_path in sorted(iterator):
+                try:
+                    resolved_file = file_path.resolve(strict=True)
+                except OSError:
+                    continue
+                if not resolved_file.is_file() or not _path_within(resolved_file, root):
+                    continue
+                if resolved_file.suffix.casefold() not in normalized_extensions:
+                    continue
+                relative_path = resolved_file.relative_to(root)
+                if _is_ignored_local_file(relative_path, ignore_patterns=ignore_patterns):
+                    ignored_count += 1
+                    continue
+                stat = resolved_file.stat()
+                items.append(
+                    {
+                        "path": str(resolved_file),
+                        "relative_path": str(relative_path),
+                        "filename": resolved_file.name,
+                        "text": resolved_file.read_text(encoding="utf-8"),
+                        "file_size": stat.st_size,
+                        "mtime": datetime.fromtimestamp(stat.st_mtime, UTC).isoformat().replace("+00:00", "Z"),
+                        "mtime_ns": stat.st_mtime_ns,
+                        "extension": resolved_file.suffix.casefold(),
+                        "watched_root": str(root),
+                        "external_id": str(resolved_file),
+                    }
+                )
+        self._log_event(
+            event_type="connector.local_folder_scan",
+            connector_name="local_folder",
+            payload={
+                "connector_name": "local_folder",
+                "path_count": len(paths),
+                "file_count": len(items),
+                "ignored_count": ignored_count,
+                "recursive": recursive,
+                "extensions": list(normalized_extensions),
+            },
+        )
+        return self.sync_items(
+            "local_folder",
+            items,
+            default_domain=default_domain,
+            default_sensitivity=default_sensitivity,
+            use_cursor=False,
+        )
+
+    def capture_browser_clip(
+        self,
+        payload: Mapping[str, object],
+        *,
+        default_domain: str | None = None,
+        default_sensitivity: str | None = None,
+    ) -> ConnectorSyncResult:
+        return self.sync_items(
+            "browser_clipper",
+            [payload],
+            default_domain=default_domain,
+            default_sensitivity=default_sensitivity,
+            use_cursor=False,
+        )
+
+    def ingest_agent_output(
+        self,
+        payload: Mapping[str, object],
+        *,
+        policy_decision: JsonObject | None = None,
+    ) -> AgentOutputIngestResult:
+        item = normalize_connector_item("agent_output", payload)
+        agent_id = str(item.metadata_json.get("agent_id") or item.author or "unknown")
+        agent_identity = {
+            "agent_id": agent_id,
+            "agent_type": item.metadata_json.get("agent_type") or "unknown",
+            "agent_run_id": item.metadata_json.get("agent_run_id"),
+            "task_id": item.metadata_json.get("task_id"),
+            "project_scope": item.metadata_json.get("project_scope") or [],
+        }
+        capture = VNextCaptureService(
+            self.store,
+            actor_type="agent",
+            actor_id=agent_id,
+            run_id=_as_optional_text(payload.get("agent_run_id")),
+            agent_identity=agent_identity,
+            policy_decision=policy_decision,
+        ).capture_source(
+            SourceCaptureInput(
+                source_type=item.source_type,
+                title=item.title,
+                raw_text=item.raw_text,
+                author=item.author,
+                connector_name=item.connector_name,
+                external_id=item.external_id,
+                domain=_as_optional_text(payload.get("domain")) or "project",
+                sensitivity=_as_optional_text(payload.get("sensitivity")) or "private",
+                captured_at=item.captured_at,
+                source_created_at=item.source_created_at,
+                metadata_json={
+                    **item.metadata_json,
+                    "connector_name": "agent_output",
+                    "external_id": item.external_id,
+                    "policy_decision": policy_decision,
+                },
+            )
+        )
+        source_id = capture.source_id
+        artifact_id: str | None = None
+        memory_id: str | None = None
+        artifact = self.store.create_artifact(
+            {
+                "artifact_type": _agent_artifact_type(_as_optional_text(payload.get("output_type"))),
+                "title": item.title,
+                "content_markdown": item.raw_text,
+                "status": "needs_review",
+                "domain": _as_optional_text(payload.get("domain")) or "project",
+                "sensitivity": _as_optional_text(payload.get("sensitivity")) or "private",
+                "generated_by": agent_id,
+                "metadata_json": {
+                    "connector_name": "agent_output",
+                    "agent_identity": agent_identity,
+                    "source_id": source_id,
+                    "source_refs": [f"source:{source_id}"] if source_id else [],
+                    "output_type": _as_optional_text(payload.get("output_type")) or "general",
+                    "review_status": "needs_review",
+                },
+            },
+            actor_type="agent",
+        )
+        artifact_id = str(artifact["id"])
+        if source_id is not None:
+            self.store.create_provenance_link(
+                {
+                    "target_type": "artifact",
+                    "target_id": artifact_id,
+                    "source_id": source_id,
+                    "source_chunk_id": None,
+                    "quote": item.title,
+                    "evidence_role": "summarizes",
+                    "confidence": 0.72,
+                },
+                actor_type="agent",
+            )
+
+        if bool(payload.get("propose_memory")):
+            memory = self.store.create_memory(
+                {
+                    "memory_key": f"vnext.agent_output.{sha256((item.external_id + item.raw_text).encode('utf-8')).hexdigest()[:16]}",
+                    "value": {
+                        "text": item.title,
+                        "source_id": source_id,
+                        "artifact_id": artifact_id,
+                        "rationale": item.metadata_json.get("rationale"),
+                    },
+                    "status": "candidate",
+                    "source_event_ids": [value for value in (source_id, artifact_id) if value],
+                    "memory_type": "agent_run",
+                    "confidence": 0.62,
+                    "title": item.title,
+                    "canonical_text": item.title,
+                    "summary": _as_optional_text(payload.get("rationale")) or item.raw_text[:280],
+                    "domain": _as_optional_text(payload.get("domain")) or "project",
+                    "sensitivity": _as_optional_text(payload.get("sensitivity")) or "private",
+                    "metadata_json": {
+                        "connector_name": "agent_output",
+                        "agent_identity": agent_identity,
+                        "source_id": source_id,
+                        "artifact_id": artifact_id,
+                        "review_required": True,
+                        "policy_decision": policy_decision,
+                    },
+                },
+                actor_type="agent",
+            )
+            memory_id = str(memory["id"])
+            if source_id is not None:
+                self.store.create_provenance_link(
+                    {
+                        "target_type": "memory",
+                        "target_id": memory_id,
+                        "source_id": source_id,
+                        "source_chunk_id": None,
+                        "quote": item.title,
+                        "evidence_role": "inferred_from",
+                        "confidence": 0.62,
+                    },
+                    actor_type="agent",
+                )
+            self._log_event(
+                event_type="memory.candidate_created",
+                connector_name="agent_output",
+                payload={"memory_id": memory_id, "source_id": source_id, "artifact_id": artifact_id, "review_required": True},
+            )
+
+        append_event(
+            self.store,
+            event_type="agent.output_ingested",
+            actor_type="agent",
+            actor_id=agent_id,
+            target_type="connector",
+            target_id="agent_output",
+            payload={
+                "connector_name": "agent_output",
+                "agent_identity": agent_identity,
+                "source_id": source_id,
+                "artifact_id": artifact_id,
+                "memory_id": memory_id,
+                "propose_memory": bool(payload.get("propose_memory")),
+                "policy_decision": policy_decision,
+            },
+        )
+        return AgentOutputIngestResult(
+            status="imported",
+            source_id=source_id,
+            artifact_id=artifact_id,
+            memory_id=memory_id,
+            policy_decision=policy_decision,
+        )
+
     def sync_items(
         self,
         connector_name: str,
@@ -606,7 +1358,9 @@ class VNextConnectorService:
         *,
         default_domain: str | None = None,
         default_sensitivity: str | None = None,
+        use_cursor: bool = True,
     ) -> ConnectorSyncResult:
+        started_at = time.perf_counter()
         definition = get_connector_definition(connector_name)
         domain = default_domain or definition.default_domain
         sensitivity = default_sensitivity or definition.default_sensitivity
@@ -615,7 +1369,7 @@ class VNextConnectorService:
         if sensitivity not in _VALID_SENSITIVITIES:
             raise VNextConnectorValidationError(f"invalid connector default sensitivity: {sensitivity}")
 
-        previous_cursor = self.get_cursor(definition.name)
+        previous_cursor = self.get_cursor(definition.name) if use_cursor else None
         self._log_event(
             event_type="connector.sync_started",
             connector_name=definition.name,
@@ -680,6 +1434,7 @@ class VNextConnectorService:
                         external_id=item.external_id,
                         domain=domain,
                         sensitivity=sensitivity,
+                        captured_at=item.captured_at,
                         source_created_at=item.source_created_at,
                         source_modified_at=item.source_modified_at,
                         metadata_json={
@@ -758,14 +1513,18 @@ class VNextConnectorService:
         self._log_event(
             event_type=final_event_type,
             connector_name=definition.name,
-            payload=result.to_record(),
+            payload={**result.to_record(), "processing_time_ms": round((time.perf_counter() - started_at) * 1000, 3)},
         )
         return result
 
 
 __all__ = [
+    "AgentOutputIngestResult",
     "ConnectorDefinition",
     "ConnectorSyncResult",
+    "DEFAULT_LOCAL_FOLDER_EXTENSIONS",
+    "DEFAULT_LOCAL_FOLDER_IGNORES",
+    "LOCAL_FOLDER_ROOTS_ENV",
     "NormalizedConnectorItem",
     "SUPPORTED_CONNECTORS",
     "VNextConnectorService",

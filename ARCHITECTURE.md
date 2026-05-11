@@ -36,6 +36,11 @@ Alice is a modular continuity platform with shared continuity semantics across l
 ### Integration Surfaces
 - CLI, MCP, Hermes bridge/provider flows, OpenClaw import/augmentation, deployment profiles such as Alice Lite, and generic external-builder reference examples.
 
+### vNext Preview Surfaces
+- local-first vNext memory kernel with sources, source chunks, provenance links, generated artifacts, artifact quality ratings, event log, agent identities, scheduler workflows, and connector evidence
+- live local capture connectors for allowlisted Telegram sync, local folder/Obsidian scan and watch, browser clip captures, and Hermes/OpenClaw-style agent output ingestion
+- `/vnext` operator workspace with live/fixture-backed review, Ask Alice, generated artifacts, model comparison, scheduler controls, connector health, dogfooding telemetry, and privacy settings
+
 ## Current Data Model Summary
 
 ### Continuity And Memory
@@ -134,6 +139,7 @@ Alice is a modular continuity platform with shared continuity semantics across l
 - integration smoke tests for Hermes, OpenClaw, Python example, and TypeScript example paths
 - design-partner onboarding, linkage, usage-summary, and feedback-flow validation
 - logging configuration and `/tmp` safety validation
+- vNext live-capture connector smoke and capture-to-brief smoke validation
 - release gates remain green across Python, web, Alice Lite, Hermes smoke, and public eval harness
 - docs verification is part of sprint completion, not cleanup work
 

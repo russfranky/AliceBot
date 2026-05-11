@@ -62,6 +62,8 @@ const EXPECTED_VNEXT_SENSITIVITIES = [
 const EXPECTED_SPRINT_11_CONNECTORS = [
   "telegram",
   "browser_clipper",
+  "local_folder",
+  "agent_output",
   "pdf_document",
   "docx_document",
   "csv_table",
