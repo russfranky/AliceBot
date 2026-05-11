@@ -77,6 +77,19 @@ def _pid_running(pid: int) -> bool:
     return True
 
 
+def _sleep_interruptibly(
+    interval_seconds: float,
+    *,
+    should_stop: Callable[[], bool],
+    sleep_fn: Callable[[float], None],
+) -> None:
+    remaining = max(interval_seconds, 0.1)
+    while remaining > 0 and not should_stop():
+        step = min(remaining, 0.5)
+        sleep_fn(step)
+        remaining -= step
+
+
 def daemon_status(*, pid_file: Path = DEFAULT_PID_FILE, status_file: Path = DEFAULT_STATUS_FILE) -> JsonObject:
     status = _read_json(status_file) or {}
     pid = status.get("pid")
@@ -215,7 +228,11 @@ def run_foreground_daemon(
             _write_json(config.status_file, last_payload)
             if config.once:
                 break
-            sleep_fn(max(config.interval_seconds, 0.1))
+            _sleep_interruptibly(
+                config.interval_seconds,
+                should_stop=lambda: stop_requested,
+                sleep_fn=sleep_fn,
+            )
     finally:
         signal.signal(signal.SIGTERM, previous_sigterm)
         signal.signal(signal.SIGINT, previous_sigint)

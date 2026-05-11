@@ -4,7 +4,7 @@ import json
 import os
 from pathlib import Path
 
-from alicebot_api.vnext_scheduler_runtime import daemon_status
+from alicebot_api.vnext_scheduler_runtime import _sleep_interruptibly, daemon_status
 
 
 def test_daemon_status_preserves_explicit_stopped_state_for_foreground_once(tmp_path: Path) -> None:
@@ -20,3 +20,14 @@ def test_daemon_status_preserves_explicit_stopped_state_for_foreground_once(tmp_
 
     assert status["pid"] == os.getpid()
     assert status["running"] is False
+
+
+def test_sleep_interruptibly_uses_short_slices_and_stops_early() -> None:
+    calls: list[float] = []
+
+    def sleep_fn(seconds: float) -> None:
+        calls.append(seconds)
+
+    _sleep_interruptibly(60, should_stop=lambda: len(calls) >= 2, sleep_fn=sleep_fn)
+
+    assert calls == [0.5, 0.5]

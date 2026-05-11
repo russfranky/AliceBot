@@ -97,14 +97,15 @@ Every scheduled artifact is review-only and carries scheduler metadata: `generat
 Current local validation performed during this phase:
 
 - Python compile checks for scheduler runtime, scheduler service, CLI, API, store, Brain workflows, and project/connection/contradiction services: passed.
-- Focused local-runtime unit tests: `35 passed`.
-- Full Python unit suite: `1076 passed`.
+- Focused local-runtime unit tests: `37 passed`.
+- Full Python unit suite: `1077 passed`.
 - Full Python integration suite: `370 passed`.
 - Web test suite: `207 passed`.
 - Web lint: passed.
 - Web production build: passed and built `/vnext`.
 - `alicebot vnext smoke agentic-scheduler`: passed.
 - `alicebot vnext smoke local-runtime`: passed, including all six scheduled workflows and daemon one-shot due scan.
+- Background daemon start/status/stop probe: passed with temporary pid/status/log paths and a long polling interval.
 - Live Postgres advisory-lock probe: passed, confirming duplicate same-workflow due runs are skipped while another transaction holds the workflow lock.
 - `alicebot eval run --suite all`: `170/170` passed, with `0` critical privacy leaks and `0` prompt-injection tool writes.
 - `git diff --check`: passed.
