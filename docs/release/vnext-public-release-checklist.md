@@ -17,7 +17,11 @@ Use this checklist before cutting a vNext preview tag or public announcement. Do
 - [x] New user can install locally and generate a first daily brief in under 20 minutes.
 - [x] `/vnext` renders the fixture-backed workspace.
 - [x] Connector settings are visible in the UI.
+- [x] Connector settings can be updated from `/vnext` for Telegram, local folder, and browser clipper defaults.
+- [x] Connector settings and state persist in dedicated tables, with event-log audit entries for changes.
+- [x] Connector secrets use references and local encrypted/env-backed providers without exposing raw values.
 - [x] Connector health and dogfooding capture metrics are visible in the UI.
+- [x] Local doctor checks report missing migrations, missing connector rows, secret reference problems, scheduler posture, and capture failures.
 - [x] Live local capture works for allowlisted Telegram, local folder/Obsidian notes, browser clips, and agent outputs.
 - [x] Connector payload ingestion preserves raw evidence, default domain/sensitivity, and cursor posture.
 - [x] Generated artifacts remain reviewable and are not auto-promoted to trusted memory.
@@ -35,6 +39,9 @@ Use this checklist before cutting a vNext preview tag or public announcement. Do
 - [x] `./.venv/bin/python -c 'from alicebot_api.cli import main; raise SystemExit(main(["eval", "run", "--suite", "all"]))'`
 - [x] Real Postgres vNext CLI/API/MCP smoke check.
 - [x] Real Postgres scheduled model-backed workflow smoke check.
+- [x] Real Postgres connector-hardening smoke check.
+- [x] Real Postgres secret-redaction smoke check.
+- [x] Real Postgres dogfood-doctor smoke check.
 
 ## Security and Privacy
 
@@ -43,6 +50,7 @@ Use this checklist before cutting a vNext preview tag or public announcement. Do
 - [x] Prompt-injection evals show zero tool writes.
 - [x] Critical privacy leakage evals show zero critical leaks.
 - [x] New connector/write paths have security review notes.
+- [x] Connector settings/state storage and secret references have security review notes.
 - [x] Post-merge GitHub Security Scans passed on `main`.
 
 ## Release Operations
@@ -61,7 +69,10 @@ Current evidence recorded on 2026-05-11:
 - Real Postgres scheduled model-backed smoke passed for local routing, provider metadata, review status, source refs, and grounded output sections.
 - Real Postgres live-capture connector smoke passed for allowlisted Telegram sync, rejected chat isolation, local folder generated-folder ignore behavior, browser clip capture, review-only agent output ingestion, and connector health telemetry.
 - Real Postgres capture-to-brief smoke passed for browser clip capture, context-pack inclusion, Daily Brief generation, source references, quality rating recording, and dogfooding telemetry.
-- `./.venv/bin/python -m pytest tests/unit -q`: `1108 passed`.
+- Real Postgres connector-hardening smoke passed for settings rows, cursor persistence, rejected-chat logging, generated-folder ignores, restart dedupe, and health counters.
+- Real Postgres secret-redaction smoke passed for Telegram token absence, browser token absence, and redacted capture-token evidence.
+- Real Postgres dogfood-doctor smoke passed with zero blocking failures and zero warnings.
+- `./.venv/bin/python -m pytest tests/unit -q`: `1125 passed`.
 - `./.venv/bin/python -m pytest tests/integration -q`: `370 passed`.
 - `pnpm --dir apps/web test`: `207 passed`.
 - `pnpm --dir apps/web lint`: passed.

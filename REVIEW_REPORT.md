@@ -4,36 +4,39 @@
 PASS
 
 ## criteria met
-- The stable public release boundary remains `v0.5.1`.
-- The vNext preview is clearly scoped to the pre-release tag `v0.5.1-vnext-preview`.
-- Release notes, tag plan, rollback path, changelog entry, and completed vNext release checklist are present.
-- README and vNext docs link the preview overview, quickstart, architecture, security/privacy, demo script, release checklist, release notes, and tag plan.
-- Control docs now describe the vNext public-preview release gate instead of stale Sprint 1 active status.
-- Live capture connector paths preserve raw evidence, untrusted-source labeling, candidate/review-only outputs, domain/sensitivity defaults, and provenance.
-- Known limitations remain explicit: no hosted SLA, no managed connector OAuth, no hosted connector polling, no automatic generated-artifact promotion, no production scheduler, no broad live-write `/vnext`, and no model-backed eval scoring.
-- Current validation evidence is recorded in the release checklist and build report.
+- Connector settings now persist in a dedicated table and still write audit events.
+- Connector state/cursors now persist in a dedicated table with counters, timestamps, failure posture, and restart-safe health.
+- Telegram uses `secret_ref` values or the local secret provider instead of raw token settings.
+- Browser clipper can enforce a local capture token and redacts it before persistence.
+- CLI/API/UI/event/source/artifact paths expose configured posture, not secret values.
+- Telegram rejected-chat handling, retries, and cursor advancement avoid repeated rejection loops without skipping failed processable items.
+- Local folder scans ignore generated/dependency folders and dedupe unchanged files across restart.
+- `/vnext` can update live connector defaults and run connector actions for the current local dogfood loop.
+- Dogfooding telemetry now includes readiness, trends, review rate, failure causes, scheduler freshness, agent activity, and policy filters.
+- Doctor and migration status commands give operators a repeatable local-alpha readiness check.
+- New tests and smokes cover connector settings/state, redaction, doctor behavior, and repeatable capture-to-brief behavior.
 
 ## criteria missed
-- none for the release-packaging scope
+- none for this dogfood hardening scope
 
 ## quality issues
 - none blocking
-- GitHub Actions reports a non-blocking Node.js 20 deprecation notice for existing actions; track separately as maintenance work
+- the local encrypted secret file is an alpha fallback; production use should connect the same interface to OS keychain or managed secret infrastructure
 
 ## regression risks
-- moderate for live capture because new CLI/API/MCP/UI paths touch the vNext source/artifact/event pipeline
-- covered by unit coverage, integration coverage, live-capture smoke, capture-to-brief smoke, web test/lint/build, and eval gates
+- moderate for vNext connector flows because settings/state moved from event-log-only fallback to dedicated storage
+- moderate for `/vnext` because connector configuration now performs live writes when local API/user config is present
+- covered by unit tests, integration tests, web lint/build, migration status, connector-hardening smoke, secret-redaction smoke, dogfood-doctor smoke, live-capture smoke, capture-to-brief smoke, agentic-scheduler smoke, and evals
 
 ## docs issues
-- none blocking
+- none blocking after final docs/control truth check rerun
 
 ## should anything be added to RULES.md?
 - no
 
 ## should anything update ARCHITECTURE.md?
-- yes, updated current execution posture to include the vNext preview pre-release target without changing the stable baseline boundary
+- yes, updated vNext architecture to include dedicated connector settings/state storage, local secret references, and connector cursor reliability
 
 ## recommended next action
-- squash-merge the release-packaging PR
-- tag merged `main` as `v0.5.1-vnext-preview`
-- publish the GitHub release as a pre-release with `--latest=false`
+- rerun final verification after docs edits
+- commit, push, open PR, wait for checks, squash-merge, and delete the branch

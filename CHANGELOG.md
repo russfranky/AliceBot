@@ -2,6 +2,7 @@
 
 ## 2026-05-11
 
+- Added the Alice vNext dogfood hardening slice: dedicated connector settings/state tables, encrypted local secret-provider fallback, connector cursor/checkpoint persistence, migration/doctor readiness checks, live `/vnext` connector configuration, browser clipper token enforcement, Telegram retry/cursor hardening, generated-output recapture prevention, and daily dogfood runbook.
 - Added the Alice vNext live capture connector slice for local dogfooding: allowlisted Telegram sync, local folder/Obsidian scan and watch, browser clipper capture, Hermes/OpenClaw-style agent output ingestion, connector health telemetry, dogfooding dashboard metrics, capture-to-brief smoke validation, and review-only trust preservation.
 - Prepared the Alice vNext public-preview release package for `v0.5.1-vnext-preview`.
 - Promoted the vNext preview docs from release-candidate posture to tag-ready preview posture while keeping `v0.5.1` as the current stable pre-1.0 public release.

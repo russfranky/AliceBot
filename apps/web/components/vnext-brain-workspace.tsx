@@ -29,6 +29,7 @@ import {
   createVNextOpenLoop,
   createVNextProject,
   createVNextSource,
+  captureVNextBrowserClip,
   generateVNextDailyBrief,
   generateVNextProjectUpdate,
   generateVNextWeeklySynthesis,
@@ -40,6 +41,9 @@ import {
   reviewVNextOpenLoop,
   runVNextSchedulerDue,
   runVNextSchedulerWorkflowNow,
+  syncVNextLocalFolderConnector,
+  syncVNextTelegramConnector,
+  updateVNextConnectorConfig,
   upsertVNextBrainCharter,
 } from "../lib/api";
 import { EmptyState } from "./empty-state";
@@ -304,12 +308,16 @@ const EMPTY_DOGFOODING: VNextDogfoodingDashboard = {
   captures_by_connector: [],
   captures_today: 0,
   captures_this_week: 0,
+  capture_trend_by_day: [],
+  capture_trend_by_week: [],
   candidate_memories_created: 0,
   memory_status_counts: {},
+  candidate_memory_review_rate: 0,
   generated_artifacts_created: 0,
   artifact_status_counts: {},
   artifact_quality_average: null,
   artifact_quality_rating_count: 0,
+  artifact_rating_trend: [],
   daily_brief_review_status: null,
   weekly_synthesis_review_status: null,
   connections_surfaced: 0,
@@ -321,6 +329,18 @@ const EMPTY_DOGFOODING: VNextDogfoodingDashboard = {
   agent_memory_proposals: 0,
   policy_blocks_filters: 0,
   connector_failures: 0,
+  top_failure_causes: [],
+  scheduler_freshness: { recent_success: false, recent_failure_count: 0 },
+  agent_activity_summary: { outputs_ingested: 0, context_packs_requested: 0, memory_proposals: 0 },
+  policy_block_filter_summary: { count: 0, event_types: {} },
+  dogfood_readiness: {
+    status: "red",
+    reason: "no dogfooding signal yet",
+    captures_today: 0,
+    scheduler_fresh: false,
+    artifact_rating_count: 0,
+    policy_blocks_filters: 0,
+  },
   last_successful_scheduler_run: null,
   connector_health: EMPTY_CONNECTOR_HEALTH,
   insight_feedback: { count: 0, useful_yes: 0, useful_no: 0, useful_not_sure: 0, missed_something_yes: 0 },
@@ -842,12 +862,24 @@ const FIXTURE_DOGFOODING: VNextDogfoodingDashboard = {
   ],
   captures_today: 10,
   captures_this_week: 24,
+  capture_trend_by_day: [
+    { date: "2026-05-05", count: 2 },
+    { date: "2026-05-06", count: 3 },
+    { date: "2026-05-07", count: 4 },
+    { date: "2026-05-08", count: 3 },
+    { date: "2026-05-09", count: 2 },
+    { date: "2026-05-10", count: 5 },
+    { date: "2026-05-11", count: 10 },
+  ],
+  capture_trend_by_week: [{ period: "last_7_days", count: 24 }],
   candidate_memories_created: 8,
   memory_status_counts: { candidate: 8, accepted: 3, rejected: 1 },
+  candidate_memory_review_rate: 0.33,
   generated_artifacts_created: FIXTURE_ARTIFACTS.length,
   artifact_status_counts: { needs_review: FIXTURE_ARTIFACTS.length },
   artifact_quality_average: 4.3,
   artifact_quality_rating_count: FIXTURE_QUALITY_EVALS.length,
+  artifact_rating_trend: [{ date: "2026-05-11", count: FIXTURE_QUALITY_EVALS.length }],
   daily_brief_review_status: "needs_review",
   weekly_synthesis_review_status: "needs_review",
   connections_surfaced: 2,
@@ -859,6 +891,18 @@ const FIXTURE_DOGFOODING: VNextDogfoodingDashboard = {
   agent_memory_proposals: 2,
   policy_blocks_filters: 1,
   connector_failures: 0,
+  top_failure_causes: [],
+  scheduler_freshness: { recent_success: true, recent_failure_count: 0 },
+  agent_activity_summary: { outputs_ingested: 1, context_packs_requested: 5, memory_proposals: 2 },
+  policy_block_filter_summary: { count: 1, event_types: { "agent.policy_filtered": 1 } },
+  dogfood_readiness: {
+    status: "green",
+    reason: "fixture capture, scheduler, review, and policy loops have healthy signal",
+    captures_today: 10,
+    scheduler_fresh: true,
+    artifact_rating_count: FIXTURE_QUALITY_EVALS.length,
+    policy_blocks_filters: 1,
+  },
   last_successful_scheduler_run: null,
   connector_health: FIXTURE_CONNECTOR_HEALTH,
   insight_feedback: { count: 3, useful_yes: 2, useful_no: 0, useful_not_sure: 1, missed_something_yes: 1 },
@@ -1057,7 +1101,7 @@ const COMPARISON_ARTIFACT_TYPES = [
 ];
 
 const BROWSER_CLIPPER_BOOKMARKLET =
-  'javascript:(async()=>{const endpoint=prompt("Alice API endpoint","http://127.0.0.1:8000/v0/vnext/connectors/browser-clipper/capture");if(!endpoint)return;const user_id=prompt("Alice user id","00000000-0000-0000-0000-000000000001");if(!user_id)return;const s=window.getSelection().toString();const body={user_id,url:location.href,title:document.title,selected_text:s||null,page_text:s?null:document.body.innerText.slice(0,20000),domain:"professional",sensitivity:"private"};await fetch(endpoint,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});})();';
+  'javascript:(async()=>{try{const endpoint=prompt("Alice API endpoint","http://127.0.0.1:8000/v0/vnext/connectors/browser-clipper/capture");if(!endpoint)return;const user_id=prompt("Alice user id","00000000-0000-0000-0000-000000000001");if(!user_id)return;const capture_token=prompt("Optional Alice clipper token","");const user_note=prompt("Optional note","");const s=window.getSelection().toString();const body={user_id,url:location.href,title:document.title,selected_text:s||null,page_text:s?null:document.body.innerText.slice(0,20000),user_note:user_note||null,domain:"professional",sensitivity:"private"};if(capture_token)body.capture_token=capture_token;const r=await fetch(endpoint,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});alert(r.ok?"Alice clip saved":"Alice clip failed: "+r.status)}catch(e){alert("Alice clip failed")}})();';
 
 function scheduleValue(workflow: VNextSchedulerStatus["workflows"][number], key: string, fallback: string) {
   const schedule = asRecord(workflow.schedule_json);
@@ -1167,6 +1211,17 @@ export function VNextBrainWorkspace({
   });
   const [qualityVerbosity, setQualityVerbosity] = useState("right_sized");
   const [qualityComments, setQualityComments] = useState("");
+  const [selectedConnectorId, setSelectedConnectorId] = useState("telegram");
+  const [connectorEnabled, setConnectorEnabled] = useState(true);
+  const [connectorDomain, setConnectorDomain] = useState<Domain>("personal");
+  const [connectorSensitivity, setConnectorSensitivity] = useState<Sensitivity>("private");
+  const [connectorSecretRef, setConnectorSecretRef] = useState("telegram.bot_token.default");
+  const [telegramAllowedChats, setTelegramAllowedChats] = useState("999001");
+  const [localFolderPath, setLocalFolderPath] = useState("~/Notes");
+  const [localFolderExtensions, setLocalFolderExtensions] = useState(".md,.txt");
+  const [localFolderIgnores, setLocalFolderIgnores] = useState("generated,.git,node_modules,.venv,.cache");
+  const [browserClipUrl, setBrowserClipUrl] = useState("https://example.test/article");
+  const [browserClipSelection, setBrowserClipSelection] = useState("Fact: Browser clipper test content remains untrusted.");
 
   const dailyArtifact = latestArtifact(workspace.artifacts, "daily_brief");
   const weeklyArtifact = latestArtifact(workspace.artifacts, "weekly_synthesis");
@@ -1235,6 +1290,21 @@ export function VNextBrainWorkspace({
       setCharterSensitivity(asSensitivity(workspace.brainCharter.sensitivity));
     }
   }, [workspace.brainCharter]);
+
+  useEffect(() => {
+    const connector = INITIAL_CONNECTORS.find((item) => item.id === selectedConnectorId) ?? INITIAL_CONNECTORS[0];
+    const health = workspace.connectorHealth.items.find((item) => item.connector_name === connector.id) ?? null;
+    setConnectorEnabled(Boolean(health?.enabled ?? false));
+    setConnectorDomain(asDomain(health?.default_domain ?? connector.defaultDomain));
+    setConnectorSensitivity(asSensitivity(health?.default_sensitivity ?? connector.defaultSensitivity));
+    if (connector.id === "telegram") {
+      setConnectorSecretRef("telegram.bot_token.default");
+    } else if (connector.id === "browser_clipper") {
+      setConnectorSecretRef("browser.capture_token.default");
+    } else {
+      setConnectorSecretRef("");
+    }
+  }, [selectedConnectorId, workspace.connectorHealth]);
 
   function updateFixtureWorkspace(mutator: (previous: WorkspaceView) => WorkspaceView, message: string) {
     setWorkspace((previous) => mutator(previous));
@@ -1983,9 +2053,164 @@ export function VNextBrainWorkspace({
     );
   }
 
+  function updateConnectorFixture(connectorId: string, message: string) {
+    updateFixtureWorkspace((previous) => {
+      const existing = connectorHealth(previous, connectorId);
+      const nextItem: VNextConnectorHealthRecord = {
+        connector_name: connectorId,
+        display_name: INITIAL_CONNECTORS.find((item) => item.id === connectorId)?.name ?? connectorId,
+        enabled: connectorEnabled,
+        configured: true,
+        default_domain: connectorDomain,
+        default_sensitivity: connectorSensitivity,
+        sync_mode: connectorId === "telegram" ? "polling" : connectorId === "local_folder" ? "watch" : "on_demand",
+        poll_interval_seconds: connectorId === "telegram" ? 60 : connectorId === "local_folder" ? 30 : null,
+        validation_errors: [],
+        secret_configured: Boolean(connectorSecretRef.trim()),
+        last_sync_at: existing?.last_sync_at ?? null,
+        last_success_at: existing?.last_success_at ?? null,
+        last_failure_at: existing?.last_failure_at ?? null,
+        last_error: existing?.last_error ?? null,
+        last_captured_item: existing?.last_captured_item ?? null,
+        items_seen: existing?.items_seen ?? 0,
+        items_captured: existing?.items_captured ?? 0,
+        items_deduped: existing?.items_deduped ?? 0,
+        items_failed: existing?.items_failed ?? 0,
+        cursor_state: existing?.cursor_state ?? null,
+        average_processing_time: existing?.average_processing_time ?? null,
+      };
+      const items = [
+        nextItem,
+        ...previous.connectorHealth.items.filter((item) => item.connector_name !== connectorId),
+      ];
+      const connectorHealthPayload = {
+        items,
+        count: items.length,
+        order: items.map((item) => item.connector_name),
+      };
+      return {
+        ...previous,
+        connectorHealth: connectorHealthPayload,
+        dogfooding: {
+          ...previous.dogfooding,
+          connector_health: connectorHealthPayload,
+        },
+      };
+    }, message);
+  }
+
+  async function handleSaveConnectorSettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const selectedConnector = INITIAL_CONNECTORS.find((connector) => connector.id === selectedConnectorId) ?? INITIAL_CONNECTORS[0];
+    const configJson: JsonObject =
+      selectedConnector.id === "telegram"
+        ? {
+            allowed_chat_ids: telegramAllowedChats
+              .split(/[,\n]/)
+              .map((value) => value.trim())
+              .filter(Boolean),
+          }
+        : selectedConnector.id === "local_folder"
+          ? {
+              paths: localFolderPath.trim() ? [localFolderPath.trim()] : [],
+              recursive: true,
+              extensions: localFolderExtensions
+                .split(",")
+                .map((value) => value.trim())
+                .filter(Boolean),
+              ignore_patterns: localFolderIgnores
+                .split(",")
+                .map((value) => value.trim())
+                .filter(Boolean),
+            }
+          : {};
+    if (!liveModeReady || !apiBaseUrl || !userId) {
+      updateConnectorFixture(selectedConnector.id, "Demo connector settings saved.");
+      return;
+    }
+    await runLiveAction(
+      "Saving connector settings...",
+      async () => {
+        await updateVNextConnectorConfig(apiBaseUrl, selectedConnector.id, {
+          user_id: userId,
+          enabled: connectorEnabled,
+          default_domain: connectorDomain,
+          default_sensitivity: connectorSensitivity,
+          secret_ref: connectorSecretRef.trim() || null,
+          sync_mode: selectedConnector.id === "telegram" ? "polling" : selectedConnector.id === "local_folder" ? "watch" : "on_demand",
+          poll_interval_seconds: selectedConnector.id === "telegram" ? 60 : selectedConnector.id === "local_folder" ? 30 : null,
+          config_json: configJson,
+        });
+      },
+      "Connector settings saved.",
+    );
+  }
+
+  async function handleRunConnectorSync() {
+    const selectedConnector = INITIAL_CONNECTORS.find((connector) => connector.id === selectedConnectorId) ?? INITIAL_CONNECTORS[0];
+    if (!liveModeReady || !apiBaseUrl || !userId) {
+      updateConnectorFixture(selectedConnector.id, "Demo connector sync completed.");
+      return;
+    }
+    await runLiveAction(
+      "Running connector sync...",
+      async () => {
+        if (selectedConnector.id === "telegram") {
+          await syncVNextTelegramConnector(apiBaseUrl, {
+            user_id: userId,
+            allowed_chat_ids: telegramAllowedChats
+              .split(/[,\n]/)
+              .map((value) => value.trim())
+              .filter(Boolean),
+            default_domain: connectorDomain,
+            default_sensitivity: connectorSensitivity,
+          });
+        } else if (selectedConnector.id === "local_folder") {
+          await syncVNextLocalFolderConnector(apiBaseUrl, {
+            user_id: userId,
+            paths: localFolderPath.trim() ? [localFolderPath.trim()] : [],
+            recursive: true,
+            extensions: localFolderExtensions
+              .split(",")
+              .map((value) => value.trim())
+              .filter(Boolean),
+            ignore_patterns: localFolderIgnores
+              .split(",")
+              .map((value) => value.trim())
+              .filter(Boolean),
+            default_domain: connectorDomain,
+            default_sensitivity: connectorSensitivity,
+          });
+        }
+      },
+      "Connector sync completed.",
+    );
+  }
+
+  async function handleTestBrowserClip() {
+    if (!liveModeReady || !apiBaseUrl || !userId) {
+      updateConnectorFixture("browser_clipper", "Demo browser clip captured.");
+      return;
+    }
+    await runLiveAction(
+      "Capturing browser clip...",
+      async () => {
+        await captureVNextBrowserClip(apiBaseUrl, {
+          user_id: userId,
+          url: browserClipUrl,
+          title: "vNext connector test clip",
+          selected_text: browserClipSelection,
+          domain: connectorDomain,
+          sensitivity: connectorSensitivity,
+        });
+      },
+      "Browser clip captured.",
+    );
+  }
+
   const selectedLoop = workspace.openLoops.find((loop) => loop.id === selectedOpenLoopId) ?? workspace.openLoops[0] ?? null;
   const selectedConnector =
-    INITIAL_CONNECTORS.find((connector) => connector.id === "browser_clipper") ?? INITIAL_CONNECTORS[0];
+    INITIAL_CONNECTORS.find((connector) => connector.id === selectedConnectorId) ?? INITIAL_CONNECTORS[0];
   const browserClipperEndpoint = `${apiBaseUrl || "http://127.0.0.1:8000"}/v0/vnext/connectors/browser-clipper/capture`;
   const activeSourceLabel = dataSource === "live" ? "Live API" : "Demo fixture";
   const status = pendingAction ? "loading" : statusTone === "success" ? "success" : statusTone === "danger" ? "error" : isRefreshing ? "loading" : dataSource;
@@ -2074,6 +2299,10 @@ export function VNextBrainWorkspace({
         >
           <div className="key-value-grid key-value-grid--compact">
             <div>
+              <dt>Readiness</dt>
+              <dd>{workspace.dogfooding.dogfood_readiness?.status ?? "unknown"}</dd>
+            </div>
+            <div>
               <dt>Captures today</dt>
               <dd>{workspace.dogfooding.captures_today}</dd>
             </div>
@@ -2097,11 +2326,21 @@ export function VNextBrainWorkspace({
               <dt>Connector failures</dt>
               <dd>{workspace.dogfooding.connector_failures}</dd>
             </div>
+            <div>
+              <dt>Review rate</dt>
+              <dd>{workspace.dogfooding.candidate_memory_review_rate ?? 0}</dd>
+            </div>
           </div>
+          <p className="section-note">{workspace.dogfooding.dogfood_readiness?.reason ?? "No dogfooding readiness signal yet."}</p>
           <div className="cluster">
             {workspace.dogfooding.captures_by_connector.map((item) => (
               <span key={item.connector_name} className="meta-pill">
                 {item.connector_name}: {item.count}
+              </span>
+            ))}
+            {(workspace.dogfooding.top_failure_causes ?? []).map((item) => (
+              <span key={item.cause} className="meta-pill">
+                Failure: {item.cause} ({item.count})
               </span>
             ))}
           </div>
@@ -3160,8 +3399,120 @@ export function VNextBrainWorkspace({
         <SectionCard
           eyebrow="Connectors"
           title="Connector settings"
-          description="Live capture connectors expose enabled state, cursors, failures, dedupe, and last sync posture."
+          description="Live capture connectors expose editable defaults, secret_ref status, cursors, failures, dedupe, and last sync posture."
         >
+          <form className="detail-stack" onSubmit={handleSaveConnectorSettings}>
+            <div className="form-grid">
+              <div className="form-field">
+                <label htmlFor="vnext-connector-select">Connector</label>
+                <select
+                  id="vnext-connector-select"
+                  value={selectedConnectorId}
+                  onChange={(event) => setSelectedConnectorId(event.target.value)}
+                >
+                  {INITIAL_CONNECTORS.map((connector) => (
+                    <option key={connector.id} value={connector.id}>
+                      {connector.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="form-field">
+                <label htmlFor="vnext-connector-enabled">Enabled</label>
+                <select
+                  id="vnext-connector-enabled"
+                  value={connectorEnabled ? "enabled" : "disabled"}
+                  onChange={(event) => setConnectorEnabled(event.target.value === "enabled")}
+                >
+                  <option value="enabled">Enabled</option>
+                  <option value="disabled">Disabled</option>
+                </select>
+              </div>
+              <div className="form-field">
+                <label htmlFor="vnext-connector-domain">Default domain</label>
+                <select
+                  id="vnext-connector-domain"
+                  value={connectorDomain}
+                  onChange={(event) => setConnectorDomain(event.target.value as Domain)}
+                >
+                  {VNEXT_DOMAIN_OPTIONS.map((domain) => (
+                    <option key={domain.value} value={domain.value}>
+                      {domain.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="form-field">
+                <label htmlFor="vnext-connector-sensitivity">Default sensitivity</label>
+                <select
+                  id="vnext-connector-sensitivity"
+                  value={connectorSensitivity}
+                  onChange={(event) => setConnectorSensitivity(event.target.value as Sensitivity)}
+                >
+                  {VNEXT_SENSITIVITY_OPTIONS.map((sensitivity) => (
+                    <option key={sensitivity.value} value={sensitivity.value}>
+                      {sensitivity.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            {(selectedConnector.id === "telegram" || selectedConnector.id === "browser_clipper") ? (
+              <div className="form-field">
+                <label htmlFor="vnext-connector-secret-ref">Secret ref</label>
+                <input
+                  id="vnext-connector-secret-ref"
+                  value={connectorSecretRef}
+                  onChange={(event) => setConnectorSecretRef(event.target.value)}
+                  placeholder="telegram.bot_token.default"
+                />
+              </div>
+            ) : null}
+            {selectedConnector.id === "telegram" ? (
+              <div className="form-field">
+                <label htmlFor="vnext-telegram-chat-ids">Allowed chat IDs</label>
+                <textarea
+                  id="vnext-telegram-chat-ids"
+                  value={telegramAllowedChats}
+                  onChange={(event) => setTelegramAllowedChats(event.target.value)}
+                />
+              </div>
+            ) : null}
+            {selectedConnector.id === "local_folder" ? (
+              <div className="form-grid">
+                <div className="form-field">
+                  <label htmlFor="vnext-local-folder-path">Watched path</label>
+                  <input
+                    id="vnext-local-folder-path"
+                    value={localFolderPath}
+                    onChange={(event) => setLocalFolderPath(event.target.value)}
+                  />
+                </div>
+                <div className="form-field">
+                  <label htmlFor="vnext-local-folder-extensions">Extensions</label>
+                  <input
+                    id="vnext-local-folder-extensions"
+                    value={localFolderExtensions}
+                    onChange={(event) => setLocalFolderExtensions(event.target.value)}
+                  />
+                </div>
+                <div className="form-field">
+                  <label htmlFor="vnext-local-folder-ignores">Ignore patterns</label>
+                  <input
+                    id="vnext-local-folder-ignores"
+                    value={localFolderIgnores}
+                    onChange={(event) => setLocalFolderIgnores(event.target.value)}
+                  />
+                </div>
+              </div>
+            ) : null}
+            <div className="button-row">
+              <button type="submit" className="primary-action">Save connector settings</button>
+              {(selectedConnector.id === "telegram" || selectedConnector.id === "local_folder") ? (
+                <button type="button" onClick={handleRunConnectorSync}>Run sync now</button>
+              ) : null}
+            </div>
+          </form>
           <div className="list-rows">
             {INITIAL_CONNECTORS.map((connector) => (
               <article key={connector.id} className="list-row">
@@ -3176,6 +3527,7 @@ export function VNextBrainWorkspace({
                   <span className="meta-pill">{connector.stage}</span>
                   <span className="meta-pill">Default domain: {domainLabel(connector.defaultDomain)}</span>
                   <span className="meta-pill">Default sensitivity: {sensitivityLabel(connector.defaultSensitivity)}</span>
+                  <span className="meta-pill">Secret: {connectorHealth(workspace, connector.id)?.secret_configured ? "Configured" : "No secret"}</span>
                   <span className="meta-pill">Captured: {connectorHealth(workspace, connector.id)?.items_captured ?? 0}</span>
                   <span className="meta-pill">Failed: {connectorHealth(workspace, connector.id)?.items_failed ?? 0}</span>
                 </div>
@@ -3203,6 +3555,10 @@ export function VNextBrainWorkspace({
               <dd>{connectorHealth(workspace, selectedConnector.id)?.last_error ?? selectedConnector.failureMode}</dd>
             </div>
             <div>
+              <dt>Sync mode</dt>
+              <dd>{connectorHealth(workspace, selectedConnector.id)?.sync_mode ?? "manual"}</dd>
+            </div>
+            <div>
               <dt>Browser Clipper</dt>
               <dd>{browserClipperEndpoint}</dd>
             </div>
@@ -3211,6 +3567,31 @@ export function VNextBrainWorkspace({
             <div className="form-field">
               <label htmlFor="vnext-browser-bookmarklet">Bookmarklet</label>
               <textarea id="vnext-browser-bookmarklet" readOnly value={BROWSER_CLIPPER_BOOKMARKLET} />
+            </div>
+          ) : null}
+          {selectedConnector.id === "browser_clipper" ? (
+            <div className="detail-stack">
+              <div className="form-grid">
+                <div className="form-field">
+                  <label htmlFor="vnext-browser-test-url">Test clip URL</label>
+                  <input
+                    id="vnext-browser-test-url"
+                    value={browserClipUrl}
+                    onChange={(event) => setBrowserClipUrl(event.target.value)}
+                  />
+                </div>
+                <div className="form-field">
+                  <label htmlFor="vnext-browser-test-selection">Selected text</label>
+                  <textarea
+                    id="vnext-browser-test-selection"
+                    value={browserClipSelection}
+                    onChange={(event) => setBrowserClipSelection(event.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="button-row">
+                <button type="button" onClick={handleTestBrowserClip}>Send test clip</button>
+              </div>
             </div>
           ) : null}
         </SectionCard>

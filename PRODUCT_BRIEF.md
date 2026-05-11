@@ -20,6 +20,7 @@ Alice is a pre-1.0 continuity platform for AI agents and agent-assisted workflow
 - `HF-001` is shipped.
 - Alice vNext Sprint 1 through Sprint 12 preview scope is implemented.
 - Alice vNext live capture connectors are implemented for allowlisted Telegram, local folders/Obsidian notes, browser clips, and agent outputs while preserving review-only trust boundaries.
+- Alice vNext dogfood hardening is implemented for connector settings/state persistence, local secret references, cursor reliability, doctor checks, live `/vnext` connector configuration, and daily local-alpha runbooks.
 - Alice vNext public preview release gate is active.
 
 ## Latest Completed Phase
@@ -64,4 +65,4 @@ Phase 14 turned Alice from a strong continuity system into a practical integrati
 ## Immediate Product Posture
 - `v0.5.1` is the current public release boundary.
 - `v0.5.1-vnext-preview` is the vNext public-preview release target on top of the shipped Phase 14 + `HF-001` baseline.
-- The next product decision after the preview tag is whether to prioritize managed connector OAuth/settings persistence, broader live-backed UI, production scheduling, or model-backed evaluation.
+- The next product decision after dogfood hardening is whether to prioritize broader live-backed `/vnext` workflows, managed connector OAuth, production scheduling, or model-backed evaluation.

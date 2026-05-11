@@ -1235,6 +1235,8 @@ class VNextConnectorConfigRequest(VNextAgentRequest):
     default_domain: str | None = Field(default=None, min_length=1, max_length=80)
     default_sensitivity: str | None = Field(default=None, min_length=1, max_length=80)
     secret_ref: str | None = Field(default=None, min_length=1, max_length=240)
+    sync_mode: str | None = Field(default=None, min_length=1, max_length=40)
+    poll_interval_seconds: int | None = Field(default=None, ge=1, le=86_400)
     config_json: dict[str, object] = Field(default_factory=dict)
 
 
@@ -1263,6 +1265,7 @@ class VNextBrowserClipperCaptureRequest(VNextAgentRequest):
     selected_text: str | None = Field(default=None, min_length=1, max_length=200_000)
     page_text: str | None = Field(default=None, min_length=1, max_length=500_000)
     user_note: str | None = Field(default=None, min_length=1, max_length=20_000)
+    capture_token: str | None = Field(default=None, min_length=1, max_length=500)
     captured_at: str | None = Field(default=None, min_length=1, max_length=120)
     domain: str = Field(default="professional", min_length=1, max_length=80)
     sensitivity: str = Field(default="private", min_length=1, max_length=80)
@@ -6191,6 +6194,8 @@ def update_vnext_connector_config(connector_name: str, request: VNextConnectorCo
                 default_domain=request.default_domain,
                 default_sensitivity=request.default_sensitivity,
                 secret_ref=request.secret_ref,
+                sync_mode=request.sync_mode,
+                poll_interval_seconds=request.poll_interval_seconds,
                 config_json=request.config_json,
             )
     except VNextConnectorValidationError:
@@ -6234,8 +6239,9 @@ def sync_vnext_telegram_connector(request: VNextTelegramSyncRequest) -> JSONResp
             allowed_chat_ids = request.allowed_chat_ids or [
                 str(value) for value in configured_allowed if isinstance(value, (str, int))
             ]
+            updates = request.updates or service.fetch_telegram_updates(timeout=10, limit=100)
             payload = service.sync_telegram_updates(
-                request.updates,
+                updates,
                 allowed_chat_ids=allowed_chat_ids,
                 default_domain=request.default_domain,
                 default_sensitivity=request.default_sensitivity,
@@ -6250,8 +6256,16 @@ def sync_vnext_local_folder_connector(request: VNextLocalFolderSyncRequest) -> J
     settings = get_settings()
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
-            payload = VNextConnectorService(PostgresVNextStore(conn)).sync_local_folder(
-                request.paths,
+            store = PostgresVNextStore(conn)
+            service = VNextConnectorService(store)
+            paths = list(request.paths)
+            if not paths:
+                config = service.get_config("local_folder")
+                config_json = config.get("config_json") if isinstance(config.get("config_json"), dict) else {}
+                configured_paths = config_json.get("paths") if isinstance(config_json, dict) else []
+                paths = [str(path) for path in configured_paths if isinstance(path, str)]
+            payload = service.sync_local_folder(
+                paths,
                 recursive=request.recursive,
                 extensions=request.extensions,
                 ignore_patterns=request.ignore_patterns,

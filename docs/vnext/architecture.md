@@ -120,7 +120,7 @@ Deterministic payload ingestion remains available for:
 - screenshot OCR text payloads
 - voice transcript payloads
 
-Each connector preserves raw evidence in source metadata, applies conservative default domain/sensitivity, and uses event-log cursors to skip already-seen items. Cursor advancement pauses when an item fails so a broken item is not silently skipped on the next sync.
+Each connector preserves raw evidence in source metadata, applies conservative default domain/sensitivity, and writes audit events for settings/state changes. Dedicated `connector_settings` rows hold enabled/configured posture, defaults, sync mode, polling interval, validation errors, and metadata. Dedicated `connector_state` rows hold cursors, timestamps, failure posture, counters, and dedupe state. Cursor advancement pauses when an item fails so a broken item is not silently skipped on the next sync.
 
 ## Security Model
 
@@ -128,6 +128,7 @@ Each connector preserves raw evidence in source metadata, applies conservative d
 - No cloud model call is required by the deterministic vNext seed or local-only model-backed mode.
 - Model routing prevents private and highly sensitive content from leaving local mode unless explicitly configured.
 - Connectors do not execute source instructions.
+- Connector secrets are represented by `secret_ref` values and resolved through the secret-provider interface, not returned as normal settings.
 - Live connector output is stored as untrusted source material and may only create candidate memories or reviewable artifacts.
 - Prompt-injection eval cases are quarantined and cannot trigger tool writes. Model prompts mark source content as untrusted context and instruct providers not to execute embedded source instructions.
 - Sensitive domains and sensitivities are filtered before context-pack assembly.
@@ -136,4 +137,4 @@ Each connector preserves raw evidence in source metadata, applies conservative d
 
 ## Current Production Gap
 
-Before a public vNext tag, decide whether connector cursors and secrets move from event-log seeding into a dedicated connector settings table or encrypted local secret store. Managed OAuth, packaged browser extensions, OCR execution, transcription execution, hosted connector polling, hosted scheduling, and automatic memory promotion remain outside this preview.
+The connector settings/state/secret posture is now production-shaped for local alpha dogfooding. Managed OAuth, packaged browser extensions, OCR execution, transcription execution, hosted connector polling, hosted scheduling, and automatic memory promotion remain outside this preview. Production deployments should bind the secret-provider interface to OS keychain or managed secret infrastructure rather than relying on the local encrypted-file fallback.

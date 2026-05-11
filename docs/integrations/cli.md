@@ -54,28 +54,34 @@ alicebot vnext agents policy-telemetry
 alicebot vnext connectors list
 alicebot vnext connectors status
 alicebot vnext connectors health
-alicebot vnext connectors telegram configure --enabled --allowed-chat-id 999001 --bot-token-env TELEGRAM_BOT_TOKEN
+alicebot vnext connectors telegram configure --enabled --allowed-chat-id 999001 --secret-ref env:TELEGRAM_BOT_TOKEN
+alicebot vnext connectors telegram configure --enabled --allowed-chat-id 999001 --bot-token "$TELEGRAM_BOT_TOKEN"
 alicebot vnext connectors telegram test
-alicebot vnext connectors telegram sync --allowed-chat-id 999001
+alicebot vnext connectors telegram sync --allowed-chat-id 999001 --retries 3
 alicebot vnext connectors local-folder add-path ~/Notes/Alice --extension .md --extension .txt
 alicebot vnext connectors local-folder sync
 alicebot vnext connectors local-folder watch --once
-alicebot vnext connectors browser-clipper capture --url https://example.test/page --selected-text "Fact: browser clips are reviewable."
+alicebot vnext connectors browser-clipper capture --url https://example.test/page --selected-text "Fact: browser clips are reviewable." --capture-token "$ALICE_BROWSER_CLIP_TOKEN"
 alicebot vnext agents ingest-output --agent-id openclaw --agent-type coding_agent --title "Sprint summary" --content "Decision: agent output stays review-only." --propose-memory
 alicebot vnext dogfooding dashboard
+alicebot vnext migrations status
+alicebot vnext doctor --fix-safe
 alicebot vnext quality insight <artifact_id> --useful-insight yes
 alicebot vnext smoke agentic-scheduler
 alicebot vnext smoke local-runtime
 alicebot vnext smoke model-backed
 alicebot vnext smoke live-capture-connectors
 alicebot vnext smoke capture-to-brief
+alicebot vnext smoke connector-hardening
+alicebot vnext smoke secret-redaction
+alicebot vnext smoke dogfood-doctor
 ```
 
 The vNext agent arguments are `--agent-id`, `--agent-type`, `--agent-run-id`, `--agent-task-id`, `--project-scope`, and `--permission-profile`. Agent-originated scheduler and memory-proposal commands are policy checked, logged, and kept review-only where they create memory or generated artifacts.
 
 Model-backed generation arguments are available on daily brief, weekly synthesis, connection report, contradiction report, project update candidate, and scheduler run-now commands: `--generation-mode`, `--model-route-mode`, `--model-provider`, `--model`, `--model-temperature`, and `--allow-cloud-private`. Private and highly sensitive scopes remain local-only or disabled unless explicitly configured.
 
-Live capture connector commands preserve the same trust model as manual capture: raw source text is archived, domain/sensitivity defaults are explicit, source material is treated as untrusted, agent output produces review-only artifacts/proposals, and capture-to-brief promotion still requires human review.
+Live capture connector commands preserve the same trust model as manual capture: raw source text is archived, domain/sensitivity defaults are explicit, source material is treated as untrusted, agent output produces review-only artifacts/proposals, and capture-to-brief promotion still requires human review. Connector settings and state now persist outside the event log, while settings/state changes still write audit events. Secret values are never printed; the CLI stores or resolves only `secret_ref` values.
 
 ## Temporal History Commands
 
@@ -96,7 +102,7 @@ Live capture connector commands preserve the same trust model as manual capture:
 - output format is deterministic for stable automated validation
 - provenance snippets remain visible in recall/resume responses
 - correction flow updates future recall/resume results
-- vNext scheduler and model-backed smoke output is JSON and fails nonzero if any agent/scheduler/local-runtime/model-routing gate fails
+- vNext scheduler, connector-hardening, secret-redaction, doctor, and model-backed smoke output is JSON and fails nonzero if any gate fails
 
 See tests:
 

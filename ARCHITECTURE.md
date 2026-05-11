@@ -39,7 +39,9 @@ Alice is a modular continuity platform with shared continuity semantics across l
 ### vNext Preview Surfaces
 - local-first vNext memory kernel with sources, source chunks, provenance links, generated artifacts, artifact quality ratings, event log, agent identities, scheduler workflows, and connector evidence
 - live local capture connectors for allowlisted Telegram sync, local folder/Obsidian scan and watch, browser clip captures, and Hermes/OpenClaw-style agent output ingestion
-- `/vnext` operator workspace with live/fixture-backed review, Ask Alice, generated artifacts, model comparison, scheduler controls, connector health, dogfooding telemetry, and privacy settings
+- dedicated connector settings/state storage for connector defaults, sync modes, cursors, counters, failures, and restart-safe health posture
+- local connector secret-provider abstraction with environment references, encrypted local fallback, and redaction before persistence
+- `/vnext` operator workspace with live/fixture-backed review, Ask Alice, generated artifacts, model comparison, scheduler controls, live connector configuration, connector health, dogfooding telemetry, and privacy settings
 
 ## Current Data Model Summary
 
@@ -62,6 +64,7 @@ Alice is a modular continuity platform with shared continuity semantics across l
 - `provider_invocation_telemetry`
 - design-partner launch/admin tables from `P14-S5`
 - `task_briefs`
+- `connector_settings`, `connector_state`
 - channel, task, trace, approval, and execution tables
 
 ## Key Flows In Force
@@ -125,6 +128,8 @@ Alice is a modular continuity platform with shared continuity semantics across l
 ## Security And Reliability Rules
 - Keep user/workspace isolation intact for continuity, provider, runtime, and design-partner data.
 - Keep provider credentials and secret references out of logs and outward-facing errors.
+- Keep connector secrets out of settings rows, event logs, source metadata, artifact metadata, API responses, CLI output, and UI state.
+- Keep connector cursors restart-safe and do not advance past failed data unless the skipped item is explicitly safe.
 - Preserve approval-bounded execution for consequential side effects.
 - Keep capture, mutation, provider, and Hermes sync paths idempotent.
 - Preserve append-only evidence where the system depends on auditability.
@@ -140,6 +145,7 @@ Alice is a modular continuity platform with shared continuity semantics across l
 - design-partner onboarding, linkage, usage-summary, and feedback-flow validation
 - logging configuration and `/tmp` safety validation
 - vNext live-capture connector smoke and capture-to-brief smoke validation
+- vNext connector-hardening, secret-redaction, and dogfood-doctor smoke validation
 - release gates remain green across Python, web, Alice Lite, Hermes smoke, and public eval harness
 - docs verification is part of sprint completion, not cleanup work
 

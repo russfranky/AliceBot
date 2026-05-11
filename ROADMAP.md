@@ -20,6 +20,7 @@ These remain baseline truth and are not future milestones.
 - `M-001` Archive Maintenance CI Repair is implemented in this working tree.
 - Alice vNext Sprint 1 through Sprint 12 preview scope is implemented.
 - Alice vNext live capture connectors are implemented for allowlisted Telegram, local folder/Obsidian notes, browser clips, and agent outputs.
+- Alice vNext dogfood hardening is implemented for dedicated connector settings/state, local secret references, readiness doctor checks, live `/vnext` connector configuration, and daily-use runbooks.
 - Alice vNext public preview release gate is active for `v0.5.1-vnext-preview`.
 
 ## Completed Phase 14 Sequence
@@ -58,9 +59,10 @@ Status: shipped
 - preserve `v0.5.1`/Phase 14 behavior while documenting the vNext preview boundary
 - include current release evidence for Postgres-backed CLI/API/MCP smoke, live-capture smoke, capture-to-brief smoke, full unit tests, integration tests, web tests/lint/build, control-doc truth, evals, and security scans
 - keep explicit preview limitations: no hosted SLA, no managed connector OAuth, no hosted connector polling, no automatic artifact promotion, no production scheduler, no broad live-write `/vnext` expansion
+- include dogfood hardening evidence for connector settings/state persistence, secret redaction, doctor checks, live connector configuration, and repeatable smoke validation
 
 ## Next Roadmap Gate
-- After the vNext preview tag, choose the next product slice: managed connector OAuth/settings persistence, production scheduling, broader live-backed UI expansion, or model-backed/live-store evals.
+- After the vNext dogfood hardening merge, choose the next product slice: broader live-backed `/vnext` review/workflow UI, managed connector OAuth, production scheduling, or model-backed/live-store evals.
 - Preserve the shipped Phase 14 platform plus the `HF-001` logging guardrails as baseline behavior.
 
 ## Beyond Phase 14

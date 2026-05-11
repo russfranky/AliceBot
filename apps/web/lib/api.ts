@@ -423,18 +423,50 @@ export type VNextConnectorHealthRecord = {
   items_failed: number;
   cursor_state?: string | null;
   average_processing_time?: number | null;
+  sync_mode?: string;
+  poll_interval_seconds?: number | null;
+  validation_errors?: string[];
+  secret_configured?: boolean;
+};
+
+export type VNextConnectorConfigRecord = {
+  connector_id?: string | null;
+  connector_name: string;
+  enabled: boolean;
+  configured: boolean;
+  secret_ref?: string | null;
+  secret_configured?: boolean;
+  default_domain: string;
+  default_sensitivity: string;
+  sync_mode?: string;
+  poll_interval_seconds?: number | null;
+  config_json?: JsonObject;
+  validation_errors?: string[];
+  updated_at?: string | null;
+  last_configured_at?: string | null;
+};
+
+export type VNextConnectorStatusPayload = {
+  config: VNextConnectorConfigRecord;
+  health: VNextConnectorHealthRecord;
+  recent_captures: VNextSourceRecord[];
+  recent_failures: VNextEventRecord[];
 };
 
 export type VNextDogfoodingDashboard = {
   captures_by_connector: Array<{ connector_name: string; count: number }>;
   captures_today: number;
   captures_this_week: number;
+  capture_trend_by_day?: Array<{ date: string; count: number }>;
+  capture_trend_by_week?: Array<{ period: string; count: number }>;
   candidate_memories_created: number;
   memory_status_counts: Record<string, number>;
+  candidate_memory_review_rate?: number;
   generated_artifacts_created: number;
   artifact_status_counts: Record<string, number>;
   artifact_quality_average?: number | null;
   artifact_quality_rating_count: number;
+  artifact_rating_trend?: Array<{ date: string; count: number }>;
   daily_brief_review_status?: string | null;
   weekly_synthesis_review_status?: string | null;
   connections_surfaced: number;
@@ -446,6 +478,18 @@ export type VNextDogfoodingDashboard = {
   agent_memory_proposals: number;
   policy_blocks_filters: number;
   connector_failures: number;
+  top_failure_causes?: Array<{ cause: string; count: number }>;
+  scheduler_freshness?: JsonObject;
+  agent_activity_summary?: JsonObject;
+  policy_block_filter_summary?: JsonObject;
+  dogfood_readiness?: {
+    status: "green" | "yellow" | "red";
+    reason: string;
+    captures_today: number;
+    scheduler_fresh: boolean;
+    artifact_rating_count: number;
+    policy_blocks_filters: number;
+  };
   last_successful_scheduler_run?: JsonObject | null;
   connector_health: { items: VNextConnectorHealthRecord[]; count: number; order: string[] };
   insight_feedback: {
@@ -4138,6 +4182,7 @@ export function captureVNextBrowserClip(
     selected_text?: string | null;
     page_text?: string | null;
     user_note?: string | null;
+    capture_token?: string | null;
     domain?: string;
     sensitivity?: string;
   },
@@ -4146,6 +4191,69 @@ export function captureVNextBrowserClip(
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export function updateVNextConnectorConfig(
+  apiBaseUrl: string,
+  connectorName: string,
+  payload: {
+    user_id: string;
+    enabled?: boolean;
+    default_domain?: string;
+    default_sensitivity?: string;
+    secret_ref?: string | null;
+    sync_mode?: string;
+    poll_interval_seconds?: number | null;
+    config_json?: JsonObject;
+  },
+) {
+  return requestJson<VNextConnectorConfigRecord>(apiBaseUrl, `/v0/vnext/connectors/${connectorName}/config`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function syncVNextTelegramConnector(
+  apiBaseUrl: string,
+  payload: {
+    user_id: string;
+    updates?: JsonObject[];
+    allowed_chat_ids?: string[];
+    default_domain?: string;
+    default_sensitivity?: string;
+  },
+) {
+  return requestJson<JsonObject>(apiBaseUrl, "/v0/vnext/connectors/telegram/sync", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function syncVNextLocalFolderConnector(
+  apiBaseUrl: string,
+  payload: {
+    user_id: string;
+    paths?: string[];
+    recursive?: boolean;
+    extensions?: string[];
+    ignore_patterns?: string[];
+    default_domain?: string;
+    default_sensitivity?: string;
+  },
+) {
+  return requestJson<JsonObject>(apiBaseUrl, "/v0/vnext/connectors/local-folder/sync", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getVNextConnectorStatus(apiBaseUrl: string, userId: string, connectorName: string) {
+  return requestJson<VNextConnectorStatusPayload>(
+    apiBaseUrl,
+    `/v0/vnext/connectors/${connectorName}/status`,
+    undefined,
+    { user_id: userId },
+  );
 }
 
 export function getVNextConnectorsHealth(apiBaseUrl: string, userId: string) {

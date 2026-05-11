@@ -13,6 +13,7 @@
 - `v0.5.1-vnext-preview` is the vNext public-preview tag target.
 - `M-001` Archive Maintenance CI Repair is implemented in this working tree.
 - Alice vNext public preview release gate is active.
+- Alice vNext dogfood hardening is implemented in this working tree.
 
 ## Current Baseline Truth
 - Alice has typed memory, provenance, trust classes, correction/supersession behavior, open loops, recall, resumption, and explainability.
@@ -42,13 +43,14 @@
 - The vNext preview includes Sprint 11 connector expansion: deterministic Telegram, browser clipper, PDF/DOCX/CSV/screenshot, and voice-transcript payload ingestion through the vNext capture path, raw evidence preservation, default domain/sensitivity labels, event-log sync cursors, failure isolation, `alicebot vnext connectors ...` CLI commands, connector API endpoints, and fixture-backed connector settings UI.
 - The vNext preview includes Sprint 12 public release polish: README vNext preview positioning, docs for quickstart/Docker/local install/architecture/security/privacy/contribution, example `ALICE.md`, synthetic demo dataset, demo video script, and vNext public release checklist with no-secrets and verification gates.
 - The vNext preview includes the live capture connectors sprint: allowlisted Telegram sync, local folder/Obsidian scan and watch, browser clipper capture endpoint/bookmarklet guidance, Hermes/OpenClaw-style agent output ingestion through CLI/API/MCP, connector health telemetry, dogfooding dashboard metrics, capture-to-brief smoke validation, and review-only trust preservation for all live connector output.
+- The vNext preview includes dogfood hardening: dedicated connector settings/state tables, environment/encrypted-local secret-provider references, restart-safe cursor/checkpoint storage, migration/doctor readiness checks, live `/vnext` connector configuration, browser clipper token enforcement, Telegram retry/cursor hardening, generated-output recapture prevention, and daily dogfood runbook.
 
 ## Phase Transition Note
 - Phase 14 is complete as a feature phase.
 - `HF-001` is complete as a defect-only hardening sprint.
 - `v0.5.1` closes the shipped Phase 14 platform plus the post-phase logging safety hardening.
 - `M-001` is implemented in this working tree and should be validated in GitHub Actions after PR push/merge.
-- Alice vNext Sprint 1 through Sprint 12 plus the live capture connectors sprint are implemented and in the public-preview release gate.
+- Alice vNext Sprint 1 through Sprint 12, the live capture connectors sprint, and dogfood hardening are implemented and in the public-preview release gate.
 
 ## Immediate Control Tower Decisions Needed
 - Use the separate `PostgresVNextStore` facade as the Sprint 2 persistence boundary unless a concrete integration blocker appears.
@@ -62,6 +64,6 @@
 - Decide how project-update rejection suppression should be persisted beyond event logs and how UI project pages should expose candidate review state.
 - Decide which remaining vNext UI write surfaces should become live-backed after the current live/fixture hybrid workspace.
 - Decide when the deterministic eval harness should graduate to model-backed, live-store-backed, or human-rated scoring.
-- Decide where connector secrets/cursors should live once event-log config and cursor seeding are no longer enough.
-- After the preview tag, decide the next build slice: managed connector OAuth/settings persistence, broader live-backed UI, production scheduling, or model-backed evaluation.
+- Decide whether the next connector security layer should use OS keychain, hosted secret infrastructure, or both behind the existing secret-provider interface.
+- After dogfood hardening, decide the next build slice: broader live-backed `/vnext` workflows, managed connector OAuth, production scheduling, or model-backed evaluation.
 - Avoid reopening completed Phase 14 or `HF-001` scope unless a concrete defect or release-readiness issue is identified.

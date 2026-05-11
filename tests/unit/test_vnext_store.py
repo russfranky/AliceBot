@@ -582,6 +582,103 @@ def test_append_and_list_event_log_records_use_integrity_payload() -> None:
     assert "%s::text IS NULL OR target_id = %s" in event_list_query
 
 
+def test_connector_settings_and_state_methods_use_dedicated_tables_and_audit_events() -> None:
+    setting_id = str(uuid4())
+    state_id = str(uuid4())
+    cursor = RecordingCursor(
+        fetchone_results=[
+            {
+                "id": setting_id,
+                "connector_name": "telegram",
+                "enabled": True,
+                "configured": True,
+                "default_domain": "personal",
+                "default_sensitivity": "private",
+                "sync_mode": "polling",
+                "poll_interval_seconds": 60,
+                "secret_ref": "telegram.bot_token.default",
+                "validation_errors_json": [],
+            },
+            _event_row("telegram"),
+            {"id": setting_id, "connector_name": "telegram"},
+                {
+                    "id": state_id,
+                    "connector_id": setting_id,
+                    "connector_name": "telegram",
+                    "cursor_type": "sync_cursor",
+                    "cursor_value": "42",
+                    "last_sync_at": "2026-05-11T12:00:00Z",
+                    "last_success_at": "2026-05-11T12:00:00Z",
+                    "last_failure_at": None,
+                    "items_seen": 3,
+                    "items_captured": 1,
+                    "items_deduped": 1,
+                "items_failed": 1,
+            },
+            _event_row("telegram"),
+            {"id": state_id, "connector_name": "telegram", "cursor_value": "42"},
+            {"connector_settings_exists": True, "connector_state_exists": True, "migration_revision": "20260511_0070"},
+        ],
+        fetchall_result=[{"id": setting_id, "connector_name": "telegram"}],
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    setting = store.upsert_connector_setting(
+        {
+            "connector_name": "telegram",
+            "enabled": True,
+            "configured": True,
+            "default_domain": "personal",
+            "default_sensitivity": "private",
+            "sync_mode": "polling",
+            "poll_interval_seconds": 60,
+            "secret_ref": "telegram.bot_token.default",
+            "validation_errors_json": [],
+            "metadata_json": {"config_json": {"allowed_chat_ids": ["999001"]}},
+        }
+    )
+    settings = store.list_connector_settings()
+    fetched_setting = store.get_connector_setting("telegram")
+    state = store.upsert_connector_state(
+        {
+            "connector_name": "telegram",
+            "cursor_value": "42",
+            "last_sync_at": "2026-05-11T12:00:00Z",
+            "last_success_at": "2026-05-11T12:00:00Z",
+            "items_seen_delta": 3,
+            "items_captured_delta": 1,
+            "items_deduped_delta": 1,
+            "items_failed_delta": 1,
+            "average_processing_time_ms": 12.5,
+            "state_json": {"last_status": "partial"},
+        }
+    )
+    fetched_state = store.get_connector_state("telegram")
+    storage_status = store.connector_storage_status()
+
+    assert setting["id"] == setting_id
+    assert settings == [{"id": setting_id, "connector_name": "telegram"}]
+    assert fetched_setting is not None
+    assert state["cursor_value"] == "42"
+    assert fetched_state is not None
+    assert storage_status["connector_settings_exists"] is True
+    assert _event_log_insert_count(cursor) == 2
+    setting_query, setting_params = cursor.executed[0]
+    assert "INSERT INTO connector_settings" in setting_query
+    assert "ON CONFLICT (user_id, connector_name)" in setting_query
+    assert setting_params is not None
+    assert isinstance(setting_params[8], Jsonb)
+    assert setting_params[8].obj == []
+    assert isinstance(setting_params[9], Jsonb)
+    assert setting_params[9].obj == {"config_json": {"allowed_chat_ids": ["999001"]}}
+    state_query, state_params = cursor.executed[4]
+    assert "INSERT INTO connector_state" in state_query
+    assert "items_seen = connector_state.items_seen + EXCLUDED.items_seen" in state_query
+    assert state_params is not None
+    assert isinstance(state_params[-1], Jsonb)
+    assert state_params[-1].obj == {"last_status": "partial"}
+
+
 def test_workspace_list_methods_apply_bounded_filters() -> None:
     cursor = RecordingCursor(
         fetchone_results=[],

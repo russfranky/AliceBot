@@ -20,6 +20,8 @@ Connector invariants:
 
 - raw payload or extracted evidence is preserved in source metadata
 - default domain and sensitivity are stored with the source
+- connector defaults are stored in dedicated connector settings rows, not only in the event log
+- sync cursors and counters are stored in dedicated connector state rows
 - all connector text is marked as untrusted source material
 - sync cursors prevent duplicate ingestion
 - local folder scanning is constrained to allowed local roots; by default those are the user home, repo working directory, and system temp directory, with `ALICE_VNEXT_LOCAL_FOLDER_ROOTS` available for operator override
@@ -31,6 +33,16 @@ Connector invariants:
 ## Secrets
 
 Do not commit secrets, tokens, real personal exports, private chats, production credentials, or unredacted customer data.
+
+Connector secrets are referenced, not returned. Telegram and browser clipper can use `secret_ref` values such as `env:TELEGRAM_BOT_TOKEN` or `telegram.bot_token.default`. Local secret values are stored through the secret provider abstraction, with an encrypted local file fallback for alpha use and an environment-reference provider for operators who prefer env vars.
+
+Secret rules:
+
+- API, CLI, UI, event logs, source metadata, artifact metadata, and health responses must expose only the reference or configured/not-configured status.
+- Redaction applies before raw connector payloads are persisted.
+- Telegram token tests report whether the reference resolves without printing the token.
+- Browser clipper capture tokens are accepted only when configured and are redacted from source/event evidence.
+- The future OS keychain or hosted secret-provider implementation should satisfy the same interface without changing connector behavior.
 
 Allowed public demo material:
 
@@ -58,6 +70,7 @@ Disallowed public demo material:
 - Confirm no generated artifacts are auto-promoted to trusted memory.
 - Confirm model-backed artifacts include source references, prompt/context hashes, provider metadata, and source-grounded fact/inference/recommendation/uncertainty sections.
 - Confirm `alicebot vnext smoke model-backed` passes for at least one scheduled Postgres-backed model-backed workflow.
+- Confirm `alicebot vnext smoke connector-hardening`, `alicebot vnext smoke secret-redaction`, and `alicebot vnext smoke dogfood-doctor` pass against the local Postgres database.
 - Confirm docs do not claim live connector behavior that is not shipped.
 
 ## Reporting

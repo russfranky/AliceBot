@@ -40,6 +40,8 @@ Use Docker for Postgres, Redis, and MinIO-backed local development:
 docker compose up -d
 ./scripts/migrate.sh
 ./scripts/load_sample_data.sh
+alicebot vnext migrations status
+alicebot vnext doctor --fix-safe
 ```
 
 Run the API and web app in separate terminals:
@@ -83,6 +85,23 @@ List vNext connectors and health:
 ```bash
 ./.venv/bin/python -c 'from alicebot_api.cli import main; raise SystemExit(main(["vnext", "connectors", "list"]))'
 alicebot vnext connectors health
+alicebot vnext connectors status
+```
+
+Configure Telegram with either an environment reference or the local encrypted secret store. Neither command prints the token value:
+
+```bash
+alicebot vnext connectors telegram configure \
+  --enabled \
+  --allowed-chat-id 999001 \
+  --secret-ref env:TELEGRAM_BOT_TOKEN
+
+alicebot vnext connectors telegram configure \
+  --enabled \
+  --allowed-chat-id 999001 \
+  --bot-token "$TELEGRAM_BOT_TOKEN"
+
+alicebot vnext connectors telegram test
 ```
 
 Capture a browser clip directly into the review path:
@@ -121,6 +140,9 @@ Run the live connector smoke:
 ```bash
 alicebot vnext smoke live-capture-connectors
 alicebot vnext smoke capture-to-brief
+alicebot vnext smoke connector-hardening
+alicebot vnext smoke secret-redaction
+alicebot vnext smoke dogfood-doctor
 ```
 
 ## Connector Payload Demo
@@ -152,6 +174,7 @@ Run the core checks used by the release checklist:
 ```bash
 ./.venv/bin/python -m pytest tests/unit -q
 pnpm --dir apps/web test
+pnpm --dir apps/web lint
 pnpm --dir apps/web build
 python3 scripts/check_control_doc_truth.py
 git diff --check

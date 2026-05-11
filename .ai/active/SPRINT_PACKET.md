@@ -11,12 +11,13 @@ Alice vNext Public Preview Release Gate
 - `HF-001` Logging Safety And Disk Guardrails is shipped.
 - Alice vNext Sprint 1 through Sprint 12 preview scope is implemented.
 - Alice vNext live capture connectors are implemented for allowlisted Telegram, local folder/Obsidian notes, browser clips, and agent outputs.
+- Alice vNext dogfood hardening is implemented for dedicated connector settings/state, local secret references, readiness checks, live connector configuration, and daily-use runbooks.
 
 ## Sprint Type
 release-gate
 
 ## Sprint Reason
-The vNext preview surface has moved from incremental seed work into release packaging. The release gate preserves the stable `v0.5.1` baseline while publishing the local-first vNext preview as a GitHub pre-release with current verification evidence and explicit limitations.
+The vNext preview surface has moved from incremental seed work into release packaging. The release gate preserves the stable `v0.5.1` baseline while publishing the local-first vNext preview as a GitHub pre-release with current verification evidence, dogfood hardening, and explicit limitations.
 
 ## Git Instructions
 - Branch: `codex/vnext-preview-release-packaging`
@@ -45,6 +46,7 @@ Publish Alice vNext as the `v0.5.1-vnext-preview` public pre-release with releas
 - changelog entry for the preview release package
 - README and vNext docs pointing to release notes and tag plan
 - control docs updated away from stale "Sprint 1 active" wording
+- dogfood hardening docs for connector settings/state, secret references, doctor checks, and daily local-alpha operation
 - final verification of docs, tests, evals, and GitHub release state
 
 ## Out Of Scope
@@ -54,6 +56,7 @@ Publish Alice vNext as the `v0.5.1-vnext-preview` public pre-release with releas
 - automatic promotion of generated artifacts into trusted memory
 - production daily/weekly scheduler
 - live-backed expansion of the `/vnext` UI
+- new connector families beyond hardening the existing local dogfood loop
 - model-backed or human-rated eval scoring
 - destructive schema rewrites
 
@@ -73,12 +76,18 @@ Publish Alice vNext as the `v0.5.1-vnext-preview` public pre-release with releas
 - `docs/release/vnext-public-release-checklist.md`
 - `docs/release/v0.5.1-vnext-preview-release-notes.md`
 - `docs/release/v0.5.1-vnext-preview-tag-plan.md`
+- `docs/vnext-dogfood-hardening-cto-summary.md`
+- `docs/runbooks/vnext-dogfood-daily-checklist.md`
 
 ## Acceptance Criteria
 - `v0.5.1` remains documented as the stable pre-1.0 public release boundary.
 - `v0.5.1-vnext-preview` is documented as a pre-release preview, not a stable replacement.
 - README links the vNext overview, quickstart, architecture, security/privacy, demo script, release checklist, release notes, and tag plan.
 - The vNext release checklist records current verification evidence.
+- Connector settings/state are persisted in dedicated tables and settings/state changes remain audit logged.
+- Connector secrets are stored or resolved through secret references and are not exposed in CLI/API/UI/event/source/artifact output.
+- `/vnext` can update live connector defaults for Telegram, local folder, and browser clipper.
+- `alicebot vnext doctor --fix-safe` can initialize safe connector defaults and report readiness.
 - Release notes describe included preview scope and limitations.
 - The tag plan includes GitHub pre-release publication and rollback commands.
 - Control-doc truth reflects the release gate instead of stale Sprint 1 active wording.
@@ -87,11 +96,19 @@ Publish Alice vNext as the `v0.5.1-vnext-preview` public pre-release with releas
 
 ## Required Verification
 - `./.venv/bin/python -m pytest tests/unit -q`
+- `./.venv/bin/python -m pytest tests/integration -q`
 - `pnpm --dir apps/web test`
 - `pnpm --dir apps/web lint`
 - `pnpm --dir apps/web build`
 - `python3 scripts/check_control_doc_truth.py`
 - `./.venv/bin/python -c 'from alicebot_api.cli import main; raise SystemExit(main(["eval", "run", "--suite", "all"]))'`
+- `alicebot vnext migrations status`
+- `alicebot vnext smoke connector-hardening`
+- `alicebot vnext smoke secret-redaction`
+- `alicebot vnext smoke dogfood-doctor`
+- `alicebot vnext smoke live-capture-connectors`
+- `alicebot vnext smoke capture-to-brief`
+- `alicebot vnext smoke agentic-scheduler`
 - `git diff --check`
 - GitHub PR checks for the release-packaging PR
 - GitHub release view for `v0.5.1-vnext-preview`

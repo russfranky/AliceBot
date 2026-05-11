@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import fnmatch
 from hashlib import sha256
+import hmac
 import io
 import json
 import os
@@ -20,6 +21,7 @@ from alicebot_api.telegram_channels import normalize_telegram_update
 from alicebot_api.vnext_capture import SourceCaptureInput, VNextCaptureService, VNextCaptureStore
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_repositories import JsonObject
+from alicebot_api.vnext_secrets import SecretProvider, default_secret_provider, redact_secret_fields
 
 
 class VNextConnectorValidationError(ValueError):
@@ -233,13 +235,19 @@ SUPPORTED_CONNECTORS: tuple[ConnectorDefinition, ...] = (
 
 DEFAULT_LOCAL_FOLDER_IGNORES = (
     ".alice",
+    ".cache",
+    ".git",
+    ".venv",
+    "__pycache__",
     "generated",
     "alice export",
     "07 generated",
     "08 queue",
+    "node_modules",
 )
 DEFAULT_LOCAL_FOLDER_EXTENSIONS = (".md", ".txt")
 LOCAL_FOLDER_ROOTS_ENV = "ALICE_VNEXT_LOCAL_FOLDER_ROOTS"
+CORE_SETTINGS_CONNECTORS = ("telegram", "local_folder", "browser_clipper", "agent_output")
 
 _CONNECTOR_BY_NAME = {definition.name: definition for definition in SUPPORTED_CONNECTORS}
 _VALID_DOMAINS = frozenset(
@@ -425,6 +433,14 @@ def _telegram_chat_id(payload: Mapping[str, object]) -> str | None:
             chat_id = chat.get("id")
             if isinstance(chat_id, (str, int)):
                 return str(chat_id)
+    return None
+
+
+def _telegram_update_id(payload: Mapping[str, object]) -> str | None:
+    value = payload.get("update_id") or payload.get("id")
+    if isinstance(value, (str, int)):
+        normalized = str(value)
+        return normalized if normalized else None
     return None
 
 
@@ -805,7 +821,7 @@ def _normalize_voice_item(payload: JsonObject) -> NormalizedConnectorItem:
 
 def normalize_connector_item(connector_name: str, payload: Mapping[str, object]) -> NormalizedConnectorItem:
     definition = get_connector_definition(connector_name)
-    item = _as_json_object(dict(payload), label=f"{definition.name} item")
+    item = _as_json_object(cast(JsonObject, redact_secret_fields(dict(payload))), label=f"{definition.name} item")
     if definition.name == "telegram":
         return _normalize_telegram_item(item)
     if definition.name == "browser_clipper":
@@ -859,19 +875,105 @@ def load_connector_items_from_file(path: str | Path) -> list[JsonObject]:
 
 
 class VNextConnectorService:
-    def __init__(self, store: VNextConnectorStore) -> None:
+    def __init__(self, store: VNextConnectorStore, *, secret_provider: SecretProvider | None = None) -> None:
         self.store = store
         self.capture_service = VNextCaptureService(store)
+        self.secret_provider = secret_provider or default_secret_provider()
 
     def list_settings(self) -> JsonObject:
+        if hasattr(self.store, "list_connector_settings"):
+            rows = cast(Any, self.store).list_connector_settings()
+            return {
+                "items": [self._setting_row_to_config(row) for row in rows],
+                "count": len(rows),
+                "order": [str(row.get("connector_name")) for row in rows],
+            }
         return {
             "items": [definition.to_record() for definition in list_connector_definitions()],
             "count": len(SUPPORTED_CONNECTORS),
             "order": [definition.name for definition in SUPPORTED_CONNECTORS],
         }
 
+    def ensure_default_settings(self) -> JsonObject:
+        if not hasattr(self.store, "get_connector_setting") or not hasattr(self.store, "upsert_connector_setting"):
+            return {"status": "skipped", "reason": "connector settings storage is unavailable", "created": []}
+        created: list[str] = []
+        for definition in SUPPORTED_CONNECTORS:
+            if definition.name not in CORE_SETTINGS_CONNECTORS:
+                continue
+            existing = cast(Any, self.store).get_connector_setting(definition.name)
+            if existing is None:
+                cast(Any, self.store).upsert_connector_setting(
+                    self._default_setting_payload(definition.name),
+                    actor_type="system",
+                )
+                created.append(definition.name)
+            if hasattr(self.store, "get_connector_state") and hasattr(self.store, "upsert_connector_state"):
+                state = cast(Any, self.store).get_connector_state(definition.name)
+                if state is None:
+                    cast(Any, self.store).upsert_connector_state(
+                        {
+                            "connector_name": definition.name,
+                            "cursor_type": "sync_cursor",
+                            "state_json": {"initialized_by": "ensure_default_settings"},
+                        },
+                        actor_type="system",
+                    )
+        return {"status": "ok", "created": created}
+
+    def _default_setting_payload(self, connector_name: str) -> JsonObject:
+        definition = get_connector_definition(connector_name)
+        sync_mode = "polling" if definition.name == "telegram" else "watch" if definition.name == "local_folder" else "on_demand"
+        interval = 60 if definition.name == "telegram" else 30 if definition.name == "local_folder" else None
+        return {
+            "connector_name": definition.name,
+            "enabled": False,
+            "configured": False,
+            "default_domain": definition.default_domain,
+            "default_sensitivity": definition.default_sensitivity,
+            "sync_mode": sync_mode,
+            "poll_interval_seconds": interval,
+            "secret_ref": None,
+            "validation_errors_json": [],
+            "metadata_json": {"config_json": {}, "initialized_by": "connector_service"},
+        }
+
+    def _setting_row_to_config(self, row: Mapping[str, object]) -> JsonObject:
+        definition = get_connector_definition(str(row.get("connector_name")))
+        metadata = row.get("metadata_json") if isinstance(row.get("metadata_json"), dict) else {}
+        config_json = cast(dict[str, object], metadata).get("config_json") if isinstance(metadata, dict) else {}
+        if not isinstance(config_json, dict):
+            config_json = {}
+        validation_errors = row.get("validation_errors_json")
+        if not isinstance(validation_errors, list):
+            validation_errors = []
+        secret_ref = _as_optional_text(row.get("secret_ref"))
+        return {
+            "connector_id": str(row.get("id")) if row.get("id") is not None else None,
+            "connector_name": definition.name,
+            "enabled": bool(row.get("enabled")),
+            "configured": bool(row.get("configured")),
+            "secret_ref": secret_ref,
+            "secret_configured": bool(secret_ref),
+            "default_domain": row.get("default_domain") or definition.default_domain,
+            "default_sensitivity": row.get("default_sensitivity") or definition.default_sensitivity,
+            "sync_mode": row.get("sync_mode") or "manual",
+            "poll_interval_seconds": row.get("poll_interval_seconds"),
+            "config_json": cast(JsonObject, config_json),
+            "validation_errors": validation_errors,
+            "created_at": row.get("created_at"),
+            "updated_at": row.get("updated_at"),
+            "last_configured_at": row.get("last_configured_at"),
+        }
+
     def get_cursor(self, connector_name: str) -> str | None:
         definition = get_connector_definition(connector_name)
+        if hasattr(self.store, "get_connector_state"):
+            state = cast(Any, self.store).get_connector_state(definition.name)
+            if isinstance(state, dict):
+                cursor = _as_optional_text(state.get("cursor_value"))
+                if cursor is not None:
+                    return cursor
         events = [
             event
             for event in self.store.list_events(target_type="connector", target_id=definition.name)
@@ -911,25 +1013,72 @@ class VNextConnectorService:
         default_domain: str | None = None,
         default_sensitivity: str | None = None,
         secret_ref: str | None = None,
+        sync_mode: str | None = None,
+        poll_interval_seconds: int | None = None,
         config_json: JsonObject | None = None,
     ) -> JsonObject:
         definition = get_connector_definition(connector_name)
-        domain = default_domain or definition.default_domain
-        sensitivity = default_sensitivity or definition.default_sensitivity
+        existing_config = self.get_config(definition.name)
+        existing_config_json = existing_config.get("config_json") if isinstance(existing_config.get("config_json"), dict) else {}
+        domain = default_domain or _as_optional_text(existing_config.get("default_domain")) or definition.default_domain
+        sensitivity = default_sensitivity or _as_optional_text(existing_config.get("default_sensitivity")) or definition.default_sensitivity
         if domain not in _VALID_DOMAINS:
             raise VNextConnectorValidationError(f"invalid connector default domain: {domain}")
         if sensitivity not in _VALID_SENSITIVITIES:
             raise VNextConnectorValidationError(f"invalid connector default sensitivity: {sensitivity}")
+        incoming_config = cast(JsonObject, redact_secret_fields(config_json or {}))
+        sanitized_config = cast(JsonObject, {**cast(dict[str, object], existing_config_json), **incoming_config})
+        existing_sync_mode = _as_optional_text(existing_config.get("sync_mode"))
+        normalized_sync_mode = sync_mode or existing_sync_mode or (
+            "polling" if definition.name == "telegram" else "watch" if definition.name == "local_folder" else "on_demand"
+        )
+        resolved_secret_ref = secret_ref if secret_ref is not None else _as_optional_text(existing_config.get("secret_ref"))
+        resolved_poll_interval = (
+            poll_interval_seconds if poll_interval_seconds is not None else existing_config.get("poll_interval_seconds")
+        )
+        validation_errors: list[str] = []
+        if definition.name == "telegram":
+            allowed = sanitized_config.get("allowed_chat_ids")
+            if not isinstance(allowed, list) or not [item for item in allowed if isinstance(item, (str, int)) and str(item).strip()]:
+                validation_errors.append("allowed_chat_ids_required")
+            if not resolved_secret_ref:
+                validation_errors.append("secret_ref_required")
+        if definition.name == "local_folder":
+            paths = sanitized_config.get("paths")
+            if enabled and (not isinstance(paths, list) or len(paths) == 0):
+                validation_errors.append("watched_path_required")
         config = {
             "connector_name": definition.name,
-            "enabled": bool(enabled) if enabled is not None else False,
+            "enabled": bool(enabled) if enabled is not None else bool(existing_config.get("enabled")),
             "configured": True,
-            "secret_ref": secret_ref,
+            "secret_ref": resolved_secret_ref,
+            "secret_configured": bool(resolved_secret_ref),
             "default_domain": domain,
             "default_sensitivity": sensitivity,
-            "config_json": config_json or {},
+            "sync_mode": normalized_sync_mode,
+            "poll_interval_seconds": resolved_poll_interval,
+            "config_json": sanitized_config,
+            "validation_errors": validation_errors,
             "updated_at": _utc_now_iso(),
         }
+        if hasattr(self.store, "upsert_connector_setting"):
+            row = cast(Any, self.store).upsert_connector_setting(
+                {
+                    "connector_name": definition.name,
+                    "enabled": config["enabled"],
+                    "configured": config["configured"],
+                    "default_domain": domain,
+                    "default_sensitivity": sensitivity,
+                    "sync_mode": normalized_sync_mode,
+                    "poll_interval_seconds": resolved_poll_interval,
+                    "secret_ref": resolved_secret_ref,
+                    "validation_errors_json": validation_errors,
+                    "metadata_json": {"config_json": sanitized_config},
+                    "last_configured_at": config["updated_at"],
+                },
+                actor_type="user",
+            )
+            return self._setting_row_to_config(row)
         self._log_event(
             event_type="connector.config_updated",
             connector_name=definition.name,
@@ -939,6 +1088,10 @@ class VNextConnectorService:
 
     def get_config(self, connector_name: str) -> JsonObject:
         definition = get_connector_definition(connector_name)
+        if hasattr(self.store, "get_connector_setting"):
+            row = cast(Any, self.store).get_connector_setting(definition.name)
+            if isinstance(row, dict):
+                return self._setting_row_to_config(row)
         events = [
             event
             for event in self.store.list_events(target_type="connector", target_id=definition.name)
@@ -954,15 +1107,23 @@ class VNextConnectorService:
             "enabled": False,
             "configured": False,
             "secret_ref": None,
+            "secret_configured": False,
             "default_domain": definition.default_domain,
             "default_sensitivity": definition.default_sensitivity,
+            "sync_mode": "manual",
+            "poll_interval_seconds": None,
             "config_json": {},
+            "validation_errors": [],
             "updated_at": None,
         }
 
     def connector_health(self, connector_name: str) -> JsonObject:
         definition = get_connector_definition(connector_name)
         config = self.get_config(definition.name)
+        state = None
+        if hasattr(self.store, "get_connector_state"):
+            candidate_state = cast(Any, self.store).get_connector_state(definition.name)
+            state = candidate_state if isinstance(candidate_state, dict) else None
         events = self.store.list_events(target_type="connector", target_id=definition.name)
         events.sort(key=lambda event: str(event.get("occurred_at") or ""), reverse=True)
         sync_events = [
@@ -1009,17 +1170,23 @@ class VNextConnectorService:
             "configured": bool(config.get("configured")),
             "default_domain": config.get("default_domain") or definition.default_domain,
             "default_sensitivity": config.get("default_sensitivity") or definition.default_sensitivity,
-            "last_sync_at": sync_events[0].get("occurred_at") if sync_events else None,
-            "last_success_at": latest_success.get("occurred_at") if latest_success is not None else None,
-            "last_failure_at": latest_failure.get("occurred_at") if latest_failure is not None else None,
-            "last_error": last_error,
+            "sync_mode": config.get("sync_mode") or "manual",
+            "poll_interval_seconds": config.get("poll_interval_seconds"),
+            "validation_errors": config.get("validation_errors") or [],
+            "secret_configured": bool(config.get("secret_configured")),
+            "last_sync_at": state.get("last_sync_at") if state is not None else sync_events[0].get("occurred_at") if sync_events else None,
+            "last_success_at": state.get("last_success_at") if state is not None else latest_success.get("occurred_at") if latest_success is not None else None,
+            "last_failure_at": state.get("last_failure_at") if state is not None else latest_failure.get("occurred_at") if latest_failure is not None else None,
+            "last_error": state.get("last_error") if state is not None and state.get("last_error") is not None else last_error,
             "last_captured_item": latest_import_payload if isinstance(latest_import_payload, dict) else None,
-            "items_seen": items_seen,
-            "items_captured": items_captured,
-            "items_deduped": items_deduped,
-            "items_failed": items_failed,
-            "cursor_state": cursor_state or self.get_cursor(definition.name),
-            "average_processing_time": round(sum(processing_times) / len(processing_times), 3)
+            "items_seen": int(state.get("items_seen", 0)) if state is not None else items_seen,
+            "items_captured": int(state.get("items_captured", 0)) if state is not None else items_captured,
+            "items_deduped": int(state.get("items_deduped", 0)) if state is not None else items_deduped,
+            "items_failed": int(state.get("items_failed", 0)) if state is not None else items_failed,
+            "cursor_state": _as_optional_text(state.get("cursor_value")) if state is not None else cursor_state or self.get_cursor(definition.name),
+            "average_processing_time": state.get("average_processing_time_ms")
+            if state is not None
+            else round(sum(processing_times) / len(processing_times), 3)
             if processing_times
             else None,
         }
@@ -1027,6 +1194,72 @@ class VNextConnectorService:
     def connector_health_all(self) -> JsonObject:
         items = [self.connector_health(definition.name) for definition in list_connector_definitions()]
         return {"items": items, "count": len(items), "order": [str(item["connector_name"]) for item in items]}
+
+    def set_connector_secret(self, connector_name: str, *, secret_ref: str, secret_value: str) -> JsonObject:
+        definition = get_connector_definition(connector_name)
+        if not secret_value.strip():
+            raise VNextConnectorValidationError("connector secret value is required")
+        self.secret_provider.set_secret(secret_ref, secret_value)
+        self._log_event(
+            event_type="connector.secret_ref_updated",
+            connector_name=definition.name,
+            payload={
+                "connector_name": definition.name,
+                "secret_ref": secret_ref,
+                "secret_present": self.secret_provider.has_secret(secret_ref),
+            },
+        )
+        return {"connector_name": definition.name, "secret_ref": secret_ref, "secret_present": True}
+
+    def _resolve_secret(self, secret_ref: str | None) -> str | None:
+        if secret_ref is None:
+            return None
+        try:
+            return self.secret_provider.get_secret(secret_ref)
+        except Exception as exc:
+            raise VNextConnectorValidationError("connector secret could not be resolved") from exc
+
+    def _record_connector_state(
+        self,
+        result: ConnectorSyncResult,
+        *,
+        processing_time_ms: float,
+    ) -> None:
+        if not hasattr(self.store, "upsert_connector_state"):
+            return
+        now = _utc_now_iso()
+        last_error = result.errors[0] if result.errors else None
+        try:
+            cast(Any, self.store).upsert_connector_state(
+                {
+                    "connector_name": result.connector_name,
+                    "cursor_type": "sync_cursor",
+                    "cursor_value": result.sync_cursor,
+                    "last_sync_at": now,
+                    "last_success_at": now if result.status in {"ok", "partial", "skipped"} else None,
+                    "last_failure_at": now if result.status == "failed" else None,
+                    "last_error": last_error,
+                    "items_seen_delta": result.item_count,
+                    "items_captured_delta": result.imported_count,
+                    "items_deduped_delta": result.duplicate_count,
+                    "items_failed_delta": result.failed_count,
+                    "average_processing_time_ms": round(processing_time_ms, 3),
+                    "state_json": {
+                        "last_status": result.status,
+                        "last_source_ids": list(result.source_ids),
+                        "last_failed_external_ids": list(result.failed_external_ids),
+                    },
+                },
+                actor_type="system",
+            )
+        except Exception:
+            # State is telemetry/checkpointing; do not convert a successful
+            # source capture into a failed sync because the state row is stale.
+            self._log_event(
+                event_type="connector.state_update_failed",
+                connector_name=result.connector_name,
+                payload={"connector_name": result.connector_name, "status": result.status},
+            )
 
     def sync_telegram_updates(
         self,
@@ -1041,7 +1274,11 @@ class VNextConnectorService:
             raise VNextConnectorValidationError("telegram connector requires at least one allowed chat id")
         accepted: list[Mapping[str, object]] = []
         rejected_count = 0
+        safe_cursor: str | None = None
         for update in updates:
+            update_id = _telegram_update_id(update)
+            if update_id is not None and (safe_cursor is None or _cursor_sort_key(update_id) > _cursor_sort_key(safe_cursor)):
+                safe_cursor = update_id
             chat_id = _telegram_chat_id(update)
             if chat_id is None or chat_id not in allowed:
                 rejected_count += 1
@@ -1050,7 +1287,7 @@ class VNextConnectorService:
                     connector_name="telegram",
                     payload={
                         "connector_name": "telegram",
-                        "external_id": _first_text(update, ("update_id", "id")) or "unknown",
+                        "external_id": update_id or "unknown",
                         "reason": "chat_not_allowlisted",
                         "chat_id": chat_id,
                     },
@@ -1062,23 +1299,11 @@ class VNextConnectorService:
             accepted,
             default_domain=default_domain,
             default_sensitivity=default_sensitivity,
+            original_item_count=len(updates),
+            extra_skipped_count=rejected_count,
+            safe_cursor_override=safe_cursor,
         )
-        if rejected_count == 0:
-            return result
-        return ConnectorSyncResult(
-            status="partial" if result.status == "ok" else result.status,
-            connector_name=result.connector_name,
-            item_count=len(updates),
-            imported_count=result.imported_count,
-            duplicate_count=result.duplicate_count,
-            skipped_count=result.skipped_count + rejected_count,
-            failed_count=result.failed_count,
-            previous_cursor=result.previous_cursor,
-            sync_cursor=result.sync_cursor,
-            source_ids=result.source_ids,
-            failed_external_ids=result.failed_external_ids,
-            errors=result.errors,
-        )
+        return result
 
     def fetch_telegram_updates(
         self,
@@ -1087,33 +1312,61 @@ class VNextConnectorService:
         bot_token_env: str = "TELEGRAM_BOT_TOKEN",
         timeout: int = 10,
         limit: int = 100,
+        retries: int = 1,
     ) -> list[JsonObject]:
-        token = bot_token or os.environ.get(bot_token_env)
+        config = self.get_config("telegram")
+        secret_ref = _as_optional_text(config.get("secret_ref")) or f"env:{bot_token_env}"
+        token = bot_token or self._resolve_secret(secret_ref) or os.environ.get(bot_token_env)
         if not token:
-            raise VNextConnectorValidationError(f"telegram bot token is not configured in {bot_token_env}")
+            raise VNextConnectorValidationError("telegram bot token is not configured")
         cursor = self.get_cursor("telegram")
         query: dict[str, str] = {"timeout": str(timeout), "limit": str(limit)}
         if cursor is not None and cursor.isdecimal():
             query["offset"] = str(int(cursor) + 1)
         url = f"https://api.telegram.org/bot{parse.quote(token)}/getUpdates?{parse.urlencode(query)}"
-        try:
-            with request.urlopen(url, timeout=timeout + 5) as response:  # noqa: S310 - local operator supplied bot API URL.
-                payload = json.loads(response.read().decode("utf-8"))
-        except Exception as exc:
+        last_error: Exception | None = None
+        attempts = max(1, retries + 1)
+        for attempt in range(attempts):
+            try:
+                with request.urlopen(url, timeout=timeout + 5) as response:  # noqa: S310 - Telegram Bot API endpoint.
+                    payload = json.loads(response.read().decode("utf-8"))
+                break
+            except Exception as exc:
+                last_error = exc
+                if attempt + 1 < attempts:
+                    time.sleep(min(2.0, 0.25 * (2**attempt)))
+                    continue
+        else:
             self._log_event(
                 event_type="connector.sync_failed",
                 connector_name="telegram",
                 payload={
                     "connector_name": "telegram",
-                    "error_type": type(exc).__name__,
-                    "error_message": _redacted_error(exc),
+                    "error_type": type(last_error).__name__ if last_error is not None else "UnknownError",
+                    "error_message": _redacted_error(last_error) if last_error is not None else "telegram polling failed",
                     "sync_cursor": cursor,
+                    "secret_ref": secret_ref,
+                    "attempts": attempts,
                 },
             )
-            raise VNextConnectorValidationError("telegram polling failed") from exc
+            raise VNextConnectorValidationError("telegram polling failed") from last_error
         if not isinstance(payload, dict) or payload.get("ok") is not True or not isinstance(payload.get("result"), list):
+            self._log_event(
+                event_type="connector.sync_failed",
+                connector_name="telegram",
+                payload={
+                    "connector_name": "telegram",
+                    "error_type": "InvalidTelegramResponse",
+                    "error_message": "telegram polling returned an invalid response",
+                    "sync_cursor": cursor,
+                    "secret_ref": secret_ref,
+                },
+            )
             raise VNextConnectorValidationError("telegram polling returned an invalid response")
-        return [cast(JsonObject, item) for item in payload["result"] if isinstance(item, dict)]
+        try:
+            return [cast(JsonObject, item) for item in payload["result"] if isinstance(item, dict)]
+        except Exception as exc:
+            raise VNextConnectorValidationError("telegram polling returned malformed updates") from exc
 
     def sync_local_folder(
         self,
@@ -1188,9 +1441,26 @@ class VNextConnectorService:
         default_domain: str | None = None,
         default_sensitivity: str | None = None,
     ) -> ConnectorSyncResult:
+        config = self.get_config("browser_clipper")
+        secret_ref = _as_optional_text(config.get("secret_ref"))
+        if secret_ref is not None:
+            expected_token = self._resolve_secret(secret_ref)
+            provided_token = _as_optional_text(payload.get("capture_token"))
+            if not expected_token or not provided_token or not hmac.compare_digest(provided_token, expected_token):
+                self._log_event(
+                    event_type="connector.item_rejected",
+                    connector_name="browser_clipper",
+                    payload={
+                        "connector_name": "browser_clipper",
+                        "reason": "invalid_capture_token",
+                        "secret_ref": secret_ref,
+                    },
+                )
+                raise VNextConnectorValidationError("browser clipper capture token is invalid")
+        sanitized_payload = cast(JsonObject, redact_secret_fields(dict(payload)))
         return self.sync_items(
             "browser_clipper",
-            [payload],
+            [sanitized_payload],
             default_domain=default_domain,
             default_sensitivity=default_sensitivity,
             use_cursor=False,
@@ -1359,11 +1629,15 @@ class VNextConnectorService:
         default_domain: str | None = None,
         default_sensitivity: str | None = None,
         use_cursor: bool = True,
+        original_item_count: int | None = None,
+        extra_skipped_count: int = 0,
+        safe_cursor_override: str | None = None,
     ) -> ConnectorSyncResult:
         started_at = time.perf_counter()
         definition = get_connector_definition(connector_name)
-        domain = default_domain or definition.default_domain
-        sensitivity = default_sensitivity or definition.default_sensitivity
+        config = self.get_config(definition.name)
+        domain = default_domain or _as_optional_text(config.get("default_domain")) or definition.default_domain
+        sensitivity = default_sensitivity or _as_optional_text(config.get("default_sensitivity")) or definition.default_sensitivity
         if domain not in _VALID_DOMAINS:
             raise VNextConnectorValidationError(f"invalid connector default domain: {domain}")
         if sensitivity not in _VALID_SENSITIVITIES:
@@ -1375,7 +1649,7 @@ class VNextConnectorService:
             connector_name=definition.name,
             payload={
                 "connector_name": definition.name,
-                "item_count": len(items),
+                "item_count": original_item_count if original_item_count is not None else len(items),
                 "previous_cursor": previous_cursor,
                 "default_domain": domain,
                 "default_sensitivity": sensitivity,
@@ -1388,7 +1662,7 @@ class VNextConnectorService:
         failed_external_ids: list[str] = []
         imported_count = 0
         duplicate_count = 0
-        skipped_count = 0
+        skipped_count = extra_skipped_count
         failed_count = 0
         sync_cursor = previous_cursor
         failure_blocked_cursor_advance = False
@@ -1487,6 +1761,10 @@ class VNextConnectorService:
             if not failure_blocked_cursor_advance:
                 sync_cursor = item.cursor
 
+        if not failure_blocked_cursor_advance and safe_cursor_override is not None:
+            if sync_cursor is None or _cursor_sort_key(safe_cursor_override) > _cursor_sort_key(sync_cursor):
+                sync_cursor = safe_cursor_override
+
         status = "ok"
         if failed_count > 0 and (imported_count > 0 or duplicate_count > 0):
             status = "partial"
@@ -1498,7 +1776,7 @@ class VNextConnectorService:
         result = ConnectorSyncResult(
             status=status,
             connector_name=definition.name,
-            item_count=len(items),
+            item_count=original_item_count if original_item_count is not None else len(items),
             imported_count=imported_count,
             duplicate_count=duplicate_count,
             skipped_count=skipped_count,
@@ -1510,11 +1788,13 @@ class VNextConnectorService:
             errors=tuple(errors),
         )
         final_event_type = "connector.sync_failed" if status == "failed" else "connector.sync_completed"
+        processing_time_ms = round((time.perf_counter() - started_at) * 1000, 3)
         self._log_event(
             event_type=final_event_type,
             connector_name=definition.name,
-            payload={**result.to_record(), "processing_time_ms": round((time.perf_counter() - started_at) * 1000, 3)},
+            payload={**result.to_record(), "processing_time_ms": processing_time_ms},
         )
+        self._record_connector_state(result, processing_time_ms=processing_time_ms)
         return result
 
 

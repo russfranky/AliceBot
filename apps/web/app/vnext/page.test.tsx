@@ -102,10 +102,10 @@ describe("VNextPage", () => {
     expect(screen.getByText("Connector settings")).toBeInTheDocument();
     expect(screen.getByText("Brain Charter")).toBeInTheDocument();
     expect(screen.getAllByText("Telegram capture").length).toBeGreaterThan(0);
-    expect(screen.getByText("Browser clipper")).toBeInTheDocument();
-    expect(screen.getByText("DOCX processing")).toBeInTheDocument();
-    expect(screen.getByText("CSV processing")).toBeInTheDocument();
-    expect(screen.getByText("Screenshot processing")).toBeInTheDocument();
+    expect(screen.getAllByText("Browser clipper").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("DOCX processing").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("CSV processing").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Screenshot processing").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Domain: Work").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Sensitivity: Private").length).toBeGreaterThan(0);
     expect(screen.getByText("Memory sources used")).toBeInTheDocument();
@@ -225,7 +225,7 @@ describe("VNextPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save Brain Charter" }));
 
     expect(screen.getAllByText("Demo Brain Charter settings saved.").length).toBeGreaterThan(0);
-    expect(screen.getByText("Browser clipper")).toBeInTheDocument();
+    expect(screen.getAllByText("Browser clipper").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Default sensitivity: Private").length).toBeGreaterThan(0);
   });
 });

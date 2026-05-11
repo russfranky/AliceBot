@@ -76,7 +76,7 @@ def _parse_datetime(value: object) -> datetime | None:
 
 
 def _record_timestamp(row: JsonObject) -> datetime | None:
-    for key in ("captured_at", "created_at", "occurred_at"):
+    for key in ("captured_at", "created_at", "occurred_at", "completed_at", "started_at", "updated_at"):
         parsed = _parse_datetime(row.get(key))
         if parsed is not None:
             return parsed.astimezone(UTC)
@@ -85,6 +85,60 @@ def _record_timestamp(row: JsonObject) -> datetime | None:
 
 def _count_since(rows: list[JsonObject], cutoff: datetime) -> int:
     return sum(1 for row in rows if (timestamp := _record_timestamp(row)) is not None and timestamp >= cutoff)
+
+
+def _trend_by_day(rows: list[JsonObject], *, days: int = 7) -> list[JsonObject]:
+    now = datetime.now(UTC)
+    labels = [(now - timedelta(days=offset)).date().isoformat() for offset in reversed(range(days))]
+    counts = dict.fromkeys(labels, 0)
+    for row in rows:
+        timestamp = _record_timestamp(row)
+        if timestamp is None:
+            continue
+        label = timestamp.date().isoformat()
+        if label in counts:
+            counts[label] += 1
+    return [{"date": label, "count": count} for label, count in counts.items()]
+
+
+def _top_failure_causes(events: list[JsonObject]) -> list[JsonObject]:
+    failures: Counter[str] = Counter()
+    for event in events:
+        if event.get("event_type") not in {"connector.item_failed", "connector.sync_failed", "connector.state_update_failed"}:
+            continue
+        payload = _event_payload(event)
+        cause = str(payload.get("error_type") or payload.get("reason") or payload.get("error_message") or "unknown")
+        failures[cause[:120]] += 1
+    return [{"cause": cause, "count": count} for cause, count in failures.most_common(5)]
+
+
+def _readiness(
+    *,
+    captures_today: int,
+    connector_failures: int,
+    last_successful_scheduler_run: JsonObject | None,
+    rating_count: int,
+    policy_events: list[JsonObject],
+) -> JsonObject:
+    scheduler_time = _record_timestamp(last_successful_scheduler_run or {})
+    scheduler_fresh = scheduler_time is not None and scheduler_time >= datetime.now(UTC) - timedelta(hours=36)
+    if captures_today <= 0 or not scheduler_fresh:
+        status = "red"
+        reason = "capture or scheduler freshness is missing"
+    elif connector_failures > 0 or rating_count <= 0:
+        status = "yellow"
+        reason = "minor connector or review-loop signal needs attention"
+    else:
+        status = "green"
+        reason = "capture, scheduler, review, and policy loops have healthy signal"
+    return {
+        "status": status,
+        "reason": reason,
+        "captures_today": captures_today,
+        "scheduler_fresh": scheduler_fresh,
+        "artifact_rating_count": rating_count,
+        "policy_blocks_filters": len(policy_events),
+    }
 
 
 class VNextDogfoodingService:
@@ -125,20 +179,31 @@ class VNextDogfoodingService:
             (run for run in scheduler_runs if run.get("status") == "succeeded"),
             None,
         )
+        connector_failures = event_types.get("connector.item_failed", 0) + event_types.get("connector.sync_failed", 0)
+        captures_today = _count_since(sources, today_cutoff)
+        captures_this_week = _count_since(sources, week_cutoff)
 
         return {
             "captures_by_connector": [
                 {"connector_name": name, "count": count}
                 for name, count in sorted(connector_counts.items())
             ],
-            "captures_today": _count_since(sources, today_cutoff),
-            "captures_this_week": _count_since(sources, week_cutoff),
+            "captures_today": captures_today,
+            "captures_this_week": captures_this_week,
+            "capture_trend_by_day": _trend_by_day(sources),
+            "capture_trend_by_week": [{"period": "last_7_days", "count": captures_this_week}],
             "candidate_memories_created": len(candidate_memories),
             "memory_status_counts": _status_counts(memories),
+            "candidate_memory_review_rate": round(
+                len([memory for memory in memories if memory.get("status") in {"accepted", "rejected", "active"}])
+                / max(1, len(memories)),
+                3,
+            ),
             "generated_artifacts_created": len(artifacts),
             "artifact_status_counts": _status_counts(artifacts),
             "artifact_quality_average": round(mean(quality_scores), 2) if quality_scores else None,
             "artifact_quality_rating_count": len(ratings),
+            "artifact_rating_trend": _trend_by_day(ratings),
             "daily_brief_review_status": _latest_artifact_status(artifacts, "daily_brief"),
             "weekly_synthesis_review_status": _latest_artifact_status(artifacts, "weekly_synthesis"),
             "connections_surfaced": event_types.get("graph_edge.created", 0),
@@ -150,10 +215,34 @@ class VNextDogfoodingService:
             "agent_context_packs_requested": event_types.get("context_pack.created", 0),
             "agent_memory_proposals": event_types.get("memory.candidate_created", 0),
             "policy_blocks_filters": len(policy_events),
-            "connector_failures": event_types.get("connector.item_failed", 0)
-            + event_types.get("connector.sync_failed", 0),
+            "connector_failures": connector_failures,
+            "top_failure_causes": _top_failure_causes(events),
+            "scheduler_freshness": {
+                "last_success_at": last_successful_scheduler_run.get("completed_at")
+                if isinstance(last_successful_scheduler_run, dict)
+                else None,
+                "recent_success": _record_timestamp(last_successful_scheduler_run or {}) is not None
+                and _record_timestamp(last_successful_scheduler_run or {}) >= now - timedelta(hours=36),
+                "recent_failure_count": sum(1 for run in scheduler_runs if run.get("status") == "failed"),
+            },
+            "agent_activity_summary": {
+                "outputs_ingested": event_types.get("agent.output_ingested", 0),
+                "context_packs_requested": event_types.get("context_pack.created", 0),
+                "memory_proposals": event_types.get("memory.candidate_created", 0),
+            },
+            "policy_block_filter_summary": {
+                "count": len(policy_events),
+                "event_types": _status_counts(policy_events, field="event_type"),
+            },
             "last_successful_scheduler_run": last_successful_scheduler_run,
             "connector_health": VNextConnectorService(self.store).connector_health_all(),
+            "dogfood_readiness": _readiness(
+                captures_today=captures_today,
+                connector_failures=connector_failures,
+                last_successful_scheduler_run=last_successful_scheduler_run,
+                rating_count=len(ratings),
+                policy_events=policy_events,
+            ),
             "insight_feedback": {
                 "count": len(feedback_events),
                 "useful_yes": _feedback_count(feedback_events, "yes"),

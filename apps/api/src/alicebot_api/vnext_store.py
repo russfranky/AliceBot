@@ -30,6 +30,44 @@ EVENT_LOG_COLUMNS = """
                   integrity_hash
                 """
 
+CONNECTOR_SETTINGS_COLUMNS = """
+                  id,
+                  user_id,
+                  connector_name,
+                  enabled,
+                  configured,
+                  default_domain,
+                  default_sensitivity,
+                  sync_mode,
+                  poll_interval_seconds,
+                  secret_ref,
+                  validation_errors_json,
+                  metadata_json,
+                  created_at,
+                  updated_at,
+                  last_configured_at
+                """
+
+CONNECTOR_STATE_COLUMNS = """
+                  id,
+                  user_id,
+                  connector_id,
+                  connector_name,
+                  cursor_type,
+                  cursor_value,
+                  last_sync_at,
+                  last_success_at,
+                  last_failure_at,
+                  last_error,
+                  items_seen,
+                  items_captured,
+                  items_deduped,
+                  items_failed,
+                  average_processing_time_ms,
+                  state_json,
+                  updated_at
+                """
+
 SOURCE_COLUMNS = """
                   id,
                   user_id,
@@ -523,6 +561,244 @@ class PostgresVNextStore:
                 ORDER BY occurred_at DESC, id DESC
             """,
             (target_type, target_type, target_id, target_id),
+        )
+
+    def list_connector_settings(self) -> list[VNextRow]:
+        return self._fetch_all(
+            f"""
+                SELECT {CONNECTOR_SETTINGS_COLUMNS}
+                FROM connector_settings
+                ORDER BY connector_name ASC
+            """
+        )
+
+    def get_connector_setting(self, connector_name: str) -> VNextRow | None:
+        return self._fetch_optional_one(
+            f"""
+                SELECT {CONNECTOR_SETTINGS_COLUMNS}
+                FROM connector_settings
+                WHERE connector_name = %s
+                """,
+            (connector_name,),
+        )
+
+    def upsert_connector_setting(self, setting: JsonObject, *, actor_type: str = "system") -> VNextRow:
+        row = self._fetch_one(
+            "upsert_connector_setting",
+            f"""
+                INSERT INTO connector_settings (
+                  user_id,
+                  connector_name,
+                  enabled,
+                  configured,
+                  default_domain,
+                  default_sensitivity,
+                  sync_mode,
+                  poll_interval_seconds,
+                  secret_ref,
+                  validation_errors_json,
+                  metadata_json,
+                  last_configured_at
+                )
+                VALUES (
+                  app.current_user_id(),
+                  %s,
+                  COALESCE(%s, false),
+                  COALESCE(%s, false),
+                  %s,
+                  %s,
+                  COALESCE(%s, 'manual'),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  COALESCE(%s::timestamptz, clock_timestamp())
+                )
+                ON CONFLICT (user_id, connector_name)
+                DO UPDATE SET
+                  enabled = EXCLUDED.enabled,
+                  configured = EXCLUDED.configured,
+                  default_domain = EXCLUDED.default_domain,
+                  default_sensitivity = EXCLUDED.default_sensitivity,
+                  sync_mode = EXCLUDED.sync_mode,
+                  poll_interval_seconds = EXCLUDED.poll_interval_seconds,
+                  secret_ref = COALESCE(EXCLUDED.secret_ref, connector_settings.secret_ref),
+                  validation_errors_json = EXCLUDED.validation_errors_json,
+                  metadata_json = connector_settings.metadata_json || EXCLUDED.metadata_json,
+                  updated_at = clock_timestamp(),
+                  last_configured_at = EXCLUDED.last_configured_at
+                RETURNING {CONNECTOR_SETTINGS_COLUMNS}
+                """,
+            (
+                setting["connector_name"],
+                setting.get("enabled"),
+                setting.get("configured"),
+                setting["default_domain"],
+                setting["default_sensitivity"],
+                setting.get("sync_mode", "manual"),
+                setting.get("poll_interval_seconds"),
+                setting.get("secret_ref"),
+                _json_list(setting.get("validation_errors_json")),
+                _json_object(setting.get("metadata_json")),
+                setting.get("last_configured_at"),
+            ),
+        )
+        self._append_mutation_event(
+            event_type="connector.settings_updated",
+            actor_type=actor_type,
+            target_type="connector",
+            target_id=row["connector_name"],
+            payload={
+                "connector_id": row["id"],
+                "connector_name": row["connector_name"],
+                "enabled": row["enabled"],
+                "configured": row["configured"],
+                "default_domain": row["default_domain"],
+                "default_sensitivity": row["default_sensitivity"],
+                "sync_mode": row["sync_mode"],
+                "poll_interval_seconds": row["poll_interval_seconds"],
+                "secret_ref": row["secret_ref"],
+                "validation_errors_json": row["validation_errors_json"],
+            },
+        )
+        return row
+
+    def list_connector_states(self) -> list[VNextRow]:
+        return self._fetch_all(
+            f"""
+                SELECT {CONNECTOR_STATE_COLUMNS}
+                FROM connector_state
+                ORDER BY connector_name ASC, cursor_type ASC
+            """
+        )
+
+    def get_connector_state(self, connector_name: str, *, cursor_type: str = "sync_cursor") -> VNextRow | None:
+        return self._fetch_optional_one(
+            f"""
+                SELECT {CONNECTOR_STATE_COLUMNS}
+                FROM connector_state
+                WHERE connector_name = %s
+                  AND cursor_type = %s
+                """,
+            (connector_name, cursor_type),
+        )
+
+    def upsert_connector_state(self, state: JsonObject, *, actor_type: str = "system") -> VNextRow:
+        connector_name = str(state["connector_name"])
+        cursor_type = str(state.get("cursor_type") or "sync_cursor")
+        row = self._fetch_one(
+            "upsert_connector_state",
+            f"""
+                INSERT INTO connector_state (
+                  user_id,
+                  connector_id,
+                  connector_name,
+                  cursor_type,
+                  cursor_value,
+                  last_sync_at,
+                  last_success_at,
+                  last_failure_at,
+                  last_error,
+                  items_seen,
+                  items_captured,
+                  items_deduped,
+                  items_failed,
+                  average_processing_time_ms,
+                  state_json
+                )
+                VALUES (
+                  app.current_user_id(),
+                  (
+                    SELECT id
+                    FROM connector_settings
+                    WHERE user_id = app.current_user_id()
+                      AND connector_name = %s
+                    LIMIT 1
+                  ),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  COALESCE(%s, 0),
+                  COALESCE(%s, 0),
+                  COALESCE(%s, 0),
+                  COALESCE(%s, 0),
+                  %s,
+                  %s
+                )
+                ON CONFLICT (user_id, connector_name, cursor_type)
+                DO UPDATE SET
+                  connector_id = COALESCE(connector_state.connector_id, EXCLUDED.connector_id),
+                  cursor_value = COALESCE(EXCLUDED.cursor_value, connector_state.cursor_value),
+                  last_sync_at = COALESCE(EXCLUDED.last_sync_at, connector_state.last_sync_at),
+                  last_success_at = COALESCE(EXCLUDED.last_success_at, connector_state.last_success_at),
+                  last_failure_at = COALESCE(EXCLUDED.last_failure_at, connector_state.last_failure_at),
+                  last_error = EXCLUDED.last_error,
+                  items_seen = connector_state.items_seen + EXCLUDED.items_seen,
+                  items_captured = connector_state.items_captured + EXCLUDED.items_captured,
+                  items_deduped = connector_state.items_deduped + EXCLUDED.items_deduped,
+                  items_failed = connector_state.items_failed + EXCLUDED.items_failed,
+                  average_processing_time_ms = COALESCE(
+                    EXCLUDED.average_processing_time_ms,
+                    connector_state.average_processing_time_ms
+                  ),
+                  state_json = connector_state.state_json || EXCLUDED.state_json,
+                  updated_at = clock_timestamp()
+                RETURNING {CONNECTOR_STATE_COLUMNS}
+                """,
+            (
+                connector_name,
+                connector_name,
+                cursor_type,
+                state.get("cursor_value"),
+                state.get("last_sync_at"),
+                state.get("last_success_at"),
+                state.get("last_failure_at"),
+                state.get("last_error"),
+                state.get("items_seen_delta", state.get("items_seen", 0)),
+                state.get("items_captured_delta", state.get("items_captured", 0)),
+                state.get("items_deduped_delta", state.get("items_deduped", 0)),
+                state.get("items_failed_delta", state.get("items_failed", 0)),
+                state.get("average_processing_time_ms"),
+                _json_object(state.get("state_json")),
+            ),
+        )
+        self._append_mutation_event(
+            event_type="connector.state_updated",
+            actor_type=actor_type,
+            target_type="connector",
+            target_id=row["connector_name"],
+            payload={
+                "connector_id": row["connector_id"],
+                "connector_name": row["connector_name"],
+                "cursor_type": row["cursor_type"],
+                "cursor_value": row["cursor_value"],
+                "last_sync_at": row["last_sync_at"],
+                "last_success_at": row["last_success_at"],
+                "last_failure_at": row["last_failure_at"],
+                "items_seen": row["items_seen"],
+                "items_captured": row["items_captured"],
+                "items_deduped": row["items_deduped"],
+                "items_failed": row["items_failed"],
+            },
+        )
+        return row
+
+    def connector_storage_status(self) -> VNextRow:
+        return self._fetch_one(
+            "connector_storage_status",
+            """
+                SELECT
+                  to_regclass('public.connector_settings') IS NOT NULL AS connector_settings_exists,
+                  to_regclass('public.connector_state') IS NOT NULL AS connector_state_exists,
+                  to_regclass('public.artifact_quality_ratings') IS NOT NULL AS artifact_quality_ratings_exists,
+                  to_regclass('public.scheduler_workflows') IS NOT NULL AS scheduler_workflows_exists,
+                  to_regclass('public.scheduler_runs') IS NOT NULL AS scheduler_runs_exists,
+                  NULL::text AS migration_revision
+                """,
         )
 
     def list_sources(
