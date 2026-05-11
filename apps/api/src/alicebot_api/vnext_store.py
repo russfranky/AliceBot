@@ -424,8 +424,8 @@ class PostgresVNextStore:
             f"""
                 SELECT {EVENT_LOG_COLUMNS}
                 FROM event_log
-                WHERE (%s IS NULL OR target_type = %s)
-                  AND (%s IS NULL OR target_id = %s)
+                WHERE (%s::text IS NULL OR target_type = %s)
+                  AND (%s::text IS NULL OR target_id = %s)
                 ORDER BY occurred_at DESC, id DESC
                 """,
             (target_type, target_type, target_id, target_id),
@@ -1166,8 +1166,8 @@ class PostgresVNextStore:
             f"""
                 SELECT {GRAPH_EDGE_COLUMNS}
                 FROM graph_edges
-                WHERE (%s IS NULL OR from_id = %s)
-                  AND (%s IS NULL OR to_id = %s)
+                WHERE (%s::text IS NULL OR from_id = %s)
+                  AND (%s::text IS NULL OR to_id = %s)
                   AND valid_to IS NULL
                 ORDER BY created_at DESC, id DESC
                 """,
@@ -1292,7 +1292,7 @@ class PostgresVNextStore:
             f"""
                 SELECT {PROJECT_COLUMNS}
                 FROM projects
-                WHERE (%s IS NULL OR status = %s)
+                WHERE (%s::text IS NULL OR status = %s)
                   AND (%s::text[] IS NULL OR domain = ANY(%s::text[]) OR domain = 'unknown')
                   AND (%s::text[] IS NULL OR sensitivity = ANY(%s::text[]))
                 ORDER BY updated_at DESC, created_at DESC, id DESC
@@ -1533,7 +1533,7 @@ class PostgresVNextStore:
                 JOIN memories m
                   ON m.id = b.memory_id
                  AND m.user_id = b.user_id
-                WHERE (%s IS NULL OR b.status = %s)
+                WHERE (%s::text IS NULL OR b.status = %s)
                   AND m.deleted_at IS NULL
                   AND (%s::text[] IS NULL OR m.domain = ANY(%s::text[]) OR m.domain = 'unknown')
                   AND (%s::text[] IS NULL OR m.sensitivity = ANY(%s::text[]))
@@ -1696,11 +1696,11 @@ class PostgresVNextStore:
             f"""
                 SELECT {OPEN_LOOP_COLUMNS}
                 FROM open_loops
-                WHERE (%s IS NULL OR status = %s)
+                WHERE (%s::text IS NULL OR status = %s)
                   AND (%s::text[] IS NULL OR domain = ANY(%s::text[]) OR domain = 'unknown')
                   AND (%s::text[] IS NULL OR sensitivity = ANY(%s::text[]))
-                  AND (%s IS NULL OR project_id = %s::uuid)
-                  AND (%s IS NULL OR person_id = %s::uuid)
+                  AND (%s::uuid IS NULL OR project_id = %s::uuid)
+                  AND (%s::uuid IS NULL OR person_id = %s::uuid)
                 ORDER BY opened_at DESC, created_at DESC, id DESC
                 LIMIT %s
                 """,
@@ -1832,7 +1832,7 @@ class PostgresVNextStore:
                   %s,
                   %s,
                   %s,
-                  %s::uuid,
+                  %s::timestamptz,
                   %s
                 )
                 RETURNING {ARTIFACT_COLUMNS}
@@ -1884,7 +1884,7 @@ class PostgresVNextStore:
             f"""
                 SELECT {ARTIFACT_COLUMNS}
                 FROM generated_artifacts
-                WHERE (%s IS NULL OR artifact_type = %s)
+                WHERE (%s::text IS NULL OR artifact_type = %s)
                   AND (%s::text[] IS NULL OR domain = ANY(%s::text[]) OR domain = 'unknown')
                   AND (%s::text[] IS NULL OR sensitivity = ANY(%s::text[]))
                 ORDER BY created_at DESC, id DESC

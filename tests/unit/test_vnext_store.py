@@ -181,6 +181,9 @@ def test_keyword_search_methods_apply_domain_sensitivity_and_limit_filters() -> 
     assert source_params is not None
     assert source_params[-1] == 3
     assert "FROM open_loops" in open_loop_query
+    assert "%s::text IS NULL OR status = %s" in open_loop_query
+    assert "%s::uuid IS NULL OR project_id = %s::uuid" in open_loop_query
+    assert "%s::uuid IS NULL OR person_id = %s::uuid" in open_loop_query
     assert open_loop_params == (
         "open",
         "open",
@@ -215,7 +218,7 @@ def test_list_artifacts_applies_type_domain_sensitivity_and_limit_filters() -> N
     assert artifacts[0]["id"] == "artifact-1"
     query, params = cursor.executed[0]
     assert "FROM generated_artifacts" in query
-    assert "artifact_type = %s" in query
+    assert "%s::text IS NULL OR artifact_type = %s" in query
     assert "domain = ANY" in query
     assert "sensitivity = ANY" in query
     assert params == (
@@ -257,7 +260,7 @@ def test_list_beliefs_joins_memory_domain_sensitivity_filters() -> None:
     query, params = cursor.executed[0]
     assert "FROM beliefs b" in query
     assert "JOIN memories m" in query
-    assert "b.status = %s" in query
+    assert "%s::text IS NULL OR b.status = %s" in query
     assert "m.domain = ANY" in query
     assert "m.sensitivity = ANY" in query
     assert params == (
@@ -360,6 +363,7 @@ def test_memory_revision_provenance_and_graph_methods_write_audit_events() -> No
     assert any("INSERT INTO provenance_links" in query for query, _params in cursor.executed)
     assert any("INSERT INTO graph_edges" in query for query, _params in cursor.executed)
     assert any("UPDATE graph_edges" in query for query, _params in cursor.executed)
+    assert any("%s::text IS NULL OR from_id = %s" in query for query, _params in cursor.executed)
     update_edge_query, update_edge_params = cursor.executed[-4]
     assert "metadata_json = metadata_json || %s" in update_edge_query
     assert update_edge_params is not None
@@ -418,6 +422,7 @@ def test_project_people_belief_and_open_loop_methods_write_audit_events() -> Non
     assert _event_log_insert_count(cursor) == 9
     assert "INSERT INTO projects" in cursor.executed[0][0]
     assert "FROM projects" in cursor.executed[3][0]
+    assert "%s::text IS NULL OR status = %s" in cursor.executed[3][0]
     assert cursor.executed[3][1] == ("active", "active", ["project"], ["project"], ["private"], ["private"], 3)
     assert "UPDATE projects" in cursor.executed[4][0]
     assert "INSERT INTO people" in cursor.executed[6][0]
@@ -528,6 +533,9 @@ def test_append_and_list_event_log_records_use_integrity_payload() -> None:
     assert isinstance(event_insert_params[7], Jsonb)
     assert event_insert_params[7].obj == {"b": 2, "a": 1}
     assert event_insert_params[10] == event["integrity_hash"]
+    event_list_query = cursor.executed[1][0]
+    assert "%s::text IS NULL OR target_type = %s" in event_list_query
+    assert "%s::text IS NULL OR target_id = %s" in event_list_query
 
 
 def test_jsonb_and_event_hash_normalize_postgres_scalar_values() -> None:
