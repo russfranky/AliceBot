@@ -11,6 +11,8 @@ from pathlib import Path
 import sys
 import tempfile
 import time
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 from uuid import UUID, uuid4
 
 import psycopg
@@ -2633,6 +2635,116 @@ def _run_alpha_smoke(ctx: CLIContext, *, name: str, runner) -> JsonObject:
         return {"name": name, "status": "failed", "error_type": type(exc).__name__, "error": str(exc)}
 
 
+def _headless_file_contains(path: Path, markers: tuple[str, ...]) -> bool:
+    try:
+        content = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    return all(marker in content for marker in markers)
+
+
+def _run_vnext_smoke_headless_ubuntu(_ctx: CLIContext, _args: argparse.Namespace) -> str:
+    repo_root = Path(__file__).resolve().parents[4]
+    install_script = repo_root / "scripts" / "install-ubuntu.sh"
+    uninstall_script = repo_root / "scripts" / "uninstall-ubuntu.sh"
+    service_paths = {
+        "api": repo_root / "packaging" / "systemd" / "alice-api.service",
+        "web": repo_root / "packaging" / "systemd" / "alice-web.service",
+        "scheduler": repo_root / "packaging" / "systemd" / "alice-scheduler.service",
+    }
+    doc_paths = {
+        "install": repo_root / "docs" / "alpha" / "headless-ubuntu-install.md",
+        "hermes": repo_root / "docs" / "alpha" / "hermes-dogfood-ubuntu.md",
+        "release_notes": repo_root / "docs" / "release" / "v0.6.0-alpha-rc.1-release-notes.md",
+        "cto": repo_root / "docs" / "vnext-headless-ubuntu-cto-summary.md",
+        "env": repo_root / "packaging" / "ubuntu" / "alicebot.env.example",
+    }
+    service_contents = {
+        name: path.read_text(encoding="utf-8") if path.exists() else "" for name, path in service_paths.items()
+    }
+    gates = {
+        "installer_exists_and_is_executable": install_script.exists() and os.access(install_script, os.X_OK),
+        "installer_supports_required_flags": _headless_file_contains(
+            install_script,
+            ("--tag", "--branch", "--install-dir", "--skip-postgres-install", "--non-interactive"),
+        ),
+        "uninstaller_exists_and_confirms_destructive_actions": _headless_file_contains(
+            uninstall_script,
+            ("--remove-repo", "--remove-config", "--drop-database", "confirm"),
+        ),
+        "systemd_templates_exist": all(path.exists() for path in service_paths.values()),
+        "systemd_runs_as_non_root": all("User=__ALICE_USER__" in content for content in service_contents.values()),
+        "systemd_binds_localhost_by_default": all("127.0.0.1" in content for content in service_contents.values())
+        and not any("0.0.0.0" in content for content in service_contents.values()),
+        "env_template_documents_config_layout": _headless_file_contains(
+            doc_paths["env"],
+            ("DATABASE_URL=", "ALICE_API_HOST=127.0.0.1", "ALICE_WEB_HOST=127.0.0.1", "ALICE_SECRET_PROVIDER="),
+        ),
+        "headless_install_doc_covers_ssh_tunnel": _headless_file_contains(
+            doc_paths["install"],
+            ("ssh -L 3000:127.0.0.1:3000", "Do not expose", "alicebot vnext alpha check --headless"),
+        ),
+        "hermes_guide_covers_identity_and_policy": _headless_file_contains(
+            doc_paths["hermes"],
+            ("agent_id: hermes", "trusted_local_agent", "policy-boundary test", "alicebot vnext smoke agent-integration-pack"),
+        ),
+        "rc_release_notes_exist": _headless_file_contains(
+            doc_paths["release_notes"],
+            ("v0.6.0-alpha-rc.1", "pre-release", "not latest", "headless Ubuntu"),
+        ),
+        "cto_summary_exists": _headless_file_contains(
+            doc_paths["cto"],
+            ("Headless Ubuntu", "Hermes dogfood", "SSH tunnel", "v0.6.0-alpha-rc.1"),
+        ),
+    }
+    payload = {
+        "status": "passed" if all(gates.values()) else "failed",
+        "smoke": "headless-ubuntu",
+        "gates": gates,
+        "checked_paths": {
+            "install_script": str(install_script.relative_to(repo_root)),
+            "uninstall_script": str(uninstall_script.relative_to(repo_root)),
+            "systemd": {name: str(path.relative_to(repo_root)) for name, path in service_paths.items()},
+            "docs": {name: str(path.relative_to(repo_root)) for name, path in doc_paths.items()},
+        },
+    }
+    if payload["status"] != "passed":
+        raise RuntimeError(_json_dumps(payload))
+    return _json_dumps(payload)
+
+
+def _check_headless_http_url(url: str | None) -> JsonObject:
+    if not url:
+        return {
+            "status": "skipped",
+            "url": None,
+            "message": "No URL supplied. Pass --api-url or --web-url after services are running.",
+        }
+    request = Request(url, method="GET", headers={"User-Agent": "alicebot-headless-alpha-check"})
+    try:
+        with urlopen(request, timeout=2.0) as response:
+            status_code = int(response.getcode())
+    except (OSError, URLError) as exc:
+        return {"status": "failed", "url": url, "error_type": type(exc).__name__, "error": str(exc)}
+    return {"status": "passed" if status_code < 500 else "failed", "url": url, "status_code": status_code}
+
+
+def _check_headless_mcp_import() -> JsonObject:
+    try:
+        import importlib.util
+
+        spec = importlib.util.find_spec("alicebot_api.mcp_server")
+    except Exception as exc:
+        return {"status": "failed", "error_type": type(exc).__name__, "error": str(exc)}
+    if spec is None:
+        return {"status": "failed", "error": "alicebot_api.mcp_server module was not found"}
+    return {
+        "status": "passed",
+        "command": "./.venv/bin/python -m alicebot_api.mcp_server",
+        "message": "MCP server module is importable from the installed Alice package.",
+    }
+
+
 def _run_vnext_alpha_check(ctx: CLIContext, args: argparse.Namespace) -> str:
     alpha_secret_provider = InMemorySecretProvider(
         {
@@ -2648,6 +2760,25 @@ def _run_vnext_alpha_check(ctx: CLIContext, args: argparse.Namespace) -> str:
         connector_settings = store.list_connector_settings()
         connector_states = store.list_connector_states()
 
+    headless: JsonObject | None = None
+    if args.headless:
+        headless_smoke = _run_alpha_smoke(ctx, name="headless-ubuntu", runner=_run_vnext_smoke_headless_ubuntu)
+        headless = {
+            "mode": "headless_ubuntu",
+            "package": headless_smoke,
+            "api_reachability": _check_headless_http_url(args.api_url),
+            "web_reachability": _check_headless_http_url(args.web_url),
+            "mcp": _check_headless_mcp_import(),
+            "demo_cycle": {"status": "skipped", "message": "Pass --demo-cycle to run demo load/reset."},
+        }
+        if args.demo_cycle:
+            try:
+                demo_load = json.loads(_run_vnext_demo_load(ctx, argparse.Namespace(fixture=str(DEFAULT_VNEXT_DEMO_DATASET_PATH), reset=True)))
+                demo_reset = json.loads(_run_vnext_demo_reset(ctx, argparse.Namespace(dataset_id=None, fixture=str(DEFAULT_VNEXT_DEMO_DATASET_PATH))))
+                headless["demo_cycle"] = {"status": "passed", "load": demo_load, "reset": demo_reset}
+            except Exception as exc:
+                headless["demo_cycle"] = {"status": "failed", "error_type": type(exc).__name__, "error": str(exc)}
+
     smokes: list[JsonObject] = []
     if not args.skip_smokes:
         smoke_runners = (
@@ -2659,6 +2790,7 @@ def _run_vnext_alpha_check(ctx: CLIContext, args: argparse.Namespace) -> str:
             ("agentic-scheduler", _run_vnext_smoke_agentic_scheduler),
             ("operator-console", _run_vnext_smoke_operator_console),
             ("agent-integration-pack", _run_vnext_smoke_agent_integration_pack),
+            *((("headless-ubuntu", _run_vnext_smoke_headless_ubuntu),) if args.headless else ()),
         )
         smokes = [_run_alpha_smoke(ctx, name=name, runner=runner) for name, runner in smoke_runners]
 
@@ -2669,10 +2801,19 @@ def _run_vnext_alpha_check(ctx: CLIContext, args: argparse.Namespace) -> str:
         blocking.append("connector_storage")
     failed_smokes = [str(smoke.get("name")) for smoke in smokes if smoke.get("status") != "passed"]
     blocking.extend(f"smoke:{name}" for name in failed_smokes)
+    if isinstance(headless, dict):
+        package_status = ((headless.get("package") or {}) if isinstance(headless.get("package"), dict) else {}).get("status")
+        if package_status != "passed":
+            blocking.append("headless:package")
+        for key in ("api_reachability", "web_reachability", "mcp", "demo_cycle"):
+            item = headless.get(key)
+            if isinstance(item, dict) and item.get("status") == "failed":
+                blocking.append(f"headless:{key}")
 
     payload = {
         "status": "failed" if blocking else "passed" if doctor.get("status") == "pass" else "warning",
         "alpha_check": "vnext_public_alpha",
+        "headless": headless,
         "blocking_failures": blocking,
         "doctor": doctor,
         "scheduler": {
@@ -4106,6 +4247,10 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_alpha_subparsers = vnext_alpha_parser.add_subparsers(dest="vnext_alpha_command", required=True)
     vnext_alpha_check_parser = vnext_alpha_subparsers.add_parser("check", help="Check public alpha local readiness.")
     vnext_alpha_check_parser.add_argument("--skip-smokes", action="store_true", help="Only summarize storage, doctor, and scheduler posture.")
+    vnext_alpha_check_parser.add_argument("--headless", action="store_true", help="Include headless Ubuntu packaging and optional service reachability checks.")
+    vnext_alpha_check_parser.add_argument("--api-url", default=None, help="Optional local API URL to check, for example http://127.0.0.1:8000/healthz.")
+    vnext_alpha_check_parser.add_argument("--web-url", default=None, help="Optional local web URL to check, for example http://127.0.0.1:3000/vnext.")
+    vnext_alpha_check_parser.add_argument("--demo-cycle", action="store_true", help="Run demo load/reset as part of the headless check.")
     vnext_alpha_check_parser.set_defaults(handler=_run_vnext_alpha_check)
 
     vnext_demo_parser = vnext_subparsers.add_parser("demo", help="Load or reset the safe vNext public alpha demo dataset.")
@@ -4562,6 +4707,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run the public alpha agent integration pack smoke.",
     )
     vnext_smoke_agent_integration_pack_parser.set_defaults(handler=_run_vnext_smoke_agent_integration_pack)
+    vnext_smoke_headless_ubuntu_parser = vnext_smoke_subparsers.add_parser(
+        "headless-ubuntu",
+        help="Run the headless Ubuntu installer/docs/systemd packaging smoke.",
+    )
+    vnext_smoke_headless_ubuntu_parser.set_defaults(handler=_run_vnext_smoke_headless_ubuntu)
 
     mutations_parser = subparsers.add_parser("mutations", help="Generate, inspect, and apply memory operations.")
     mutations_subparsers = mutations_parser.add_subparsers(dest="mutations_command", required=True)

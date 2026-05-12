@@ -1,0 +1,25 @@
+[Unit]
+Description=Alice API service
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__ALICE_USER__
+Group=__ALICE_GROUP__
+WorkingDirectory=__ALICE_INSTALL_DIR__
+EnvironmentFile=__ALICE_ENV_FILE__
+Environment=APP_HOST=127.0.0.1
+Environment=APP_PORT=8000
+Environment=APP_LOG_MODE=stdout
+Environment=APP_ACCESS_LOG=false
+ExecStart=__ALICE_INSTALL_DIR__/.venv/bin/python -m alicebot_api.local_server
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=__ALICE_INSTALL_DIR__ __ALICE_STATE_DIR__ %h/.alicebot
+
+[Install]
+WantedBy=multi-user.target

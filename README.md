@@ -76,11 +76,19 @@ alicebot vnext alpha check
 
 Agent integration starts with [docs/alpha/agent-integration.md](docs/alpha/agent-integration.md), [docs/alpha/mcp-tools.md](docs/alpha/mcp-tools.md), [docs/alpha/hermes-skill.md](docs/alpha/hermes-skill.md), and [docs/alpha/openclaw-skill.md](docs/alpha/openclaw-skill.md). Security, privacy, and limitations are documented in [docs/alpha/security-and-privacy.md](docs/alpha/security-and-privacy.md) and [docs/alpha/known-limitations.md](docs/alpha/known-limitations.md).
 
+Headless Ubuntu/Hermes dogfood starts with [docs/alpha/headless-ubuntu-install.md](docs/alpha/headless-ubuntu-install.md) and [docs/alpha/hermes-dogfood-ubuntu.md](docs/alpha/hermes-dogfood-ubuntu.md). The secure default is localhost binding plus SSH tunneling:
+
+```bash
+ssh -L 3000:127.0.0.1:3000 -L 8000:127.0.0.1:8000 user@server
+```
+
 Start with:
 
 - [Public alpha docs](docs/alpha/README.md)
 - [Public alpha quickstart](docs/alpha/quickstart.md)
 - [First-run checklist](docs/alpha/first-run.md)
+- [Headless Ubuntu install](docs/alpha/headless-ubuntu-install.md)
+- [Hermes dogfood on Ubuntu](docs/alpha/hermes-dogfood-ubuntu.md)
 - [Agent integration pack](docs/alpha/agent-integration.md)
 - [vNext overview](docs/vnext/README.md)
 - [vNext quickstart](docs/vnext/quickstart.md)
@@ -99,6 +107,7 @@ Start with:
 - [Dogfood hardening CTO summary](docs/vnext-dogfood-hardening-cto-summary.md)
 - [Live-backed operator console CTO summary](docs/vnext-live-backed-operator-console-cto-summary.md)
 - [Public alpha packaging CTO summary](docs/vnext-public-alpha-packaging-cto-summary.md)
+- [Headless Ubuntu packaging CTO summary](docs/vnext-headless-ubuntu-cto-summary.md)
 - [Dogfood daily checklist](docs/runbooks/vnext-dogfood-daily-checklist.md)
 
 ## Release Boundary (`v0.5.1`)
@@ -440,6 +449,8 @@ Deferred beyond `v0.5.1`:
 - [Public Alpha](docs/alpha/README.md)
 - [Public Alpha Quickstart](docs/alpha/quickstart.md)
 - [Public Alpha Agent Integration](docs/alpha/agent-integration.md)
+- [Headless Ubuntu Install](docs/alpha/headless-ubuntu-install.md)
+- [Hermes Dogfood On Ubuntu](docs/alpha/hermes-dogfood-ubuntu.md)
 - [Public Alpha Known Limitations](docs/alpha/known-limitations.md)
 - [vNext Quickstart](docs/vnext/quickstart.md)
 - [vNext Architecture](docs/vnext/architecture.md)

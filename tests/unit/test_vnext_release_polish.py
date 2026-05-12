@@ -121,3 +121,66 @@ def test_public_alpha_packaging_docs_and_commands_are_discoverable() -> None:
     assert "trusted_local_agent" in hermes_copy
     assert "project_scoped_agent" in openclaw_copy
     assert "alpha-check" in makefile
+
+
+def test_headless_ubuntu_packaging_is_discoverable_and_safe_by_default() -> None:
+    readme = _read("README.md")
+    alpha_readme = _read("docs/alpha/README.md")
+    install_doc = _read("docs/alpha/headless-ubuntu-install.md")
+    hermes_doc = _read("docs/alpha/hermes-dogfood-ubuntu.md")
+    release_notes = _read("docs/release/v0.6.0-alpha-rc.1-release-notes.md")
+    cto_summary = _read("docs/vnext-headless-ubuntu-cto-summary.md")
+    installer = _read("scripts/install-ubuntu.sh")
+    uninstaller = _read("scripts/uninstall-ubuntu.sh")
+    env_template = _read("packaging/ubuntu/alicebot.env.example")
+    api_service = _read("packaging/systemd/alice-api.service")
+    web_service = _read("packaging/systemd/alice-web.service")
+    scheduler_service = _read("packaging/systemd/alice-scheduler.service")
+    cli = _read("apps/api/src/alicebot_api/cli.py")
+
+    assert "docs/alpha/headless-ubuntu-install.md" in readme
+    assert "headless-ubuntu-install.md" in alpha_readme
+    assert "ssh -L 3000:127.0.0.1:3000" in install_doc
+    assert "Do not expose `/vnext`" in install_doc
+    assert "alicebot vnext alpha check --headless" in install_doc
+    assert "agent_id: hermes" in hermes_doc
+    assert "trusted_local_agent" in hermes_doc
+    assert "policy-boundary test" in hermes_doc
+    assert "v0.6.0-alpha-rc.1" in release_notes
+    assert "not latest" in release_notes
+    assert "Headless Ubuntu" in cto_summary
+
+    for marker in (
+        "--tag",
+        "--branch",
+        "--install-dir",
+        "--skip-postgres-install",
+        "--non-interactive",
+        "--install-systemd",
+    ):
+        assert marker in installer
+
+    assert "--remove-repo" in uninstaller
+    assert "--drop-database" in uninstaller
+    assert "Type DELETE to continue" in uninstaller
+
+    for marker in (
+        "DATABASE_URL=",
+        "ALICE_API_HOST=127.0.0.1",
+        "ALICE_WEB_HOST=127.0.0.1",
+        "ALICE_SECRET_PROVIDER=",
+        "ALICE_MCP_COMMAND=",
+    ):
+        assert marker in env_template
+
+    for service in (api_service, web_service, scheduler_service):
+        assert "User=__ALICE_USER__" in service
+        assert "Restart=on-failure" in service
+        assert "EnvironmentFile=__ALICE_ENV_FILE__" in service
+        assert "0.0.0.0" not in service
+
+    assert "127.0.0.1" in api_service
+    assert "127.0.0.1" in web_service
+    assert "127.0.0.1" in scheduler_service
+    assert "headless-ubuntu" in cli
+    assert "--headless" in cli

@@ -1,0 +1,23 @@
+[Unit]
+Description=Alice web service
+After=network-online.target alice-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__ALICE_USER__
+Group=__ALICE_GROUP__
+WorkingDirectory=__ALICE_INSTALL_DIR__
+EnvironmentFile=__ALICE_ENV_FILE__
+Environment=ALICE_WEB_HOST=127.0.0.1
+Environment=ALICE_WEB_PORT=3000
+ExecStart=/usr/bin/bash -lc 'pnpm --dir apps/web start --hostname "${ALICE_WEB_HOST:-127.0.0.1}" --port "${ALICE_WEB_PORT:-3000}"'
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=__ALICE_INSTALL_DIR__ __ALICE_STATE_DIR__
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,23 @@
+[Unit]
+Description=Alice governed scheduler daemon
+After=network-online.target postgresql.service alice-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__ALICE_USER__
+Group=__ALICE_GROUP__
+WorkingDirectory=__ALICE_INSTALL_DIR__
+EnvironmentFile=__ALICE_ENV_FILE__
+Environment=ALICE_API_HOST=127.0.0.1
+Environment=ALICE_API_PORT=8000
+ExecStart=__ALICE_INSTALL_DIR__/.venv/bin/alicebot vnext scheduler daemon start --foreground --interval-seconds 60 --limit 10 --pid-file %h/.alicebot/vnext-scheduler/scheduler.pid --status-file %h/.alicebot/vnext-scheduler/scheduler-status.json --log-file __ALICE_STATE_DIR__/logs/scheduler.log
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=__ALICE_INSTALL_DIR__ __ALICE_STATE_DIR__ %h/.alicebot
+
+[Install]
+WantedBy=multi-user.target

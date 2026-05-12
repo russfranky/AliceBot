@@ -29,7 +29,7 @@ Alice vNext has three layers:
 
 1. Follow [public alpha quickstart](../alpha/quickstart.md) for the design-partner install path.
 2. Use [first-run checklist](../alpha/first-run.md) and [doctor](../alpha/doctor.md) for onboarding.
-3. Review [agent integration pack](../alpha/agent-integration.md), [MCP tools](../alpha/mcp-tools.md), [Hermes skill](../alpha/hermes-skill.md), and [OpenClaw skill](../alpha/openclaw-skill.md).
+3. Review [headless Ubuntu install](../alpha/headless-ubuntu-install.md), [Hermes dogfood on Ubuntu](../alpha/hermes-dogfood-ubuntu.md), [agent integration pack](../alpha/agent-integration.md), [MCP tools](../alpha/mcp-tools.md), [Hermes skill](../alpha/hermes-skill.md), and [OpenClaw skill](../alpha/openclaw-skill.md).
 4. Follow [vNext quickstart](quickstart.md) for the broader preview path.
 5. Review [architecture](architecture.md).
 6. Review [security and privacy](security-privacy.md) and [public alpha security posture](../alpha/security-and-privacy.md).
@@ -39,7 +39,7 @@ Alice vNext has three layers:
 10. Use [release checklist](../release/vnext-public-release-checklist.md) before publishing or tagging.
 11. Review [preview release notes](../release/v0.5.1-vnext-preview-release-notes.md), [public alpha release notes](../alpha/release-notes.md), and [tag plan](../release/v0.5.1-vnext-preview-tag-plan.md).
 12. Review the [dogfood daily checklist](../runbooks/vnext-dogfood-daily-checklist.md) before daily local-alpha use.
-13. Review the [agentic control plane CTO summary](../vnext-agentic-control-plane-cto-summary.md), [local runtime CTO summary](../vnext-local-runtime-cto-summary.md), [model-backed intelligence CTO summary](../vnext-model-backed-intelligence-cto-summary.md), [live capture connectors CTO summary](../vnext-live-capture-connectors-cto-summary.md), [dogfood hardening CTO summary](../vnext-dogfood-hardening-cto-summary.md), [live-backed operator console CTO summary](../vnext-live-backed-operator-console-cto-summary.md), and [public alpha packaging CTO summary](../vnext-public-alpha-packaging-cto-summary.md) for sprint closeouts.
+13. Review the [agentic control plane CTO summary](../vnext-agentic-control-plane-cto-summary.md), [local runtime CTO summary](../vnext-local-runtime-cto-summary.md), [model-backed intelligence CTO summary](../vnext-model-backed-intelligence-cto-summary.md), [live capture connectors CTO summary](../vnext-live-capture-connectors-cto-summary.md), [dogfood hardening CTO summary](../vnext-dogfood-hardening-cto-summary.md), [live-backed operator console CTO summary](../vnext-live-backed-operator-console-cto-summary.md), [public alpha packaging CTO summary](../vnext-public-alpha-packaging-cto-summary.md), and [headless Ubuntu packaging CTO summary](../vnext-headless-ubuntu-cto-summary.md) for sprint closeouts.
 
 ## Launch Boundary
 

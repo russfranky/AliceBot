@@ -16,8 +16,10 @@ Start here:
 - [Local runtime](local-runtime.md)
 - [Doctor](doctor.md)
 - [Demo mode](demo-mode.md)
+- [Headless Ubuntu install](headless-ubuntu-install.md)
 - [Agent integration](agent-integration.md)
 - [MCP tools](mcp-tools.md)
+- [Hermes dogfood on Ubuntu](hermes-dogfood-ubuntu.md)
 - [Hermes skill](hermes-skill.md)
 - [OpenClaw skill](openclaw-skill.md)
 - [Custom agent guide](custom-agent-guide.md)
@@ -34,6 +36,7 @@ Start here:
 Current alpha posture:
 
 - local runtime, not hosted SaaS
+- headless Ubuntu install path for SSH-only dogfood hosts
 - technical setup, not consumer install
 - review-only source, artifact, and agent memory proposal flows
 - no automatic promotion into trusted memory
