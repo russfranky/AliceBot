@@ -17,7 +17,7 @@ alicebot vnext smoke headless-ubuntu
 Equivalent explicit commands:
 
 ```bash
-docker compose up -d
+./scripts/dev_up.sh
 ./scripts/migrate.sh
 alicebot vnext doctor --fix-safe --ci
 APP_RELOAD=false ./scripts/api_dev.sh

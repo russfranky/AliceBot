@@ -15,17 +15,12 @@ This path is designed for a fresh local install and a first daily brief in under
 ```bash
 git clone https://github.com/samrusani/AliceBot.git
 cd AliceBot
-cp .env.example .env
-cp .env.lite.example .env.lite
-python3 -m venv .venv
-./.venv/bin/python -m pip install -e '.[dev]'
-pnpm --dir apps/web install
+make setup
 ```
 
-Project-native public alpha setup:
+Then start the project-native public alpha setup:
 
 ```bash
-make setup
 make migrate
 make doctor
 ```
@@ -45,7 +40,7 @@ Use Alice Lite when you want the fastest continuity smoke path:
 Use Docker for Postgres, Redis, and MinIO-backed local development:
 
 ```bash
-docker compose up -d
+./scripts/dev_up.sh
 ./scripts/migrate.sh
 ./scripts/load_sample_data.sh
 alicebot vnext migrations status

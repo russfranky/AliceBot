@@ -15,8 +15,6 @@ This path is for a fresh technical local setup. It does not require internal spr
 ```bash
 git clone https://github.com/samrusani/AliceBot.git
 cd AliceBot
-cp .env.example .env
-cp .env.lite.example .env.lite
 make setup
 make migrate
 make doctor
@@ -25,6 +23,7 @@ make doctor
 Expected success:
 
 - Python dependencies install into `.venv`
+- `.env` and `.env.lite` are created from the checked-in examples when missing
 - web dependencies install under `apps/web`
 - Docker services start
 - migrations finish

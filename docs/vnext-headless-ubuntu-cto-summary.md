@@ -16,16 +16,16 @@ This phase makes Alice vNext practically installable from GitHub on a headless U
 - `packaging/ubuntu/alicebot.env.example` for agreed headless config paths
 - `docs/alpha/headless-ubuntu-install.md`
 - `docs/alpha/hermes-dogfood-ubuntu.md`
-- `docs/release/v0.6.0-alpha-rc.1-release-notes.md`
+- `docs/release/v0.6.0-alpha-rc.2-release-notes.md`
 - `alicebot vnext smoke headless-ubuntu`
 - `alicebot vnext alpha check --headless`
 
 ## Installer Command
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/samrusani/AliceBot/v0.6.0-alpha-rc.1/scripts/install-ubuntu.sh -o install-alice.sh
+curl -fsSL https://raw.githubusercontent.com/samrusani/AliceBot/v0.6.0-alpha-rc.2/scripts/install-ubuntu.sh -o install-alice.sh
 less install-alice.sh
-bash install-alice.sh --tag v0.6.0-alpha-rc.1
+bash install-alice.sh --tag v0.6.0-alpha-rc.2
 ```
 
 Supported assumptions: Ubuntu 22.04 or 24.04, SSH access, local or existing Postgres, Node 20, Python venv, and local-only service binding.
@@ -60,7 +60,7 @@ Hermes should identify as `agent_id=hermes`, `agent_type=personal_assistant`, `p
 
 ## RC Tag / Release Status
 
-The repo is prepared for `v0.6.0-alpha-rc.1`. Stable `v0.5.1` remains latest. If published, the RC should be a GitHub pre-release with `--latest=false`.
+The repo is prepared for `v0.6.0-alpha-rc.2`. Stable `v0.5.1` remains latest. `rc.2` supersedes `rc.1` for Ubuntu installs after installer hardening; publish it as a GitHub pre-release with `--latest=false`.
 
 ## Known Limitations
 
@@ -68,4 +68,4 @@ This does not add hosted cloud deployment, public SaaS auth, team accounts, bill
 
 ## Recommended Next Phase
 
-Run the exact `v0.6.0-alpha-rc.1` installer on the Ubuntu/Hermes dogfood host, record the real install transcript, then publish `v0.6.0-alpha.1` as a pre-release only after Hermes completes the first context-pack/output/proposal loop.
+Run the exact `v0.6.0-alpha-rc.2` installer on the Ubuntu/Hermes dogfood host, record the real install transcript, then publish `v0.6.0-alpha.1` as a pre-release only after Hermes completes the first context-pack/output/proposal loop.

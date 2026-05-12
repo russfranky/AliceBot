@@ -52,8 +52,6 @@ Fast path:
 ```bash
 git clone https://github.com/samrusani/AliceBot.git
 cd AliceBot
-cp .env.example .env
-cp .env.lite.example .env.lite
 make setup
 make migrate
 make doctor
@@ -264,10 +262,7 @@ Clone the repo and install the local runtime:
 ```bash
 git clone https://github.com/samrusani/AliceBot.git
 cd AliceBot
-cp .env.example .env
-cp .env.lite.example .env.lite
-python3 -m venv .venv
-./.venv/bin/python -m pip install -e '.[dev]'
+make setup
 ```
 
 Start Alice Lite with one command:
@@ -314,7 +309,7 @@ Run the Lite smoke check:
 ./.venv/bin/python scripts/run_alice_lite_smoke.py
 ```
 
-For the full local/dev stack with Redis and MinIO, keep using `docker compose up -d` plus the existing `./scripts/migrate.sh`, `./scripts/load_sample_data.sh`, and `APP_RELOAD=false ./scripts/api_dev.sh` flow.
+For the full local/dev stack with Redis and MinIO, keep using `./scripts/dev_up.sh` plus the existing `./scripts/load_sample_data.sh` and `APP_RELOAD=false ./scripts/api_dev.sh` flow. `dev_up.sh` validates `.env`, derives compose Postgres credentials from the active env, and then runs migrations.
 
 See the full local setup walkthrough in [docs/quickstart/local-setup-and-first-result.md](docs/quickstart/local-setup-and-first-result.md).
 

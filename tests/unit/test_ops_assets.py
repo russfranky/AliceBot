@@ -14,7 +14,8 @@ def test_dev_up_waits_for_postgres_and_role_bootstrap() -> None:
 
 
 def test_runtime_role_init_only_grants_connect_on_alicebot_database() -> None:
-    init_sql = (REPO_ROOT / "infra" / "postgres" / "init" / "001_roles.sql").read_text()
+    init_sql = (REPO_ROOT / "infra" / "postgres" / "init" / "001_roles.sh").read_text()
 
-    assert "GRANT CONNECT ON DATABASE alicebot TO alicebot_app;" in init_sql
+    assert "GRANT CONNECT ON DATABASE %I TO %I" in init_sql
+    assert "current_database()" in init_sql
     assert "GRANT CONNECT ON DATABASE postgres TO alicebot_app;" not in init_sql

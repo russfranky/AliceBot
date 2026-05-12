@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 
@@ -30,7 +31,7 @@ def test_vnext_public_preview_docs_cover_release_polish_acceptance() -> None:
         assert marker in readme
 
     assert "first daily brief in under 20 minutes" in overview
-    assert "docker compose up -d" in quickstart
+    assert "./scripts/dev_up.sh" in quickstart
     assert "daily-brief" in quickstart
     assert "Connector Boundary" in architecture
     assert "Prompt-injection content from sources is data, not policy." in security
@@ -83,6 +84,7 @@ def test_public_alpha_packaging_docs_and_commands_are_discoverable() -> None:
     hermes_copy = _read("agent-skills/hermes/alice-memory-skill.md")
     openclaw_copy = _read("agent-skills/openclaw/alice-project-memory-skill.md")
     makefile = _read("Makefile")
+    gitignore = _read(".gitignore")
 
     for marker in (
         "Alice is a local-first memory and continuity layer for humans and agents.",
@@ -128,7 +130,7 @@ def test_headless_ubuntu_packaging_is_discoverable_and_safe_by_default() -> None
     alpha_readme = _read("docs/alpha/README.md")
     install_doc = _read("docs/alpha/headless-ubuntu-install.md")
     hermes_doc = _read("docs/alpha/hermes-dogfood-ubuntu.md")
-    release_notes = _read("docs/release/v0.6.0-alpha-rc.1-release-notes.md")
+    release_notes = _read("docs/release/v0.6.0-alpha-rc.2-release-notes.md")
     cto_summary = _read("docs/vnext-headless-ubuntu-cto-summary.md")
     installer = _read("scripts/install-ubuntu.sh")
     uninstaller = _read("scripts/uninstall-ubuntu.sh")
@@ -146,7 +148,7 @@ def test_headless_ubuntu_packaging_is_discoverable_and_safe_by_default() -> None
     assert "agent_id: hermes" in hermes_doc
     assert "trusted_local_agent" in hermes_doc
     assert "policy-boundary test" in hermes_doc
-    assert "v0.6.0-alpha-rc.1" in release_notes
+    assert "v0.6.0-alpha-rc.2" in release_notes
     assert "not latest" in release_notes
     assert "Headless Ubuntu" in cto_summary
 
@@ -166,10 +168,11 @@ def test_headless_ubuntu_packaging_is_discoverable_and_safe_by_default() -> None
 
     for marker in (
         "DATABASE_URL=",
+        "APP_ENV=development",
         "ALICE_API_HOST=127.0.0.1",
         "ALICE_WEB_HOST=127.0.0.1",
         "ALICE_SECRET_PROVIDER=",
-        "ALICE_MCP_COMMAND=",
+        'ALICE_MCP_COMMAND="',
     ):
         assert marker in env_template
 
@@ -184,3 +187,109 @@ def test_headless_ubuntu_packaging_is_discoverable_and_safe_by_default() -> None
     assert "127.0.0.1" in scheduler_service
     assert "headless-ubuntu" in cli
     assert "--headless" in cli
+
+
+def test_installation_issue_regressions_are_guarded() -> None:
+    makefile = _read("Makefile")
+    gitignore = _read(".gitignore")
+    web_package = json.loads(_read("apps/web/package.json"))
+    installer = _read("scripts/install-ubuntu.sh")
+    dev_up = _read("scripts/dev_up.sh")
+    api_dev = _read("scripts/api_dev.sh")
+    lite_up = _read("scripts/alice_lite_up.sh")
+    migrate = _read("scripts/migrate.sh")
+    compose = _read("docker-compose.yml")
+    compose_lite = _read("docker-compose.lite.yml")
+    postgres_init = _read("infra/postgres/init/001_roles.sh")
+    install_doc = _read("docs/alpha/headless-ubuntu-install.md")
+
+    assert "test -f .env || cp .env.example .env" in makefile
+    assert "test -f .env.lite || cp .env.lite.example .env.lite" in makefile
+    assert "./scripts/validate_env.sh .env .env.lite" in makefile
+    assert "./scripts/pnpm_web_install.sh" in makefile
+    assert ".env.lite" in gitignore
+
+    assert web_package["packageManager"].startswith("pnpm@10.")
+    assert set(web_package["pnpm"]["onlyBuiltDependencies"]) >= {"esbuild", "sharp", "unrs-resolver"}
+
+    assert "PNPM_VERSION" in installer
+    assert "pnpm@latest" not in installer
+    assert "write_lite_env_if_missing" in installer
+    assert "validate_env_files" in installer
+
+    for script in (dev_up, api_dev, lite_up, migrate):
+        assert "scripts/validate_env.sh" in script
+        assert "Missing ${PYTHON_BIN}. Run 'make setup'" in script
+
+    for compose_file in (compose, compose_lite):
+        assert "ALICEBOT_COMPOSE_POSTGRES_PASSWORD" in compose_file
+        assert "ALICEBOT_COMPOSE_APP_PASSWORD" in compose_file
+
+    assert "ALICEBOT_APP_PASSWORD" in postgres_init
+    assert "ALTER ROLE" in postgres_init
+    assert 'ALICE_MCP_COMMAND="' in install_doc
+    assert "docker compose down -v" in install_doc
+
+
+def test_env_validator_rejects_unquoted_values_with_spaces(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "APP_ENV=development",
+                "DATABASE_URL=postgresql://alicebot_app:alicebot_app@localhost:5432/alicebot",
+                "DATABASE_ADMIN_URL=postgresql://alicebot_admin:alicebot_admin@localhost:5432/alicebot",
+                "ALICE_MCP_COMMAND=/tmp/alicebot/.venv/bin/python -m alicebot_api.mcp_server",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [str(ROOT / "scripts" / "validate_env.sh"), str(env_file)],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    assert "quote ALICE_MCP_COMMAND" in result.stderr
+
+    env_file.write_text(
+        env_file.read_text(encoding="utf-8").replace(
+            "ALICE_MCP_COMMAND=/tmp/alicebot/.venv/bin/python -m alicebot_api.mcp_server",
+            'ALICE_MCP_COMMAND="/tmp/alicebot/.venv/bin/python -m alicebot_api.mcp_server"',
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [str(ROOT / "scripts" / "validate_env.sh"), str(env_file)],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0
+
+    env_file.write_text(
+        "\n".join(
+            [
+                "APP_ENV=production",
+                "DATABASE_URL=postgresql://alicebot_app:custom@localhost:5432/alicebot",
+                "DATABASE_ADMIN_URL=postgresql://alicebot_admin:custom@localhost:5432/alicebot",
+                'ALICE_MCP_COMMAND="/tmp/alicebot/.venv/bin/python -m alicebot_api.mcp_server"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [str(ROOT / "scripts" / "validate_env.sh"), str(env_file)],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    assert "TELEGRAM_WEBHOOK_SECRET is required when APP_ENV=production" in result.stderr

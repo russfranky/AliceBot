@@ -63,12 +63,12 @@ It should support a clean Ubuntu install path.
 
 The intended command should be something like:
 
-curl -fsSL https://raw.githubusercontent.com/samrusani/AliceBot/v0.6.0-alpha-rc.1/scripts/install-ubuntu.sh -o install-alice.sh
+curl -fsSL https://raw.githubusercontent.com/samrusani/AliceBot/v0.6.0-alpha-rc.2/scripts/install-ubuntu.sh -o install-alice.sh
 bash install-alice.sh
 
 For safety, docs should recommend downloading and inspecting before running:
 
-curl -fsSL https://raw.githubusercontent.com/samrusani/AliceBot/v0.6.0-alpha-rc.1/scripts/install-ubuntu.sh -o install-alice.sh
+curl -fsSL https://raw.githubusercontent.com/samrusani/AliceBot/v0.6.0-alpha-rc.2/scripts/install-ubuntu.sh -o install-alice.sh
 less install-alice.sh
 bash install-alice.sh
 
@@ -90,7 +90,7 @@ print next-step commands
 
 Support flags:
 
-bash install-alice.sh --tag v0.6.0-alpha-rc.1
+bash install-alice.sh --tag v0.6.0-alpha-rc.2
 bash install-alice.sh --branch main
 bash install-alice.sh --install-dir ~/alicebot
 bash install-alice.sh --skip-postgres-install
@@ -242,7 +242,7 @@ Prepare an internal RC tag release path.
 
 Recommended immediate tag:
 
-v0.6.0-alpha-rc.1
+v0.6.0-alpha-rc.2
 
 Do not mark as latest.
 
@@ -257,7 +257,7 @@ security defaults
 
 Optional but useful GitHub release assets:
 
-alicebot-v0.6.0-alpha-rc.1-source.tar.gz
+alicebot-v0.6.0-alpha-rc.2-source.tar.gz
 SHA256SUMS
 install-ubuntu.sh
 
@@ -477,7 +477,7 @@ Hermes dogfood guide exists.
 Alpha check works in headless mode.
 Optional headless-ubuntu smoke exists and passes, or equivalent documented validation exists.
 GitHub RC tag/release instructions exist.
-Release notes for v0.6.0-alpha-rc.1 exist.
+Release notes for v0.6.0-alpha-rc.2 exist.
 Stable v0.5.1 remains latest.
 Secrets are never printed in install logs.
 Services bind to localhost by default.
@@ -552,7 +552,7 @@ My recommendation on tagging
 
 Prep the repo for:
 
-v0.6.0-alpha-rc.1
+v0.6.0-alpha-rc.2
 
 Then install that exact tag on your Ubuntu/Hermes box.
 

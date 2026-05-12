@@ -15,6 +15,7 @@ NON_INTERACTIVE=0
 INSTALL_SYSTEMD=0
 DRY_RUN=0
 RUN_ALPHA_CHECK=1
+PNPM_VERSION="${PNPM_VERSION:-10.23.0}"
 
 log() {
   printf '[alice-install] %s\n' "$*"
@@ -33,7 +34,7 @@ Usage:
   bash install-alice.sh [options]
 
 Options:
-  --tag VERSION              Check out a specific tag, for example v0.6.0-alpha-rc.1.
+  --tag VERSION              Check out a specific tag, for example v0.6.0-alpha-rc.2.
   --branch NAME              Check out a branch. Defaults to main when --tag is omitted.
   --install-dir PATH         Repository install directory. Defaults to ~/alicebot.
   --config-dir PATH          Config directory. Defaults to ~/.config/alicebot.
@@ -164,9 +165,9 @@ install_node_and_pnpm() {
   fi
   if command -v corepack >/dev/null 2>&1; then
     run sudo corepack enable
-    run sudo corepack prepare pnpm@latest --activate
+    run sudo corepack prepare "pnpm@${PNPM_VERSION}" --activate
   elif ! command -v pnpm >/dev/null 2>&1; then
-    run sudo npm install -g pnpm
+    run sudo npm install -g "pnpm@${PNPM_VERSION}"
   fi
 }
 
@@ -237,6 +238,25 @@ write_env_if_missing() {
   fi
 }
 
+write_lite_env_if_missing() {
+  local lite_env="${INSTALL_DIR}/.env.lite"
+  if [ -f "${lite_env}" ]; then
+    log "Preserving existing ${lite_env}."
+  elif [ "${DRY_RUN}" -eq 1 ]; then
+    log "+ create ${lite_env} from .env.lite.example"
+  else
+    cp "${INSTALL_DIR}/.env.lite.example" "${lite_env}"
+  fi
+}
+
+validate_env_files() {
+  if [ "${DRY_RUN}" -eq 1 ]; then
+    log "+ validate ${ENV_FILE} and ${INSTALL_DIR}/.env.lite before sourcing"
+    return
+  fi
+  run "${INSTALL_DIR}/scripts/validate_env.sh" "${ENV_FILE}" "${INSTALL_DIR}/.env.lite"
+}
+
 prepare_database_from_env() {
   if [ "${DRY_RUN}" -eq 1 ]; then
     log "+ create alicebot database and roles from generated local env file"
@@ -274,7 +294,7 @@ install_project_dependencies() {
   run python3 -m venv "${INSTALL_DIR}/.venv"
   run "${INSTALL_DIR}/.venv/bin/python" -m pip install --upgrade pip
   run "${INSTALL_DIR}/.venv/bin/python" -m pip install -e "${INSTALL_DIR}[dev]"
-  run pnpm --dir "${INSTALL_DIR}/apps/web" install
+  run env PNPM=pnpm WEB_DIR="${INSTALL_DIR}/apps/web" "${INSTALL_DIR}/scripts/pnpm_web_install.sh"
   run pnpm --dir "${INSTALL_DIR}/apps/web" build
 }
 
@@ -347,6 +367,8 @@ install_node_and_pnpm
 prepare_postgres
 sync_repo
 write_env_if_missing
+write_lite_env_if_missing
+validate_env_files
 if [ "${SKIP_POSTGRES_INSTALL}" -eq 0 ]; then
   prepare_database_from_env
 fi

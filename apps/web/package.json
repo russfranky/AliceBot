@@ -2,6 +2,7 @@
   "name": "@alicebot/web",
   "private": true,
   "version": "0.5.1",
+  "packageManager": "pnpm@10.23.0",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -26,5 +27,12 @@
     "jsdom": "26.0.0",
     "typescript": "5.8.2",
     "vitest": "3.0.8"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "sharp",
+      "unrs-resolver"
+    ]
   }
 }

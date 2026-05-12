@@ -4,7 +4,18 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
+fail() {
+  printf '[alice-api-dev] ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+PYTHON_BIN="${REPO_ROOT}/.venv/bin/python"
+if [ ! -x "${PYTHON_BIN}" ]; then
+  fail "Missing ${PYTHON_BIN}. Run 'make setup' before starting Alice."
+fi
+
 if [ -f "${REPO_ROOT}/.env" ]; then
+  "${REPO_ROOT}/scripts/validate_env.sh" "${REPO_ROOT}/.env"
   PRESERVE_ENV_KEYS=(
     APP_ENV
     APP_HOST
@@ -49,11 +60,6 @@ if [ -f "${REPO_ROOT}/.env" ]; then
       unset "${preserve_key}"
     fi
   done
-fi
-
-PYTHON_BIN="python3"
-if [ -x "${REPO_ROOT}/.venv/bin/python" ]; then
-  PYTHON_BIN="${REPO_ROOT}/.venv/bin/python"
 fi
 
 cd "${REPO_ROOT}"

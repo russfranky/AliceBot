@@ -55,7 +55,7 @@ Start with [quickstart.md](quickstart.md), then run:
 alicebot vnext alpha check
 ```
 
-Headless Ubuntu dogfood readiness is prepared for `v0.6.0-alpha-rc.1` through [headless-ubuntu-install.md](headless-ubuntu-install.md), [hermes-dogfood-ubuntu.md](hermes-dogfood-ubuntu.md), `scripts/install-ubuntu.sh`, systemd templates under `packaging/systemd/`, and:
+Headless Ubuntu dogfood readiness is prepared for `v0.6.0-alpha-rc.2` through [headless-ubuntu-install.md](headless-ubuntu-install.md), [hermes-dogfood-ubuntu.md](hermes-dogfood-ubuntu.md), `scripts/install-ubuntu.sh`, systemd templates under `packaging/systemd/`, and:
 
 ```bash
 alicebot vnext alpha check --headless

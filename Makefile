@@ -6,9 +6,12 @@ WEB_DIR ?= apps/web
 .PHONY: setup migrate dev doctor vnext scheduler alpha-check test-web test-python
 
 setup:
+	@test -f .env || cp .env.example .env
+	@test -f .env.lite || cp .env.lite.example .env.lite
+	./scripts/validate_env.sh .env .env.lite
 	python3 -m venv .venv
 	$(PYTHON) -m pip install -e '.[dev]'
-	$(PNPM) --dir $(WEB_DIR) install
+	PNPM="$(PNPM)" WEB_DIR="$(WEB_DIR)" ./scripts/pnpm_web_install.sh
 	@echo "Setup complete. Next: make migrate && make doctor"
 
 migrate:

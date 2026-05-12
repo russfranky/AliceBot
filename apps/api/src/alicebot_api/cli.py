@@ -2655,7 +2655,7 @@ def _run_vnext_smoke_headless_ubuntu(_ctx: CLIContext, _args: argparse.Namespace
     doc_paths = {
         "install": repo_root / "docs" / "alpha" / "headless-ubuntu-install.md",
         "hermes": repo_root / "docs" / "alpha" / "hermes-dogfood-ubuntu.md",
-        "release_notes": repo_root / "docs" / "release" / "v0.6.0-alpha-rc.1-release-notes.md",
+        "release_notes": repo_root / "docs" / "release" / "v0.6.0-alpha-rc.2-release-notes.md",
         "cto": repo_root / "docs" / "vnext-headless-ubuntu-cto-summary.md",
         "env": repo_root / "packaging" / "ubuntu" / "alicebot.env.example",
     }
@@ -2690,11 +2690,11 @@ def _run_vnext_smoke_headless_ubuntu(_ctx: CLIContext, _args: argparse.Namespace
         ),
         "rc_release_notes_exist": _headless_file_contains(
             doc_paths["release_notes"],
-            ("v0.6.0-alpha-rc.1", "pre-release", "not latest", "headless Ubuntu"),
+            ("v0.6.0-alpha-rc.2", "pre-release", "not latest", "headless Ubuntu"),
         ),
         "cto_summary_exists": _headless_file_contains(
             doc_paths["cto"],
-            ("Headless Ubuntu", "Hermes dogfood", "SSH tunnel", "v0.6.0-alpha-rc.1"),
+            ("Headless Ubuntu", "Hermes dogfood", "SSH tunnel", "v0.6.0-alpha-rc.2"),
         ),
     }
     payload = {

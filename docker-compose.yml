@@ -3,9 +3,11 @@ services:
     image: pgvector/pgvector:pg16
     container_name: alicebot-postgres
     environment:
-      POSTGRES_USER: alicebot_admin
-      POSTGRES_PASSWORD: alicebot_admin
-      POSTGRES_DB: alicebot
+      POSTGRES_USER: ${ALICEBOT_COMPOSE_POSTGRES_USER:-alicebot_admin}
+      POSTGRES_PASSWORD: ${ALICEBOT_COMPOSE_POSTGRES_PASSWORD:-alicebot_admin}
+      POSTGRES_DB: ${ALICEBOT_COMPOSE_POSTGRES_DB:-alicebot}
+      ALICEBOT_APP_USER: ${ALICEBOT_COMPOSE_APP_USER:-alicebot_app}
+      ALICEBOT_APP_PASSWORD: ${ALICEBOT_COMPOSE_APP_PASSWORD:-alicebot_app}
     ports:
       - "127.0.0.1:5432:5432"
     volumes:

@@ -10,7 +10,7 @@ Supported assumptions for this alpha:
 - local Postgres on the same host, or an existing Postgres reached through `DATABASE_URL`
 - services bound to `127.0.0.1` by default
 
-This is an RC/dogfood install path for `v0.6.0-alpha-rc.1`, not a public beta or hosted SaaS release.
+This is an RC/dogfood install path for `v0.6.0-alpha-rc.2`, not a public beta or hosted SaaS release. `rc.2` supersedes `rc.1` for Ubuntu installs after the first install attempt exposed setup and environment drift issues.
 
 ## Recommended Secure Access
 
@@ -31,9 +31,9 @@ Do not expose `/vnext`, the API, MCP, or browser clipper endpoint publicly by de
 ## Inspect-Before-Run Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/samrusani/AliceBot/v0.6.0-alpha-rc.1/scripts/install-ubuntu.sh -o install-alice.sh
+curl -fsSL https://raw.githubusercontent.com/samrusani/AliceBot/v0.6.0-alpha-rc.2/scripts/install-ubuntu.sh -o install-alice.sh
 less install-alice.sh
-bash install-alice.sh --tag v0.6.0-alpha-rc.1
+bash install-alice.sh --tag v0.6.0-alpha-rc.2
 ```
 
 Install from `main` instead:
@@ -49,7 +49,7 @@ Use `--non-interactive` only after you have chosen a safe install directory and 
 ## Installer Options
 
 ```bash
-bash install-alice.sh --tag v0.6.0-alpha-rc.1
+bash install-alice.sh --tag v0.6.0-alpha-rc.2
 bash install-alice.sh --branch main
 bash install-alice.sh --install-dir ~/alicebot
 bash install-alice.sh --skip-postgres-install
@@ -81,6 +81,7 @@ The installer renders [packaging/ubuntu/alicebot.env.example](../../packaging/ub
 Important config keys:
 
 ```dotenv
+APP_ENV=development
 DATABASE_URL=postgresql://alicebot_app:<redacted>@127.0.0.1:5432/alicebot
 DATABASE_ADMIN_URL=postgresql://alicebot_admin:<redacted>@127.0.0.1:5432/alicebot
 ALICE_API_HOST=127.0.0.1
@@ -89,7 +90,7 @@ ALICE_WEB_HOST=127.0.0.1
 ALICE_WEB_PORT=3000
 ALICE_SECRET_PROVIDER=encrypted_local
 MODEL_PROVIDER=deterministic_local
-ALICE_MCP_COMMAND=~/alicebot/.venv/bin/python -m alicebot_api.mcp_server
+ALICE_MCP_COMMAND="~/alicebot/.venv/bin/python -m alicebot_api.mcp_server"
 ```
 
 Secrets are referenced, not printed. Store real connector secrets through the configured secret-provider path, then configure connectors with `secret_ref` values such as `telegram.bot_token.default`.
@@ -101,16 +102,18 @@ sudo apt-get update
 sudo apt-get install -y ca-certificates curl git build-essential python3 python3-venv python3-pip libpq-dev postgresql postgresql-contrib
 git clone https://github.com/samrusani/AliceBot.git ~/alicebot
 cd ~/alicebot
-git checkout tags/v0.6.0-alpha-rc.1
+git checkout tags/v0.6.0-alpha-rc.2
 python3 -m venv .venv
 ./.venv/bin/python -m pip install -e '.[dev]'
 corepack enable
-corepack prepare pnpm@latest --activate
+corepack prepare pnpm@10.23.0 --activate
+cp .env.lite.example .env.lite
 pnpm --dir apps/web install
 pnpm --dir apps/web build
 cp packaging/ubuntu/alicebot.env.example ~/.config/alicebot/.env
 less ~/.config/alicebot/.env
 ln -sfn ~/.config/alicebot/.env .env
+scripts/validate_env.sh ~/.config/alicebot/.env .env.lite
 ./.venv/bin/python -m alembic -c apps/api/alembic.ini upgrade head
 ./.venv/bin/alicebot vnext doctor --fix-safe --ci
 ./.venv/bin/alicebot vnext alpha check --headless --skip-smokes
@@ -129,7 +132,7 @@ Templates live under [packaging/systemd](../../packaging/systemd):
 Install them through:
 
 ```bash
-bash install-alice.sh --tag v0.6.0-alpha-rc.1 --install-systemd
+bash install-alice.sh --tag v0.6.0-alpha-rc.2 --install-systemd
 ```
 
 Then start:
@@ -248,6 +251,27 @@ Postgres unreachable:
 systemctl status postgresql
 sudo -u postgres psql -c 'SELECT 1'
 ```
+
+Environment file rejected before startup:
+
+```bash
+~/alicebot/scripts/validate_env.sh ~/.config/alicebot/.env ~/alicebot/.env.lite
+```
+
+If a value contains spaces, quote it. For example:
+
+```dotenv
+ALICE_MCP_COMMAND="~/alicebot/.venv/bin/python -m alicebot_api.mcp_server"
+```
+
+Local compose password mismatch after changing `DATABASE_URL`:
+
+```bash
+docker compose down -v
+make migrate
+```
+
+Only remove the compose volume if you are intentionally discarding the local dev database.
 
 API not reachable:
 
