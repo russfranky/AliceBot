@@ -248,7 +248,9 @@ MAINTENANCE_REPORT_PATH_ENV = "ALICEBOT_MAINTENANCE_REPORT_PATH"
 DEFAULT_MAINTENANCE_REPORT_PATH = (
     Path(__file__).resolve().parents[4] / "artifacts" / "ops" / "maintenance_status_latest.json"
 )
+DEFAULT_VNEXT_DEMO_DATASET_PATH = Path(__file__).resolve().parents[4] / "fixtures" / "vnext" / "demo_dataset.json"
 REVIEW_STATUS_CHOICES = ("correction_ready", "active", "stale", "superseded", "deleted", "all")
+DEMO_SECRET_MARKERS = ("sk-", "xoxb-", "ghp_", "password", "access_token", "refresh_token", "@gmail.com")
 
 
 @dataclass(frozen=True, slots=True)
@@ -925,6 +927,425 @@ def _run_vnext_doctor(ctx: CLIContext, args: argparse.Namespace) -> str:
 def _run_vnext_migrations_status(ctx: CLIContext, _args: argparse.Namespace) -> str:
     with _vnext_store_context(ctx) as store:
         payload = VNextDoctorService(store).migration_status()
+    return _json_dumps(payload)
+
+
+def _load_vnext_demo_dataset(path: str | Path) -> JsonObject:
+    dataset_path = Path(path).expanduser().resolve()
+    payload = json.loads(dataset_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise VNextCaptureValidationError("vNext demo dataset root must be an object")
+    if not isinstance(payload.get("dataset_id"), str) or not str(payload["dataset_id"]).strip():
+        raise VNextCaptureValidationError("vNext demo dataset requires dataset_id")
+    serialized = json.dumps(payload, sort_keys=True).casefold()
+    leaked_markers = [marker for marker in DEMO_SECRET_MARKERS if marker in serialized]
+    if leaked_markers:
+        raise VNextCaptureValidationError(f"vNext demo dataset contains forbidden marker(s): {', '.join(leaked_markers)}")
+    return payload
+
+
+def _demo_tag(dataset_id: str) -> JsonObject:
+    return {"demo": True, "demo_dataset_id": dataset_id}
+
+
+def _reset_vnext_demo_dataset(store: PostgresVNextStore, *, dataset_id: str) -> JsonObject:
+    with store.conn.cursor() as cur:
+        cur.execute(
+            """
+            WITH demo_sources AS (
+              SELECT id::text AS id
+              FROM sources
+              WHERE metadata_json ->> 'demo_dataset_id' = %s
+                 OR metadata_json -> 'raw_payload' ->> 'demo_dataset_id' = %s
+            ),
+            demo_artifacts AS (
+              SELECT id::text AS id
+              FROM generated_artifacts
+              WHERE metadata_json ->> 'demo_dataset_id' = %s
+                 OR metadata_json ->> 'source_id' IN (SELECT id FROM demo_sources)
+            ),
+            reset_sources AS (
+              UPDATE sources
+              SET deleted_at = COALESCE(deleted_at, clock_timestamp())
+              WHERE metadata_json ->> 'demo_dataset_id' = %s
+                 OR metadata_json -> 'raw_payload' ->> 'demo_dataset_id' = %s
+              RETURNING id
+            ),
+            reset_memories AS (
+              UPDATE memories
+              SET status = 'archived',
+                  memory_key = memory_key || '#demo-reset:' || left(replace(gen_random_uuid()::text, '-', ''), 12),
+                  metadata_json = metadata_json || %s::jsonb,
+                  updated_at = clock_timestamp(),
+                  deleted_at = COALESCE(deleted_at, clock_timestamp())
+              WHERE deleted_at IS NULL
+                AND (
+                  metadata_json ->> 'demo_dataset_id' = %s
+                  OR metadata_json ->> 'source_id' IN (SELECT id FROM demo_sources)
+                  OR metadata_json ->> 'artifact_id' IN (SELECT id FROM demo_artifacts)
+                )
+              RETURNING id
+            ),
+            reset_artifacts AS (
+              UPDATE generated_artifacts
+              SET status = 'archived'
+              WHERE metadata_json ->> 'demo_dataset_id' = %s
+                 OR metadata_json ->> 'source_id' IN (SELECT id FROM demo_sources)
+              RETURNING id
+            ),
+            reset_open_loops AS (
+              UPDATE open_loops
+              SET status = 'dismissed',
+                  resolved_at = COALESCE(resolved_at, clock_timestamp()),
+                  resolution_note = COALESCE(resolution_note, 'Reset synthetic demo dataset.'),
+                  metadata_json = metadata_json || %s::jsonb,
+                  updated_at = clock_timestamp()
+              WHERE metadata_json ->> 'demo_dataset_id' = %s
+                 OR source_id::text IN (SELECT id FROM demo_sources)
+              RETURNING id
+            ),
+            reset_projects AS (
+              UPDATE projects
+              SET status = 'archived',
+                  metadata_json = metadata_json || %s::jsonb,
+                  updated_at = clock_timestamp()
+              WHERE metadata_json ->> 'demo_dataset_id' = %s
+              RETURNING id
+            )
+            SELECT
+              (SELECT count(*) FROM reset_sources) AS sources,
+              (SELECT count(*) FROM reset_memories) AS memories,
+              (SELECT count(*) FROM reset_artifacts) AS artifacts,
+              (SELECT count(*) FROM reset_open_loops) AS open_loops,
+              (SELECT count(*) FROM reset_projects) AS projects
+            """,
+            (
+                dataset_id,
+                dataset_id,
+                dataset_id,
+                dataset_id,
+                dataset_id,
+                json.dumps({"demo_reset_at": datetime.now(UTC).isoformat()}),
+                dataset_id,
+                dataset_id,
+                json.dumps({"demo_reset_at": datetime.now(UTC).isoformat()}),
+                dataset_id,
+                json.dumps({"demo_reset_at": datetime.now(UTC).isoformat()}),
+                dataset_id,
+            ),
+        )
+        row = cur.fetchone() or {}
+    append_event(
+        store,
+        event_type="demo.dataset_reset",
+        actor_type="system",
+        target_type="demo_dataset",
+        target_id=dataset_id,
+        payload={"dataset_id": dataset_id, "reset_counts": dict(row)},
+    )
+    return {"status": "reset", "dataset_id": dataset_id, "reset_counts": dict(row)}
+
+
+def _tag_demo_candidate_memories(store: PostgresVNextStore, *, dataset_id: str, source_ids: set[str]) -> int:
+    updated = 0
+    for memory in store.list_memories(status="candidate"):
+        metadata = memory.get("metadata_json") if isinstance(memory.get("metadata_json"), dict) else {}
+        if str(metadata.get("source_id") or "") not in source_ids:
+            continue
+        store.update_memory(
+            memory_id=str(memory["id"]),
+            patch={"metadata_json": {**metadata, **_demo_tag(dataset_id)}},
+            actor_type="system",
+        )
+        updated += 1
+    return updated
+
+
+def _tag_demo_artifact(store: PostgresVNextStore, *, artifact_id: str, dataset_id: str) -> None:
+    artifact = store.get_artifact(artifact_id)
+    if artifact is None:
+        return
+    metadata = artifact.get("metadata_json") if isinstance(artifact.get("metadata_json"), dict) else {}
+    with store.conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE generated_artifacts
+            SET metadata_json = %s::jsonb
+            WHERE id = %s::uuid
+            """,
+            (json.dumps({**metadata, **_demo_tag(dataset_id)}), artifact_id),
+        )
+
+
+def _run_vnext_demo_reset(ctx: CLIContext, args: argparse.Namespace) -> str:
+    dataset_id = args.dataset_id
+    if not dataset_id and getattr(args, "fixture", None):
+        dataset_id = str(_load_vnext_demo_dataset(args.fixture)["dataset_id"])
+    if not dataset_id:
+        dataset_id = str(_load_vnext_demo_dataset(DEFAULT_VNEXT_DEMO_DATASET_PATH)["dataset_id"])
+    with _vnext_store_context(ctx) as store:
+        payload = _reset_vnext_demo_dataset(store, dataset_id=dataset_id)
+    return _json_dumps(payload)
+
+
+def _run_vnext_demo_load(ctx: CLIContext, args: argparse.Namespace) -> str:
+    dataset = _load_vnext_demo_dataset(args.fixture)
+    dataset_id = str(dataset["dataset_id"])
+    created_source_ids: set[str] = set()
+    created_artifact_ids: list[str] = []
+    created_project_ids: list[str] = []
+    created_open_loop_ids: list[str] = []
+
+    with _vnext_store_context(ctx) as store:
+        if args.reset:
+            _reset_vnext_demo_dataset(store, dataset_id=dataset_id)
+        connector_service = VNextConnectorService(store)
+        connector_service.ensure_default_settings()
+        for project in dataset.get("projects", []):
+            if not isinstance(project, dict):
+                continue
+            row = store.create_project(
+                {
+                    "name": str(project.get("name") or "Alice vNext Demo"),
+                    "slug": f"demo-{dataset_id[:32]}-{uuid4().hex[:8]}"[:80],
+                    "status": str(project.get("status") or "active"),
+                    "description": "Synthetic public alpha demo project.",
+                    "current_state": "Synthetic demo state for source review, project updates, and agent integration.",
+                    "domain": str(project.get("domain") or "project"),
+                    "sensitivity": str(project.get("sensitivity") or "private"),
+                    "metadata_json": {**_demo_tag(dataset_id), "fixture_project_id": project.get("id")},
+                },
+                actor_type="system",
+            )
+            created_project_ids.append(str(row["id"]))
+
+        capture_service = VNextCaptureService(store)
+        for source in dataset.get("sources", []):
+            if not isinstance(source, dict):
+                continue
+            result = capture_service.capture_text(
+                str(source.get("raw_text") or ""),
+                title=str(source.get("title") or "Synthetic demo source"),
+                domain=str(source.get("domain") or "project"),
+                sensitivity=str(source.get("sensitivity") or "private"),
+                metadata_json={**_demo_tag(dataset_id), "fixture_source_type": source.get("source_type")},
+            )
+            if result.source_id is not None:
+                created_source_ids.add(result.source_id)
+
+        connector_payloads = dataset.get("connector_payloads") if isinstance(dataset.get("connector_payloads"), dict) else {}
+        browser_payload = connector_payloads.get("browser_clipper") if isinstance(connector_payloads, dict) else None
+        if isinstance(browser_payload, dict) and isinstance(browser_payload.get("items"), list):
+            result = connector_service.sync_items(
+                "browser_clipper",
+                [
+                    {**item, **_demo_tag(dataset_id)}
+                    for item in browser_payload["items"]
+                    if isinstance(item, dict)
+                ],
+                default_domain="project",
+                default_sensitivity="private",
+                use_cursor=False,
+            )
+            created_source_ids.update(result.source_ids)
+
+        telegram_payload = connector_payloads.get("telegram") if isinstance(connector_payloads, dict) else None
+        if isinstance(telegram_payload, dict) and isinstance(telegram_payload.get("items"), list):
+            result = connector_service.sync_telegram_updates(
+                [
+                    {**item, **_demo_tag(dataset_id)}
+                    for item in telegram_payload["items"]
+                    if isinstance(item, dict)
+                ],
+                allowed_chat_ids=("9001001",),
+                default_domain="personal",
+                default_sensitivity="private",
+            )
+            created_source_ids.update(result.source_ids)
+
+        project_id = created_project_ids[0] if created_project_ids else None
+        agent_outputs = dataset.get("agent_outputs") if isinstance(dataset.get("agent_outputs"), list) else []
+        fixture_agent_output = next((item for item in agent_outputs if isinstance(item, dict)), {})
+        identity = AgentIdentity(
+            agent_id=str(fixture_agent_output.get("agent_id") or "openclaw"),
+            agent_type=str(fixture_agent_output.get("agent_type") or "coding_agent"),
+            agent_run_id=str(fixture_agent_output.get("agent_run_id") or f"demo-{dataset_id}"),
+            task_id=str(fixture_agent_output.get("task_id") or "demo-public-alpha"),
+            project_scope=tuple(
+                str(value)
+                for value in (
+                    fixture_agent_output.get("project_scope")
+                    if isinstance(fixture_agent_output.get("project_scope"), list)
+                    else ["Alice"]
+                )
+            ),
+            permission_profile=str(fixture_agent_output.get("permission_profile") or "project_scoped_agent"),
+        )
+        store.upsert_agent_identity(
+            {
+                "agent_id": identity.agent_id,
+                "agent_type": identity.agent_type,
+                "permission_profile": identity.permission_profile,
+                "display_name": "OpenClaw Demo",
+                "project_scope_json": list(identity.project_scope),
+                "metadata_json": {**_demo_tag(dataset_id), "last_agent_run_id": identity.agent_run_id},
+            },
+            actor_type="agent",
+        )
+        agent_decision = evaluate_agent_policy(
+            identity=identity,
+            action="source.capture",
+            domains=("project",),
+            sensitivity_allowed=("private",),
+            project_scope=identity.project_scope,
+            write_policy="proposal_only",
+        )
+        append_policy_events(store, identity=identity, decision=agent_decision, target_type="connector", target_id="agent_output")
+        ensure_policy_allowed(agent_decision)
+        agent_result = connector_service.ingest_agent_output(
+            {
+                "agent_id": identity.agent_id,
+                "agent_type": identity.agent_type,
+                "agent_run_id": identity.agent_run_id,
+                "task_id": identity.task_id,
+                "project_scope": list(identity.project_scope),
+                "title": str(fixture_agent_output.get("title") or "OpenClaw public alpha demo sprint summary"),
+                "content": str(
+                    fixture_agent_output.get("content")
+                    or (
+                        "Decision: Public alpha agents should request scoped Alice context before acting.\n"
+                        "TODO: Review the demo source-to-artifact trace in /vnext."
+                    )
+                ),
+                "output_type": str(fixture_agent_output.get("output_type") or "sprint_summary"),
+                "domain": str(fixture_agent_output.get("domain") or "project"),
+                "sensitivity": str(fixture_agent_output.get("sensitivity") or "private"),
+                "propose_memory": bool(fixture_agent_output.get("propose_memory", True)),
+                **_demo_tag(dataset_id),
+            },
+            policy_decision=agent_decision.to_record(),
+        )
+        if agent_result.source_id:
+            created_source_ids.add(agent_result.source_id)
+        if agent_result.artifact_id:
+            created_artifact_ids.append(agent_result.artifact_id)
+            _tag_demo_artifact(store, artifact_id=agent_result.artifact_id, dataset_id=dataset_id)
+
+        blocked_decision = evaluate_agent_policy(
+            identity=identity,
+            action="context_pack.request",
+            domains=("family", "health"),
+            sensitivity_allowed=("private", "highly_sensitive"),
+            project_scope=identity.project_scope,
+        )
+        append_policy_events(store, identity=identity, decision=blocked_decision, target_type="context_pack", target_id=dataset_id)
+
+        _tag_demo_candidate_memories(store, dataset_id=dataset_id, source_ids=created_source_ids)
+        if project_id is not None and created_source_ids:
+            loop = store.create_open_loop(
+                {
+                    "title": "Review public alpha demo trace",
+                    "description": "Synthetic open loop created by the demo dataset loader.",
+                    "priority": "normal",
+                    "source_id": sorted(created_source_ids)[0],
+                    "project_id": project_id,
+                    "domain": "project",
+                    "sensitivity": "private",
+                    "metadata_json": _demo_tag(dataset_id),
+                },
+                actor_type="system",
+            )
+            created_open_loop_ids.append(str(loop["id"]))
+
+        daily = VNextBrainService(store).generate_daily_brief(
+            BrainArtifactRequest(
+                domains=("project",),
+                sensitivity_allowed=("public", "internal", "private", "unknown"),
+                generated_for="2026-05-12",
+                metadata_json=_demo_tag(dataset_id),
+            )
+        )
+        created_artifact_ids.append(str(daily["id"]))
+        store.create_artifact_quality_rating(
+            {
+                "artifact_id": str(daily["id"]),
+                "reviewer_id": "demo",
+                "usefulness": 5,
+                "accuracy": 5,
+                "source_grounding": 5,
+                "novel_connections": 4,
+                "actionability": 4,
+                "hallucination_risk": 1,
+                "verbosity": "right_sized",
+                "metadata_json": _demo_tag(dataset_id),
+            },
+            actor_type="user",
+        )
+        if project_id is not None:
+            project_update = VNextProjectService(store).generate_project_update_candidate(
+                ProjectAutomationRequest(
+                    domains=("project",),
+                    sensitivity_allowed=("public", "internal", "private", "unknown"),
+                    project_id=project_id,
+                    metadata_json=_demo_tag(dataset_id),
+                )
+            )
+            created_artifact_ids.append(str(project_update["id"]))
+        scheduler = VNextSchedulerService(store)
+        scheduler.configure_workflow(
+            workflow_type="daily_brief",
+            enabled=True,
+            paused=False,
+            schedule_json=default_schedule("daily_brief"),
+            timezone="UTC",
+            actor_type="system",
+        )
+        scheduled = scheduler.run_now(
+            SchedulerRunRequest(
+                workflow_type="daily_brief",
+                domains=("project",),
+                sensitivity_allowed=("public", "internal", "private", "unknown"),
+                generated_for="2026-05-12",
+                triggered_by="user",
+                options={"generation_mode": "deterministic"},
+            )
+        )
+        scheduled_artifact = scheduled.get("artifact") if isinstance(scheduled.get("artifact"), dict) else None
+        if scheduled_artifact and scheduled_artifact.get("id"):
+            artifact_id = str(scheduled_artifact["id"])
+            created_artifact_ids.append(artifact_id)
+            _tag_demo_artifact(store, artifact_id=artifact_id, dataset_id=dataset_id)
+        health = connector_service.connector_health_all()
+        telemetry = summarize_agent_policy_telemetry(
+            agent_events=store.list_agent_events(agent_id="openclaw", limit=100),
+            artifacts=store.list_artifacts(limit=100),
+            memories=store.list_memories(status=None),
+        )
+        append_event(
+            store,
+            event_type="demo.dataset_loaded",
+            actor_type="system",
+            target_type="demo_dataset",
+            target_id=dataset_id,
+            payload={
+                "dataset_id": dataset_id,
+                "source_ids": sorted(created_source_ids),
+                "artifact_ids": created_artifact_ids,
+                "project_ids": created_project_ids,
+            },
+        )
+
+    payload = {
+        "status": "loaded",
+        "dataset_id": dataset_id,
+        "source_count": len(created_source_ids),
+        "artifact_count": len(created_artifact_ids),
+        "project_count": len(created_project_ids),
+        "open_loop_count": len(created_open_loop_ids),
+        "agent_activity_visible": telemetry.get("total_agent_events", 0) > 0,
+        "policy_block_recorded": blocked_decision.decision == "blocked",
+        "connector_health_count": health.get("count"),
+    }
     return _json_dumps(payload)
 
 
@@ -1997,6 +2418,289 @@ def _run_vnext_smoke_operator_console(ctx: CLIContext, _args: argparse.Namespace
     if payload["status"] != "passed":
         raise RuntimeError(_json_dumps(payload))
     return _json_dumps(payload)
+
+
+def _run_vnext_smoke_agent_integration_pack(ctx: CLIContext, _args: argparse.Namespace) -> str:
+    smoke_id = str(uuid4())
+    agent_run_id = f"agent-pack-smoke-{smoke_id}"
+    with _vnext_store_context(ctx) as store:
+        source = VNextCaptureService(store).capture_text(
+            "\n".join(
+                [
+                    f"Decision: Agent integration pack smoke {smoke_id} uses scoped project context.",
+                    "TODO: Review the agent output proposal before promotion.",
+                    "Fact: Agent outputs are evidence, not trusted memory.",
+                ]
+            ),
+            title="Agent integration pack seed",
+            domain="project",
+            sensitivity="private",
+            metadata_json={"smoke": "agent-integration-pack"},
+        )
+        if source.source_id is None:
+            raise RuntimeError("agent integration smoke did not create a source")
+        project = store.create_project(
+            {
+                "name": f"Agent integration smoke {smoke_id[:8]}",
+                "slug": f"agent-pack-{smoke_id[:8]}",
+                "status": "active",
+                "current_state": "Agent integration pack smoke project.",
+                "domain": "project",
+                "sensitivity": "private",
+                "metadata_json": {"smoke": "agent-integration-pack"},
+            },
+            actor_type="system",
+        )
+        identity = AgentIdentity(
+            agent_id="openclaw",
+            agent_type="coding_agent",
+            agent_run_id=agent_run_id,
+            task_id=f"task-{smoke_id[:8]}",
+            project_scope=("Alice",),
+            permission_profile="project_scoped_agent",
+        )
+        agent_identity = store.upsert_agent_identity(
+            {
+                "agent_id": identity.agent_id,
+                "agent_type": identity.agent_type,
+                "permission_profile": identity.permission_profile,
+                "project_scope_json": list(identity.project_scope),
+                "metadata_json": {"last_agent_run_id": identity.agent_run_id, "smoke": "agent-integration-pack"},
+            },
+            actor_type="agent",
+        )
+        context_decision = evaluate_agent_policy(
+            identity=identity,
+            action="context_pack.request",
+            domains=("project",),
+            sensitivity_allowed=("public", "internal", "private", "unknown"),
+            project_scope=identity.project_scope,
+        )
+        append_policy_events(store, identity=identity, decision=context_decision, target_type="context_pack", target_id=smoke_id)
+        ensure_policy_allowed(context_decision)
+        context_pack = VNextRetrievalService(store).compile_context_pack(
+            VNextRetrievalRequest(
+                query=smoke_id,
+                domains=context_decision.effective_domains,
+                projects=identity.project_scope,
+                sensitivity_allowed=context_decision.effective_sensitivity_allowed,
+                max_items=8,
+            )
+        )
+        append_event(
+            store,
+            event_type="agent.context_pack_requested",
+            actor_type="agent",
+            actor_id=identity.agent_id,
+            target_type="context_pack",
+            target_id=smoke_id,
+            trace_id=context_decision.trace_id,
+            run_id=identity.agent_run_id,
+            payload={"agent_identity": identity.to_record(), "policy_decision": context_decision.to_record()},
+        )
+        output_decision = evaluate_agent_policy(
+            identity=identity,
+            action="source.capture",
+            domains=("project",),
+            sensitivity_allowed=("private",),
+            project_scope=identity.project_scope,
+            write_policy="proposal_only",
+        )
+        append_policy_events(store, identity=identity, decision=output_decision, target_type="connector", target_id="agent_output")
+        ensure_policy_allowed(output_decision)
+        agent_output = VNextConnectorService(store).ingest_agent_output(
+            {
+                "agent_id": identity.agent_id,
+                "agent_type": identity.agent_type,
+                "agent_run_id": identity.agent_run_id,
+                "task_id": identity.task_id,
+                "project_scope": list(identity.project_scope),
+                "permission_profile": identity.permission_profile,
+                "title": "OpenClaw agent integration pack smoke summary",
+                "content": (
+                    f"Decision: Agent integration pack smoke {smoke_id} keeps durable memory review-only.\n"
+                    "TODO: Human should inspect /vnext agent activity."
+                ),
+                "output_type": "sprint_summary",
+                "domain": "project",
+                "sensitivity": "private",
+                "source_refs": [source.source_id],
+                "rationale": "Validate public alpha agent integration pack.",
+                "propose_memory": True,
+            },
+            policy_decision=output_decision.to_record(),
+        )
+        if agent_output.memory_id is not None:
+            append_event(
+                store,
+                event_type="agent.memory_proposed",
+                actor_type="agent",
+                actor_id=identity.agent_id,
+                target_type="memory",
+                target_id=agent_output.memory_id,
+                trace_id=output_decision.trace_id,
+                run_id=identity.agent_run_id,
+                payload={"agent_identity": identity.to_record(), "source_id": agent_output.source_id},
+            )
+        store.create_open_loop(
+            {
+                "title": "Review agent integration smoke proposal",
+                "description": "Open loop created by the agent integration pack smoke.",
+                "priority": "normal",
+                "source_id": agent_output.source_id or source.source_id,
+                "project_id": str(project["id"]),
+                "domain": "project",
+                "sensitivity": "private",
+                "metadata_json": {"smoke": "agent-integration-pack", "agent_id": identity.agent_id},
+            },
+            actor_type="agent",
+        )
+        blocked_decision = evaluate_agent_policy(
+            identity=identity,
+            action="context_pack.request",
+            domains=("family", "health", "spiritual"),
+            sensitivity_allowed=("private", "highly_sensitive"),
+            project_scope=identity.project_scope,
+        )
+        append_policy_events(store, identity=identity, decision=blocked_decision, target_type="context_pack", target_id=smoke_id)
+        events = store.list_agent_events(agent_id=identity.agent_id, limit=100)
+        event_types = {str(event.get("event_type")) for event in events}
+        candidate_memories = store.list_memories(status="candidate")
+        active_memories = store.list_memories(status="active")
+        telemetry = summarize_agent_policy_telemetry(
+            agent_events=events,
+            artifacts=store.list_artifacts(limit=100),
+            memories=store.list_memories(status=None),
+        )
+        agent_identities = store.list_agent_identities(limit=20)
+
+    pack_source_ids = [str(item.get("id")) for item in context_pack.get("sources", []) if isinstance(item, dict)]
+    candidate_ids = {str(memory.get("id")) for memory in candidate_memories}
+
+    def _matches_smoke_active_agent_memory(memory: JsonObject) -> bool:
+        metadata = memory.get("metadata_json") if isinstance(memory.get("metadata_json"), dict) else {}
+        identity_payload = metadata.get("agent_identity")
+        if isinstance(identity_payload, dict) and identity_payload.get("agent_run_id") == agent_run_id:
+            return True
+        return metadata.get("agent_run_id") == agent_run_id
+
+    gates = {
+        "agent_identified_as_openclaw": agent_identity.get("agent_id") == "openclaw"
+        and agent_identity.get("permission_profile") == "project_scoped_agent",
+        "agent_requested_project_context_pack": context_decision.decision == "allowed"
+        and source.source_id in pack_source_ids,
+        "scoped_context_pack_returned": int((context_pack.get("trace") or {}).get("selected_count", 0)) >= 1
+        if isinstance(context_pack.get("trace"), dict)
+        else False,
+        "agent_output_stored_as_reviewable_source_or_artifact": agent_output.source_id is not None
+        and agent_output.artifact_id is not None,
+        "memory_proposal_in_review_queue": agent_output.memory_id is not None and agent_output.memory_id in candidate_ids,
+        "no_trusted_memory_auto_promoted": not any(_matches_smoke_active_agent_memory(memory) for memory in active_memories),
+        "event_log_records_full_flow": {
+            "agent.context_pack_requested",
+            "agent.output_ingested",
+            "agent.memory_proposed",
+            "agent.policy_blocked",
+        }.issubset(event_types),
+        "policy_blocks_restricted_domain_request": blocked_decision.decision == "blocked"
+        and "all_requested_domains_restricted" in blocked_decision.reasons,
+        "vnext_agent_activity_visible": bool(agent_identities)
+        and int(telemetry.get("total_agent_events", 0) or 0) >= 4
+        and bool(telemetry.get("policy_blocks_by_agent")),
+    }
+    payload = {
+        "status": "passed" if all(gates.values()) else "failed",
+        "smoke": "agent-integration-pack",
+        "gates": gates,
+        "agent_identity": identity.to_record(),
+        "context_trace": context_pack.get("trace"),
+        "agent_output": agent_output.to_record(),
+        "policy_decisions": {
+            "context_pack": context_decision.to_record(),
+            "output_ingest": output_decision.to_record(),
+            "restricted_request": blocked_decision.to_record(),
+        },
+    }
+    if payload["status"] != "passed":
+        raise RuntimeError(_json_dumps(payload))
+    return _json_dumps(payload)
+
+
+def _run_alpha_smoke(ctx: CLIContext, *, name: str, runner) -> JsonObject:
+    try:
+        return {"name": name, "result": json.loads(runner(ctx, argparse.Namespace())), "status": "passed"}
+    except Exception as exc:
+        return {"name": name, "status": "failed", "error_type": type(exc).__name__, "error": str(exc)}
+
+
+def _run_vnext_alpha_check(ctx: CLIContext, args: argparse.Namespace) -> str:
+    alpha_secret_provider = InMemorySecretProvider(
+        {
+            "env:TELEGRAM_BOT_TOKEN": "alpha-check-placeholder",
+            "telegram.bot_token.default": "alpha-check-placeholder",
+            "browser.capture_token.default": "alpha-check-placeholder",
+        }
+    )
+    with _vnext_store_context(ctx) as store:
+        doctor = VNextDoctorService(store, secret_provider=alpha_secret_provider).run(fix_safe=True, ci=True)
+        scheduler = VNextSchedulerService(store).status()
+        connector_storage = store.connector_storage_status()
+        connector_settings = store.list_connector_settings()
+        connector_states = store.list_connector_states()
+
+    smokes: list[JsonObject] = []
+    if not args.skip_smokes:
+        smoke_runners = (
+            ("connector-hardening", _run_vnext_smoke_connector_hardening),
+            ("secret-redaction", _run_vnext_smoke_secret_redaction),
+            ("dogfood-doctor", _run_vnext_smoke_dogfood_doctor),
+            ("live-capture-connectors", _run_vnext_smoke_live_capture_connectors),
+            ("capture-to-brief", _run_vnext_smoke_capture_to_brief),
+            ("agentic-scheduler", _run_vnext_smoke_agentic_scheduler),
+            ("operator-console", _run_vnext_smoke_operator_console),
+            ("agent-integration-pack", _run_vnext_smoke_agent_integration_pack),
+        )
+        smokes = [_run_alpha_smoke(ctx, name=name, runner=runner) for name, runner in smoke_runners]
+
+    blocking: list[str] = []
+    if doctor.get("status") == "fail" or int(doctor.get("blocking_failure_count", 0) or 0) > 0:
+        blocking.append("doctor")
+    if not bool(connector_storage.get("connector_settings_exists")) or not bool(connector_storage.get("connector_state_exists")):
+        blocking.append("connector_storage")
+    failed_smokes = [str(smoke.get("name")) for smoke in smokes if smoke.get("status") != "passed"]
+    blocking.extend(f"smoke:{name}" for name in failed_smokes)
+
+    payload = {
+        "status": "failed" if blocking else "passed" if doctor.get("status") == "pass" else "warning",
+        "alpha_check": "vnext_public_alpha",
+        "blocking_failures": blocking,
+        "doctor": doctor,
+        "scheduler": {
+            "disabled_by_default": scheduler.get("disabled_by_default"),
+            "workflow_count": len(scheduler.get("workflows", [])) if isinstance(scheduler.get("workflows"), list) else 0,
+            "recent_run_count": len(scheduler.get("recent_runs", [])) if isinstance(scheduler.get("recent_runs"), list) else 0,
+        },
+        "connector_storage": connector_storage,
+        "connector_settings_count": len(connector_settings),
+        "connector_state_count": len(connector_states),
+        "smokes": smokes,
+        "eval_suite": {
+            "status": "summarized",
+            "command": "alicebot eval run --suite all",
+            "expected": "170/170 cases with 0 critical privacy leaks and 0 prompt-injection tool writes",
+        },
+        "recommended_next_commands": [
+            "alicebot eval run --suite all",
+            "pnpm --dir apps/web test",
+            "pnpm --dir apps/web lint",
+            "pnpm --dir apps/web build",
+        ],
+    }
+    output = _json_dumps(payload)
+    if payload["status"] == "failed":
+        print(output)
+        raise VNextConnectorValidationError("vNext alpha check found blocking failures")
+    return output
 
 
 def _run_vnext_smoke_connector_hardening(ctx: CLIContext, _args: argparse.Namespace) -> str:
@@ -3398,6 +4102,31 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_migrations_status_parser = vnext_migrations_subparsers.add_parser("status", help="Show vNext migration status.")
     vnext_migrations_status_parser.set_defaults(handler=_run_vnext_migrations_status)
 
+    vnext_alpha_parser = vnext_subparsers.add_parser("alpha", help="Run public alpha readiness checks.")
+    vnext_alpha_subparsers = vnext_alpha_parser.add_subparsers(dest="vnext_alpha_command", required=True)
+    vnext_alpha_check_parser = vnext_alpha_subparsers.add_parser("check", help="Check public alpha local readiness.")
+    vnext_alpha_check_parser.add_argument("--skip-smokes", action="store_true", help="Only summarize storage, doctor, and scheduler posture.")
+    vnext_alpha_check_parser.set_defaults(handler=_run_vnext_alpha_check)
+
+    vnext_demo_parser = vnext_subparsers.add_parser("demo", help="Load or reset the safe vNext public alpha demo dataset.")
+    vnext_demo_subparsers = vnext_demo_parser.add_subparsers(dest="vnext_demo_command", required=True)
+    vnext_demo_load_parser = vnext_demo_subparsers.add_parser("load", help="Load the synthetic vNext demo dataset.")
+    vnext_demo_load_parser.add_argument(
+        "--fixture",
+        default=str(DEFAULT_VNEXT_DEMO_DATASET_PATH),
+        help="Path to the synthetic vNext demo dataset JSON.",
+    )
+    vnext_demo_load_parser.add_argument("--reset", action="store_true", help="Archive prior rows for this dataset before loading.")
+    vnext_demo_load_parser.set_defaults(handler=_run_vnext_demo_load)
+    vnext_demo_reset_parser = vnext_demo_subparsers.add_parser("reset", help="Archive rows from a synthetic vNext demo dataset.")
+    vnext_demo_reset_parser.add_argument("--dataset-id", default=None, help="Dataset id to reset. Defaults to the fixture dataset id.")
+    vnext_demo_reset_parser.add_argument(
+        "--fixture",
+        default=str(DEFAULT_VNEXT_DEMO_DATASET_PATH),
+        help="Fixture used to infer dataset id when --dataset-id is omitted.",
+    )
+    vnext_demo_reset_parser.set_defaults(handler=_run_vnext_demo_reset)
+
     vnext_sources_parser = vnext_subparsers.add_parser("sources", help="Capture and import vNext sources.")
     vnext_sources_subparsers = vnext_sources_parser.add_subparsers(dest="vnext_sources_command", required=True)
 
@@ -3828,6 +4557,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run the live-backed /vnext operator console smoke.",
     )
     vnext_smoke_operator_console_parser.set_defaults(handler=_run_vnext_smoke_operator_console)
+    vnext_smoke_agent_integration_pack_parser = vnext_smoke_subparsers.add_parser(
+        "agent-integration-pack",
+        help="Run the public alpha agent integration pack smoke.",
+    )
+    vnext_smoke_agent_integration_pack_parser.set_defaults(handler=_run_vnext_smoke_agent_integration_pack)
 
     mutations_parser = subparsers.add_parser("mutations", help="Generate, inspect, and apply memory operations.")
     mutations_subparsers = mutations_parser.add_subparsers(dest="mutations_command", required=True)

@@ -73,6 +73,29 @@
       ]
     }
   },
+  "agent_outputs": [
+    {
+      "agent_id": "openclaw",
+      "agent_type": "coding_agent",
+      "agent_run_id": "demo-openclaw-run-001",
+      "task_id": "demo-public-alpha",
+      "project_scope": ["Alice"],
+      "title": "OpenClaw demo sprint summary",
+      "content": "Decision: Agents should request scoped Alice context before acting.\nTODO: Review the demo source-to-artifact trace in /vnext.",
+      "output_type": "sprint_summary",
+      "domain": "project",
+      "sensitivity": "private",
+      "propose_memory": true
+    }
+  ],
+  "policy_boundary_checks": [
+    {
+      "agent_id": "openclaw",
+      "permission_profile": "project_scoped_agent",
+      "requested_domains": ["family", "health"],
+      "expected_decision": "blocked"
+    }
+  ],
   "expected_daily_brief_signals": [
     "local-first preview boundary",
     "launch checklist owner open loop",

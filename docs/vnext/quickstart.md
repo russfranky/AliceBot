@@ -22,6 +22,14 @@ python3 -m venv .venv
 pnpm --dir apps/web install
 ```
 
+Project-native public alpha setup:
+
+```bash
+make setup
+make migrate
+make doctor
+```
+
 ## Fast Local Path
 
 Use Alice Lite when you want the fastest continuity smoke path:
@@ -144,9 +152,20 @@ alicebot vnext smoke connector-hardening
 alicebot vnext smoke secret-redaction
 alicebot vnext smoke dogfood-doctor
 alicebot vnext smoke operator-console
+alicebot vnext smoke agent-integration-pack
+alicebot vnext alpha check
 ```
 
 The operator-console smoke verifies the live `/vnext` loop end to end: source review persists, memory/artifact/open-loop actions persist, scheduler run-now creates an artifact, connector health and doctor readiness are visible, and capture-to-brief traceability exists.
+
+The agent-integration-pack smoke verifies OpenClaw identity, project-scoped context, review-only output ingestion and memory proposal creation, no auto-promotion, event logging, restricted-domain policy blocking, and Agent Activity visibility.
+
+Load or reset the synthetic public alpha demo dataset:
+
+```bash
+alicebot vnext demo load --reset
+alicebot vnext demo reset
+```
 
 ## Connector Payload Demo
 
