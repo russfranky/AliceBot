@@ -90,6 +90,9 @@ ALICE_WEB_HOST=127.0.0.1
 ALICE_WEB_PORT=3000
 ALICE_SECRET_PROVIDER=encrypted_local
 MODEL_PROVIDER=deterministic_local
+CORS_ALLOWED_ORIGINS=http://127.0.0.1:3000,http://localhost:3000
+NEXT_PUBLIC_ALICEBOT_API_BASE_URL=http://127.0.0.1:8000
+NEXT_PUBLIC_ALICEBOT_USER_ID=00000000-0000-0000-0000-000000000001
 ALICE_MCP_COMMAND="~/alicebot/.venv/bin/python -m alicebot_api.mcp_server"
 ```
 
@@ -108,12 +111,13 @@ python3 -m venv .venv
 corepack enable
 corepack prepare pnpm@10.23.0 --activate
 cp .env.lite.example .env.lite
+cp apps/web/.env.local.example apps/web/.env.local
 pnpm --dir apps/web install
 pnpm --dir apps/web build
 cp packaging/ubuntu/alicebot.env.example ~/.config/alicebot/.env
 less ~/.config/alicebot/.env
 ln -sfn ~/.config/alicebot/.env .env
-scripts/validate_env.sh ~/.config/alicebot/.env .env.lite
+scripts/validate_env.sh ~/.config/alicebot/.env .env.lite apps/web/.env.local
 ./.venv/bin/python -m alembic -c apps/api/alembic.ini upgrade head
 ./.venv/bin/alicebot vnext doctor --fix-safe --ci
 ./.venv/bin/alicebot vnext alpha check --headless --skip-smokes

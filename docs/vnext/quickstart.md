@@ -144,6 +144,7 @@ Run the live connector smoke:
 alicebot vnext smoke live-capture-connectors
 alicebot vnext smoke capture-to-brief
 alicebot vnext smoke connector-hardening
+alicebot vnext smoke local-cors
 alicebot vnext smoke secret-redaction
 alicebot vnext smoke dogfood-doctor
 alicebot vnext smoke operator-console

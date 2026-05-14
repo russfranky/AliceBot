@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from alicebot_api.config import Settings
 from alicebot_api.vnext_doctor import VNextDoctorService
 from alicebot_api.vnext_secrets import InMemorySecretProvider
 
@@ -147,3 +148,60 @@ def test_doctor_detects_enabled_telegram_missing_secret_as_blocking() -> None:
 
     assert payload["blocking_failure_count"] == 1
     assert any(check["name"] == "telegram_secret_ref" and check["status"] == "fail" for check in payload["checks"])
+
+
+def test_doctor_warns_when_local_live_cors_is_missing(tmp_path, monkeypatch) -> None:
+    web_dir = tmp_path / "apps" / "web"
+    web_dir.mkdir(parents=True)
+    (tmp_path / ".env").write_text("CORS_ALLOWED_ORIGINS=http://localhost:3000\n", encoding="utf-8")
+    (web_dir / ".env.local").write_text(
+        "\n".join(
+            [
+                "NEXT_PUBLIC_ALICEBOT_API_BASE_URL=http://127.0.0.1:8000",
+                "NEXT_PUBLIC_ALICEBOT_USER_ID=00000000-0000-0000-0000-000000000001",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "alicebot_api.vnext_doctor.get_settings",
+        lambda: Settings(app_env="development", database_url="postgresql://db"),
+    )
+    store = DoctorStore()
+
+    payload = VNextDoctorService(store, env={}, cwd=tmp_path).run(fix_safe=True, ci=True)
+
+    local_cors = next(check for check in payload["checks"] if check["name"] == "local_vnext_cors")
+    assert local_cors["status"] == "fail"
+    assert local_cors["severity"] == "warning"
+    assert local_cors["recommended_fix"] == "CORS_ALLOWED_ORIGINS=http://127.0.0.1:3000,http://localhost:3000"
+    assert local_cors["details"]["missing_origins"] == ["http://127.0.0.1:3000"]
+
+
+def test_doctor_passes_when_local_live_cors_is_explicit(tmp_path, monkeypatch) -> None:
+    web_dir = tmp_path / "apps" / "web"
+    web_dir.mkdir(parents=True)
+    (tmp_path / ".env").write_text(
+        "CORS_ALLOWED_ORIGINS=http://127.0.0.1:3000,http://localhost:3000\n",
+        encoding="utf-8",
+    )
+    (web_dir / ".env.local").write_text(
+        "\n".join(
+            [
+                "NEXT_PUBLIC_ALICEBOT_API_BASE_URL=http://127.0.0.1:8000",
+                "NEXT_PUBLIC_ALICEBOT_USER_ID=00000000-0000-0000-0000-000000000001",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "alicebot_api.vnext_doctor.get_settings",
+        lambda: Settings(app_env="development", database_url="postgresql://db"),
+    )
+    store = DoctorStore()
+
+    payload = VNextDoctorService(store, env={}, cwd=tmp_path).run(fix_safe=True, ci=True)
+
+    local_cors = next(check for check in payload["checks"] if check["name"] == "local_vnext_cors")
+    assert local_cors["status"] == "pass"
+    assert local_cors["details"]["wildcard_present"] is False

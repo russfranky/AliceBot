@@ -218,7 +218,11 @@ from alicebot_api.vnext_contradictions import (
     VNextContradictionValidationError,
 )
 from alicebot_api.vnext_dogfooding import VNextDogfoodingService
-from alicebot_api.vnext_doctor import VNextDoctorService
+from alicebot_api.vnext_doctor import (
+    LOCAL_VNEXT_FRONTEND_ORIGINS,
+    VNextDoctorService,
+    local_live_cors_status,
+)
 from alicebot_api.vnext_evals import (
     run_vnext_evals,
     write_vnext_benchmark_corpus,
@@ -2713,6 +2717,50 @@ def _run_vnext_smoke_headless_ubuntu(_ctx: CLIContext, _args: argparse.Namespace
     return _json_dumps(payload)
 
 
+def _run_vnext_smoke_local_cors(ctx: CLIContext, _args: argparse.Namespace) -> str:
+    repo_root = Path(__file__).resolve().parents[4]
+    root_env = repo_root / ".env.example"
+    ubuntu_env = repo_root / "packaging" / "ubuntu" / "alicebot.env.example"
+    web_env = repo_root / "apps" / "web" / ".env.local.example"
+    required_origin_markers = tuple(LOCAL_VNEXT_FRONTEND_ORIGINS)
+    active_status = local_live_cors_status(settings=ctx.settings, cwd=repo_root)
+    template_paths = (root_env, ubuntu_env)
+    template_contents = {
+        str(path.relative_to(repo_root)): path.read_text(encoding="utf-8") if path.exists() else ""
+        for path in (*template_paths, web_env)
+    }
+    gates = {
+        "strict_default_empty_allowlist": Settings().cors_allowed_origins == (),
+        "root_env_template_has_explicit_local_origins": _headless_file_contains(root_env, required_origin_markers)
+        and "*" not in template_contents[str(root_env.relative_to(repo_root))],
+        "ubuntu_env_template_has_explicit_local_origins": _headless_file_contains(ubuntu_env, required_origin_markers)
+        and "*" not in template_contents[str(ubuntu_env.relative_to(repo_root))],
+        "web_env_template_points_to_local_api": _headless_file_contains(
+            web_env,
+            (
+                "NEXT_PUBLIC_ALICEBOT_API_BASE_URL=http://127.0.0.1:8000",
+                "NEXT_PUBLIC_ALICEBOT_USER_ID=",
+            ),
+        ),
+        "active_live_cors_valid_when_configured": bool(active_status.get("ok")),
+        "active_cors_does_not_use_wildcard": not bool(active_status.get("wildcard_present")),
+    }
+    payload = {
+        "status": "passed" if all(gates.values()) else "failed",
+        "smoke": "local-cors",
+        "gates": gates,
+        "active_status": active_status,
+        "checked_paths": {
+            "root_env": str(root_env.relative_to(repo_root)),
+            "ubuntu_env": str(ubuntu_env.relative_to(repo_root)),
+            "web_env": str(web_env.relative_to(repo_root)),
+        },
+    }
+    if payload["status"] != "passed":
+        raise RuntimeError(_json_dumps(payload))
+    return _json_dumps(payload)
+
+
 def _check_headless_http_url(url: str | None) -> JsonObject:
     if not url:
         return {
@@ -2783,6 +2831,7 @@ def _run_vnext_alpha_check(ctx: CLIContext, args: argparse.Namespace) -> str:
     if not args.skip_smokes:
         smoke_runners = (
             ("connector-hardening", _run_vnext_smoke_connector_hardening),
+            ("local-cors", _run_vnext_smoke_local_cors),
             ("secret-redaction", _run_vnext_smoke_secret_redaction),
             ("dogfood-doctor", _run_vnext_smoke_dogfood_doctor),
             ("live-capture-connectors", _run_vnext_smoke_live_capture_connectors),
@@ -4697,6 +4746,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run vNext dogfood doctor smoke.",
     )
     vnext_smoke_dogfood_doctor_parser.set_defaults(handler=_run_vnext_smoke_dogfood_doctor)
+    vnext_smoke_local_cors_parser = vnext_smoke_subparsers.add_parser(
+        "local-cors",
+        help="Run local /vnext live CORS configuration smoke.",
+    )
+    vnext_smoke_local_cors_parser.set_defaults(handler=_run_vnext_smoke_local_cors)
     vnext_smoke_operator_console_parser = vnext_smoke_subparsers.add_parser(
         "operator-console",
         help="Run the live-backed /vnext operator console smoke.",

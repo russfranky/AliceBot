@@ -58,6 +58,8 @@ make doctor
 make dev
 ```
 
+`make setup` creates `.env`, `.env.lite`, and `apps/web/.env.local` when they are missing. Local live `/vnext` uses `CORS_ALLOWED_ORIGINS=http://127.0.0.1:3000,http://localhost:3000` and `NEXT_PUBLIC_ALICEBOT_API_BASE_URL=http://127.0.0.1:8000`.
+
 Then open:
 
 ```text
@@ -68,6 +70,7 @@ Load safe synthetic demo data and run the public alpha readiness gate:
 
 ```bash
 alicebot vnext demo load --reset
+alicebot vnext smoke local-cors
 alicebot vnext smoke agent-integration-pack
 alicebot vnext alpha check
 ```

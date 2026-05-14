@@ -23,7 +23,7 @@ make doctor
 Expected success:
 
 - Python dependencies install into `.venv`
-- `.env` and `.env.lite` are created from the checked-in examples when missing
+- `.env`, `.env.lite`, and `apps/web/.env.local` are created from the checked-in examples when missing
 - web dependencies install under `apps/web`
 - Docker services start
 - migrations finish
@@ -51,10 +51,21 @@ Open:
 http://localhost:3000/vnext
 ```
 
+Local live `/vnext` uses explicit browser/API settings. Keep both frontend origins in the API CORS allowlist and keep the browser API URL pointed at localhost:
+
+```dotenv
+CORS_ALLOWED_ORIGINS=http://127.0.0.1:3000,http://localhost:3000
+NEXT_PUBLIC_ALICEBOT_API_BASE_URL=http://127.0.0.1:8000
+NEXT_PUBLIC_ALICEBOT_USER_ID=00000000-0000-0000-0000-000000000001
+```
+
+Use the same user id as `ALICEBOT_AUTH_USER_ID`. If a manual alpha seed uses `local-alpha-user`, set `NEXT_PUBLIC_ALICEBOT_USER_ID=local-alpha-user` for that environment.
+
 ## First Smoke
 
 ```bash
 alicebot vnext smoke operator-console
+alicebot vnext smoke local-cors
 alicebot vnext smoke agent-integration-pack
 alicebot vnext alpha check
 ```

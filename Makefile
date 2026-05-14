@@ -8,7 +8,8 @@ WEB_DIR ?= apps/web
 setup:
 	@test -f .env || cp .env.example .env
 	@test -f .env.lite || cp .env.lite.example .env.lite
-	./scripts/validate_env.sh .env .env.lite
+	@test -f $(WEB_DIR)/.env.local || cp $(WEB_DIR)/.env.local.example $(WEB_DIR)/.env.local
+	./scripts/validate_env.sh .env .env.lite $(WEB_DIR)/.env.local
 	python3 -m venv .venv
 	$(PYTHON) -m pip install -e '.[dev]'
 	PNPM="$(PNPM)" WEB_DIR="$(WEB_DIR)" ./scripts/pnpm_web_install.sh

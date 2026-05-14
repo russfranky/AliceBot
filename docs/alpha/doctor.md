@@ -14,6 +14,7 @@ Doctor checks:
 - Telegram secret reference posture
 - scheduler daemon posture
 - connector failure posture
+- local `/vnext?mode=live` CORS posture when a browser API URL is configured
 
 Expected success:
 
@@ -29,6 +30,7 @@ Common fixes:
 alicebot vnext doctor --fix-safe --ci
 alicebot vnext connectors telegram configure --secret-ref env:TELEGRAM_BOT_TOKEN --allowed-chat-id 123456
 alicebot vnext scheduler daemon start --foreground --once
+CORS_ALLOWED_ORIGINS=http://127.0.0.1:3000,http://localhost:3000
 ```
 
 Use the broader alpha gate when doctor is clean:

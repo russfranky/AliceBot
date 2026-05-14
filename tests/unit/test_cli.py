@@ -60,6 +60,7 @@ def test_parser_routes_required_commands() -> None:
         (["vnext", "doctor"], "_run_vnext_doctor"),
         (["vnext", "migrations", "status"], "_run_vnext_migrations_status"),
         (["vnext", "smoke", "connector-hardening"], "_run_vnext_smoke_connector_hardening"),
+        (["vnext", "smoke", "local-cors"], "_run_vnext_smoke_local_cors"),
         (["vnext", "smoke", "secret-redaction"], "_run_vnext_smoke_secret_redaction"),
         (["vnext", "smoke", "dogfood-doctor"], "_run_vnext_smoke_dogfood_doctor"),
         (["mutations", "generate"], "_run_mutation_generate"),

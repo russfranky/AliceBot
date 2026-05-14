@@ -79,6 +79,7 @@ def test_public_alpha_packaging_docs_and_commands_are_discoverable() -> None:
     limitations = _read("docs/alpha/known-limitations.md")
     security = _read("docs/alpha/security-and-privacy.md")
     onboarding = _read("docs/alpha/design-partner-onboarding.md")
+    troubleshooting = _read("docs/alpha/troubleshooting.md")
     release_notes = _read("docs/alpha/release-notes.md")
     cto_summary = _read("docs/vnext-public-alpha-packaging-cto-summary.md")
     hermes_copy = _read("agent-skills/hermes/alice-memory-skill.md")
@@ -118,6 +119,8 @@ def test_public_alpha_packaging_docs_and_commands_are_discoverable() -> None:
     assert "no hosted cloud" in limitations
     assert "trusted memory is not auto-promoted" in security
     assert "failing command output" in onboarding
+    assert "Unable to load live workspace: Load failed" in troubleshooting
+    assert "alicebot vnext smoke local-cors" in quickstart
     assert "not hosted SaaS" in release_notes
     assert "Agent Skills v1 Hardening" in cto_summary
     assert "trusted_local_agent" in hermes_copy
@@ -135,6 +138,7 @@ def test_headless_ubuntu_packaging_is_discoverable_and_safe_by_default() -> None
     installer = _read("scripts/install-ubuntu.sh")
     uninstaller = _read("scripts/uninstall-ubuntu.sh")
     env_template = _read("packaging/ubuntu/alicebot.env.example")
+    web_env_template = _read("apps/web/.env.local.example")
     api_service = _read("packaging/systemd/alice-api.service")
     web_service = _read("packaging/systemd/alice-web.service")
     scheduler_service = _read("packaging/systemd/alice-scheduler.service")
@@ -172,9 +176,12 @@ def test_headless_ubuntu_packaging_is_discoverable_and_safe_by_default() -> None
         "ALICE_API_HOST=127.0.0.1",
         "ALICE_WEB_HOST=127.0.0.1",
         "ALICE_SECRET_PROVIDER=",
+        "CORS_ALLOWED_ORIGINS=http://127.0.0.1:3000,http://localhost:3000",
+        "NEXT_PUBLIC_ALICEBOT_API_BASE_URL=http://127.0.0.1:8000",
         'ALICE_MCP_COMMAND="',
     ):
         assert marker in env_template
+    assert "NEXT_PUBLIC_ALICEBOT_USER_ID=" in web_env_template
 
     for service in (api_service, web_service, scheduler_service):
         assert "User=__ALICE_USER__" in service
@@ -202,19 +209,24 @@ def test_installation_issue_regressions_are_guarded() -> None:
     compose_lite = _read("docker-compose.lite.yml")
     postgres_init = _read("infra/postgres/init/001_roles.sh")
     install_doc = _read("docs/alpha/headless-ubuntu-install.md")
+    web_env = _read("apps/web/.env.local.example")
 
     assert "test -f .env || cp .env.example .env" in makefile
     assert "test -f .env.lite || cp .env.lite.example .env.lite" in makefile
+    assert "test -f $(WEB_DIR)/.env.local || cp $(WEB_DIR)/.env.local.example $(WEB_DIR)/.env.local" in makefile
     assert "./scripts/validate_env.sh .env .env.lite" in makefile
     assert "./scripts/pnpm_web_install.sh" in makefile
     assert ".env.lite" in gitignore
+    assert "apps/web/.env.local" in gitignore
 
     assert web_package["packageManager"].startswith("pnpm@10.")
     assert set(web_package["pnpm"]["onlyBuiltDependencies"]) >= {"esbuild", "sharp", "unrs-resolver"}
+    assert "NEXT_PUBLIC_ALICEBOT_API_BASE_URL=http://127.0.0.1:8000" in web_env
 
     assert "PNPM_VERSION" in installer
     assert "pnpm@latest" not in installer
     assert "write_lite_env_if_missing" in installer
+    assert "write_web_env_if_missing" in installer
     assert "validate_env_files" in installer
 
     for script in (dev_up, api_dev, lite_up, migrate):
@@ -228,6 +240,7 @@ def test_installation_issue_regressions_are_guarded() -> None:
     assert "ALICEBOT_APP_PASSWORD" in postgres_init
     assert "ALTER ROLE" in postgres_init
     assert 'ALICE_MCP_COMMAND="' in install_doc
+    assert "CORS_ALLOWED_ORIGINS=http://127.0.0.1:3000,http://localhost:3000" in install_doc
     assert "docker compose down -v" in install_doc
 
 

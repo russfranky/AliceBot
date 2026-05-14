@@ -257,6 +257,32 @@ validate_env_files() {
   run "${INSTALL_DIR}/scripts/validate_env.sh" "${ENV_FILE}" "${INSTALL_DIR}/.env.lite"
 }
 
+write_web_env_if_missing() {
+  local web_env="${INSTALL_DIR}/apps/web/.env.local"
+  if [ -f "${web_env}" ]; then
+    log "Preserving existing ${web_env}."
+  elif [ "${DRY_RUN}" -eq 1 ]; then
+    log "+ create ${web_env} with local /vnext public browser settings"
+  else
+    # shellcheck disable=SC1090
+    . "${ENV_FILE}"
+    {
+      printf '# Local alpha browser settings for /vnext?mode=live.\n'
+      printf '# This file contains public browser values only.\n'
+      printf 'NEXT_PUBLIC_ALICEBOT_API_BASE_URL=http://%s:%s\n' "${ALICE_API_HOST:-127.0.0.1}" "${ALICE_API_PORT:-8000}"
+      printf 'NEXT_PUBLIC_ALICEBOT_USER_ID=%s\n' "${NEXT_PUBLIC_ALICEBOT_USER_ID:-${ALICEBOT_AUTH_USER_ID:-00000000-0000-0000-0000-000000000001}}"
+    } > "${web_env}"
+  fi
+}
+
+validate_web_env_file() {
+  if [ "${DRY_RUN}" -eq 1 ]; then
+    log "+ validate ${INSTALL_DIR}/apps/web/.env.local"
+    return
+  fi
+  run "${INSTALL_DIR}/scripts/validate_env.sh" "${INSTALL_DIR}/apps/web/.env.local"
+}
+
 prepare_database_from_env() {
   if [ "${DRY_RUN}" -eq 1 ]; then
     log "+ create alicebot database and roles from generated local env file"
@@ -369,6 +395,8 @@ sync_repo
 write_env_if_missing
 write_lite_env_if_missing
 validate_env_files
+write_web_env_if_missing
+validate_web_env_file
 if [ "${SKIP_POSTGRES_INSTALL}" -eq 0 ]; then
   prepare_database_from_env
 fi

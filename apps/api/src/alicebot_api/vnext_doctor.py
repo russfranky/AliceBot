@@ -1,12 +1,22 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+import os
+from pathlib import Path
+import shlex
 from typing import Any, Protocol, cast
 
+from alicebot_api.config import Settings, get_settings
 from alicebot_api.vnext_connectors import CORE_SETTINGS_CONNECTORS, VNextConnectorService
 from alicebot_api.vnext_repositories import JsonObject
 from alicebot_api.vnext_scheduler_runtime import daemon_status
 from alicebot_api.vnext_secrets import SecretProvider, default_secret_provider
+
+LOCAL_VNEXT_FRONTEND_ORIGINS = ("http://127.0.0.1:3000", "http://localhost:3000")
+LOCAL_VNEXT_CORS_RECOMMENDED_FIX = (
+    "CORS_ALLOWED_ORIGINS=http://127.0.0.1:3000,http://localhost:3000"
+)
 
 
 class VNextDoctorStore(Protocol):
@@ -38,9 +48,18 @@ class DoctorCheck:
 
 
 class VNextDoctorService:
-    def __init__(self, store: VNextDoctorStore, *, secret_provider: SecretProvider | None = None) -> None:
+    def __init__(
+        self,
+        store: VNextDoctorStore,
+        *,
+        secret_provider: SecretProvider | None = None,
+        env: Mapping[str, str] | None = None,
+        cwd: Path | None = None,
+    ) -> None:
         self.store = store
         self.secret_provider = secret_provider or default_secret_provider()
+        self.env = os.environ if env is None else env
+        self.cwd = cwd or Path.cwd()
 
     def _check(
         self,
@@ -81,6 +100,9 @@ class VNextDoctorService:
             "required_tables": required_tables,
             "missing_tables": missing,
         }
+
+    def local_live_cors_status(self, settings: Settings | None = None) -> JsonObject:
+        return local_live_cors_status(settings=settings or get_settings(), env=self.env, cwd=self.cwd)
 
     def run(self, *, fix_safe: bool = False, ci: bool = False) -> JsonObject:
         if fix_safe:
@@ -188,6 +210,19 @@ class VNextDoctorService:
             details={"failing_connectors": [item.get("connector_name") for item in failing_connectors]},
         )
 
+        local_cors = self.local_live_cors_status()
+        local_cors_ok = bool(local_cors["ok"])
+        self._check(
+            checks,
+            name="local_vnext_cors",
+            ok=local_cors_ok,
+            severity="warning",
+            message_ok=str(local_cors["message"]),
+            message_fail=str(local_cors["message"]),
+            recommended_fix=LOCAL_VNEXT_CORS_RECOMMENDED_FIX,
+            details=cast(JsonObject, local_cors),
+        )
+
         blocking = [check for check in checks if check.status == "fail" and check.severity == "blocking"]
         warnings = [check for check in checks if check.status == "fail" and check.severity == "warning"]
         payload = {
@@ -206,4 +241,123 @@ class VNextDoctorService:
         return cast(JsonObject, payload)
 
 
-__all__ = ["DoctorCheck", "VNextDoctorService", "VNextDoctorStore"]
+def _parse_env_file(path: Path) -> dict[str, str]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return {}
+
+    values: dict[str, str] = {}
+    for raw_line in lines:
+        stripped = raw_line.strip()
+        if stripped == "" or stripped.startswith("#") or "=" not in stripped:
+            continue
+        line = stripped.removeprefix("export ").strip()
+        key, raw_value = line.split("=", 1)
+        key = key.strip()
+        raw_value = raw_value.strip()
+        try:
+            parsed = shlex.split(raw_value, comments=True, posix=True)
+        except ValueError:
+            continue
+        values[key] = parsed[0] if parsed else ""
+    return values
+
+
+def _csv_tokens(value: str) -> tuple[str, ...]:
+    return tuple(token.strip() for token in value.split(",") if token.strip() != "")
+
+
+def _merged_local_env(env: Mapping[str, str], cwd: Path) -> dict[str, str]:
+    merged: dict[str, str] = {}
+    for relative_path in (".env", "apps/web/.env.local"):
+        merged.update(_parse_env_file(cwd / relative_path))
+    merged.update(dict(env))
+    return merged
+
+
+def local_live_cors_status(
+    *,
+    settings: Settings,
+    env: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
+) -> JsonObject:
+    merged_env = _merged_local_env(os.environ if env is None else env, cwd or Path.cwd())
+    frontend_api_base_url = (
+        merged_env.get("NEXT_PUBLIC_ALICEBOT_API_BASE_URL")
+        or merged_env.get("ALICEBOT_API_BASE_URL")
+        or ""
+    ).strip()
+    frontend_user_id = (
+        merged_env.get("NEXT_PUBLIC_ALICEBOT_USER_ID") or merged_env.get("ALICEBOT_USER_ID") or ""
+    ).strip()
+    configured_origins = settings.cors_allowed_origins
+    if len(configured_origins) == 0:
+        configured_origins = _csv_tokens(merged_env.get("CORS_ALLOWED_ORIGINS", ""))
+
+    frontend_live_configured = frontend_api_base_url != ""
+    required = set(LOCAL_VNEXT_FRONTEND_ORIGINS)
+    configured = set(configured_origins)
+    missing = sorted(required - configured)
+    wildcard_present = "*" in configured
+
+    if not frontend_live_configured:
+        return {
+            "ok": True,
+            "message": "Local /vnext live browser API URL is not configured; CORS check is not required.",
+            "frontend_live_configured": False,
+            "frontend_api_base_url": None,
+            "frontend_user_id_configured": bool(frontend_user_id),
+            "required_origins": list(LOCAL_VNEXT_FRONTEND_ORIGINS),
+            "configured_origins": list(configured_origins),
+            "missing_origins": [],
+            "wildcard_present": wildcard_present,
+        }
+
+    if wildcard_present:
+        return {
+            "ok": False,
+            "message": "Local /vnext live mode has wildcard CORS; use explicit localhost origins instead.",
+            "frontend_live_configured": True,
+            "frontend_api_base_url": frontend_api_base_url,
+            "frontend_user_id_configured": bool(frontend_user_id),
+            "required_origins": list(LOCAL_VNEXT_FRONTEND_ORIGINS),
+            "configured_origins": list(configured_origins),
+            "missing_origins": missing,
+            "wildcard_present": True,
+        }
+
+    if missing:
+        return {
+            "ok": False,
+            "message": "Local /vnext live mode is configured, but CORS is missing one or more localhost frontend origins.",
+            "frontend_live_configured": True,
+            "frontend_api_base_url": frontend_api_base_url,
+            "frontend_user_id_configured": bool(frontend_user_id),
+            "required_origins": list(LOCAL_VNEXT_FRONTEND_ORIGINS),
+            "configured_origins": list(configured_origins),
+            "missing_origins": missing,
+            "wildcard_present": False,
+        }
+
+    return {
+        "ok": True,
+        "message": "Local /vnext live CORS allows the localhost frontend origins explicitly.",
+        "frontend_live_configured": True,
+        "frontend_api_base_url": frontend_api_base_url,
+        "frontend_user_id_configured": bool(frontend_user_id),
+        "required_origins": list(LOCAL_VNEXT_FRONTEND_ORIGINS),
+        "configured_origins": list(configured_origins),
+        "missing_origins": [],
+        "wildcard_present": False,
+    }
+
+
+__all__ = [
+    "DoctorCheck",
+    "LOCAL_VNEXT_CORS_RECOMMENDED_FIX",
+    "LOCAL_VNEXT_FRONTEND_ORIGINS",
+    "VNextDoctorService",
+    "VNextDoctorStore",
+    "local_live_cors_status",
+]
