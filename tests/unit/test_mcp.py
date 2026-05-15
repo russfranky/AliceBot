@@ -859,3 +859,19 @@ def test_mcp_server_tools_call_success_and_error_paths(monkeypatch) -> None:
     assert error_response is not None
     assert error_response["result"]["isError"] is True
     assert error_response["result"]["content"][0]["text"] == "invalid input"
+
+    def raise_unexpected_error(*_args, **_kwargs):
+        raise RuntimeError("database connection dropped")
+
+    monkeypatch.setattr(mcp_server, "call_mcp_tool", raise_unexpected_error)
+    unexpected_response = server._handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "tools/call",
+            "params": {"name": "alice_vnext_commit_memory", "arguments": {}},
+        }
+    )
+    assert unexpected_response is not None
+    assert unexpected_response["result"]["isError"] is True
+    assert "Tool execution failed unexpectedly" in unexpected_response["result"]["content"][0]["text"]

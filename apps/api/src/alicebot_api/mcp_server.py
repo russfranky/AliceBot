@@ -209,6 +209,23 @@ class MCPServer:
                         "isError": True,
                     },
                 )
+            except Exception as exc:
+                print(f"error: MCP tool call failed unexpectedly: {type(exc).__name__}", file=sys.stderr)
+                return _response_success(
+                    request_id,
+                    result={
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": (
+                                    "Tool execution failed unexpectedly. "
+                                    f"Check Alice MCP server logs for {type(exc).__name__}."
+                                ),
+                            }
+                        ],
+                        "isError": True,
+                    },
+                )
 
             return _response_success(
                 request_id,
