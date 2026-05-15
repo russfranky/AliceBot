@@ -7,7 +7,7 @@ from uuid import uuid4
 from psycopg.types.json import Jsonb
 
 from alicebot_api.vnext_event_log import build_event_log_record
-from alicebot_api.vnext_store import PostgresVNextStore
+from alicebot_api.vnext_store import PostgresVNextStore, _search_patterns
 
 
 class RecordingCursor:
@@ -138,6 +138,17 @@ def test_get_source_by_content_hash_uses_dedupe_lookup() -> None:
     assert params == ("sha256:abc",)
 
 
+def test_search_patterns_strip_quotes_and_add_keyword_fallbacks() -> None:
+    patterns = _search_patterns('"agent-first /vnext audit correction cockpit"')
+
+    assert patterns[0] == "%agent-first /vnext audit correction cockpit%"
+    assert "%agent-first%" in patterns
+    assert "%vnext%" in patterns
+    assert "%audit%" in patterns
+    assert "%correction%" in patterns
+    assert "%cockpit%" in patterns
+
+
 def test_keyword_search_methods_apply_domain_sensitivity_and_limit_filters() -> None:
     cursor = RecordingCursor(
         fetchone_results=[],
@@ -176,10 +187,14 @@ def test_keyword_search_methods_apply_domain_sensitivity_and_limit_filters() -> 
     assert "status IN ('active', 'accepted')" in memory_query
     assert "domain = ANY" in memory_query
     assert "sensitivity = ANY" in memory_query
+    assert "ILIKE ANY" in memory_query
     assert memory_params is not None
+    assert memory_params[4] == ["%Alice provenance%", "%alice%", "%provenance%"]
     assert memory_params[-1] == 4
     assert "FROM sources" in source_query
+    assert "ILIKE ANY" in source_query
     assert source_params is not None
+    assert source_params[4] == ["%Alice provenance%", "%alice%", "%provenance%"]
     assert source_params[-1] == 3
     assert "FROM open_loops" in open_loop_query
     assert "%s::text IS NULL OR status = %s" in open_loop_query

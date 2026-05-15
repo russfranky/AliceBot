@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, cast
 
 import psycopg
@@ -13,6 +14,30 @@ from alicebot_api.vnext_repositories import JsonObject
 
 JsonList = list[object]
 VNextRow = dict[str, object]
+_SEARCH_STOPWORDS = {"about", "what", "when", "where", "which", "with", "from", "this", "that", "should", "could"}
+
+
+def _search_patterns(query: str) -> list[str]:
+    normalized = " ".join(str(query).split()).strip()
+    if len(normalized) >= 2 and (
+        (normalized[0] == normalized[-1] and normalized[0] in {"'", '"'})
+        or (normalized[0], normalized[-1]) in {("\u201c", "\u201d"), ("\u2018", "\u2019")}
+    ):
+        normalized = normalized[1:-1].strip()
+
+    patterns: list[str] = []
+    if normalized:
+        patterns.append(f"%{normalized}%")
+    seen = {pattern.casefold() for pattern in patterns}
+    for term in re.findall(r"[A-Za-z0-9][A-Za-z0-9_-]{1,}", normalized):
+        folded = term.casefold()
+        if folded in _SEARCH_STOPWORDS:
+            continue
+        pattern = f"%{folded}%"
+        if pattern.casefold() not in seen:
+            patterns.append(pattern)
+            seen.add(pattern.casefold())
+    return patterns or ["%%"]
 
 
 EVENT_LOG_COLUMNS = """
@@ -1176,7 +1201,8 @@ class PostgresVNextStore:
         sensitivity_allowed: list[str] | None = None,
         limit: int = 8,
     ) -> list[VNextRow]:
-        pattern = f"%{query}%"
+        patterns = _search_patterns(query)
+        exact_pattern = patterns[0]
         return self._fetch_all(
             f"""
                 SELECT {MEMORY_COLUMNS}
@@ -1186,17 +1212,19 @@ class PostgresVNextStore:
                   AND (%s::text[] IS NULL OR domain = ANY(%s::text[]) OR domain = 'unknown')
                   AND (%s::text[] IS NULL OR sensitivity = ANY(%s::text[]))
                   AND (
-                    memory_key ILIKE %s
-                    OR title ILIKE %s
-                    OR canonical_text ILIKE %s
-                    OR summary ILIKE %s
-                    OR value::text ILIKE %s
+                    memory_key ILIKE ANY(%s::text[])
+                    OR title ILIKE ANY(%s::text[])
+                    OR canonical_text ILIKE ANY(%s::text[])
+                    OR summary ILIKE ANY(%s::text[])
+                    OR value::text ILIKE ANY(%s::text[])
                   )
                 ORDER BY
                   CASE
                     WHEN canonical_text ILIKE %s THEN 0
                     WHEN title ILIKE %s THEN 1
-                    ELSE 2
+                    WHEN canonical_text ILIKE ANY(%s::text[]) THEN 2
+                    WHEN title ILIKE ANY(%s::text[]) THEN 3
+                    ELSE 4
                   END,
                   updated_at DESC,
                   created_at DESC,
@@ -1208,13 +1236,15 @@ class PostgresVNextStore:
                 domains,
                 sensitivity_allowed,
                 sensitivity_allowed,
-                pattern,
-                pattern,
-                pattern,
-                pattern,
-                pattern,
-                pattern,
-                pattern,
+                patterns,
+                patterns,
+                patterns,
+                patterns,
+                patterns,
+                exact_pattern,
+                exact_pattern,
+                patterns,
+                patterns,
                 limit,
             ),
         )
@@ -1458,7 +1488,8 @@ class PostgresVNextStore:
         sensitivity_allowed: list[str] | None = None,
         limit: int = 8,
     ) -> list[VNextRow]:
-        pattern = f"%{query}%"
+        patterns = _search_patterns(query)
+        exact_pattern = patterns[0]
         return self._fetch_all(
             f"""
                 SELECT {SOURCE_COLUMNS}
@@ -1467,14 +1498,21 @@ class PostgresVNextStore:
                   AND (%s::text[] IS NULL OR domain = ANY(%s::text[]) OR domain = 'unknown')
                   AND (%s::text[] IS NULL OR sensitivity = ANY(%s::text[]))
                   AND (
-                    title ILIKE %s
-                    OR author ILIKE %s
-                    OR uri ILIKE %s
-                    OR raw_path ILIKE %s
-                    OR content_hash ILIKE %s
-                    OR metadata_json::text ILIKE %s
+                    title ILIKE ANY(%s::text[])
+                    OR author ILIKE ANY(%s::text[])
+                    OR uri ILIKE ANY(%s::text[])
+                    OR raw_path ILIKE ANY(%s::text[])
+                    OR content_hash ILIKE ANY(%s::text[])
+                    OR metadata_json::text ILIKE ANY(%s::text[])
                   )
-                ORDER BY captured_at DESC, id DESC
+                ORDER BY
+                  CASE
+                    WHEN title ILIKE %s THEN 0
+                    WHEN title ILIKE ANY(%s::text[]) THEN 1
+                    ELSE 2
+                  END,
+                  captured_at DESC,
+                  id DESC
                 LIMIT %s
                 """,
             (
@@ -1482,12 +1520,14 @@ class PostgresVNextStore:
                 domains,
                 sensitivity_allowed,
                 sensitivity_allowed,
-                pattern,
-                pattern,
-                pattern,
-                pattern,
-                pattern,
-                pattern,
+                patterns,
+                patterns,
+                patterns,
+                patterns,
+                patterns,
+                patterns,
+                exact_pattern,
+                patterns,
                 limit,
             ),
         )

@@ -182,3 +182,50 @@ def test_agentic_memory_commit_confirmation_review_and_rejection_api(migrated_da
     assert rejected_status == 200
     assert rejected_payload["status"] == "rejected"
     assert "read_only_agent_cannot_write" in rejected_payload["reasons"]
+
+
+def test_unknown_domain_agentic_memory_selected_by_keyword_context_pack(migrated_database_urls, monkeypatch) -> None:
+    user_id = seed_user(migrated_database_urls["app"], email="agentic-memory-unknown-domain@example.com")
+    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    user_id_text = str(user_id)
+
+    commit_status, commit_payload = invoke_request(
+        "POST",
+        "/v0/vnext/memories/commit",
+        payload={
+            "user_id": user_id_text,
+            "agent": _agent(),
+            "intent": "explicit_remember",
+            "title": "Agent-first vNext preference",
+            "canonical_text": (
+                "Alice should be agent-first, with /vnext as an audit and correction cockpit "
+                "rather than a required manual review dashboard."
+            ),
+            "memory_type": "semantic",
+            "domain": "unknown",
+            "sensitivity": "unknown",
+            "confidence": 0.95,
+            "source_type": "direct_user_instruction",
+            "idempotency_key": "agentic-memory-unknown-domain-keyword",
+        },
+    )
+    assert commit_status == 201
+    memory_id = commit_payload["memory"]["id"]
+
+    context_status, context_payload = invoke_request(
+        "POST",
+        "/v0/vnext/context-packs",
+        payload={
+            "user_id": user_id_text,
+            "query": "agent-first /vnext audit correction cockpit",
+            "scope": {"domains": ["professional", "project", "personal"]},
+            "options": {
+                "max_items": 20,
+                "sensitivity_allowed": ["public", "internal", "private", "unknown"],
+            },
+        },
+    )
+
+    assert context_status == 201
+    assert any(item["id"] == memory_id for item in context_payload["relevant_memories"])
+    assert "no_relevant_memories_selected" not in context_payload["warnings"]
