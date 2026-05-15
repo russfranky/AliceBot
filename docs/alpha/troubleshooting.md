@@ -76,6 +76,24 @@ alicebot vnext smoke local-cors
 alicebot vnext doctor --fix-safe --ci
 ```
 
+## `/vnext` Fails With `Cannot find module './316.js'`
+
+If the web server returns a 500 for `/vnext?mode=live` with an error like `Cannot find module './316.js'` from `.next/server/webpack-runtime.js`, the local Next.js dev cache is stale or mixed across builds.
+
+Check that the API is still healthy:
+
+```bash
+curl -i "http://127.0.0.1:8000/healthz"
+```
+
+Then restart the web server with a clean generated cache:
+
+```bash
+pnpm --dir apps/web dev:clean
+```
+
+If a dev server is already running, stop it first with `Ctrl-C`, then run the command again. This removes only `apps/web/.next`, which is generated build output; it does not remove source files, env files, or local data.
+
 ## Agent Policy Blocked
 
 Common reasons:

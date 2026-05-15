@@ -209,6 +209,7 @@ def test_installation_issue_regressions_are_guarded() -> None:
     compose_lite = _read("docker-compose.lite.yml")
     postgres_init = _read("infra/postgres/init/001_roles.sh")
     install_doc = _read("docs/alpha/headless-ubuntu-install.md")
+    troubleshooting = _read("docs/alpha/troubleshooting.md")
     web_env = _read("apps/web/.env.local.example")
 
     assert "test -f .env || cp .env.example .env" in makefile
@@ -220,6 +221,7 @@ def test_installation_issue_regressions_are_guarded() -> None:
     assert "apps/web/.env.local" in gitignore
 
     assert web_package["packageManager"].startswith("pnpm@10.")
+    assert web_package["scripts"]["dev:clean"] == "rm -rf .next && next dev"
     assert set(web_package["pnpm"]["onlyBuiltDependencies"]) >= {"esbuild", "sharp", "unrs-resolver"}
     assert "NEXT_PUBLIC_ALICEBOT_API_BASE_URL=http://127.0.0.1:8000" in web_env
 
@@ -242,6 +244,8 @@ def test_installation_issue_regressions_are_guarded() -> None:
     assert 'ALICE_MCP_COMMAND="' in install_doc
     assert "CORS_ALLOWED_ORIGINS=http://127.0.0.1:3000,http://localhost:3000" in install_doc
     assert "docker compose down -v" in install_doc
+    assert "Cannot find module './316.js'" in troubleshooting
+    assert "pnpm --dir apps/web dev:clean" in troubleshooting
 
 
 def test_env_validator_rejects_unquoted_values_with_spaces(tmp_path: Path) -> None:
