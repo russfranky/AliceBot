@@ -67,6 +67,7 @@ Use the same user id as `ALICEBOT_AUTH_USER_ID`. If a manual alpha seed uses `lo
 alicebot vnext smoke operator-console
 alicebot vnext smoke local-cors
 alicebot vnext smoke agent-integration-pack
+alicebot vnext smoke agentic-memory-commit
 alicebot vnext alpha check
 ```
 

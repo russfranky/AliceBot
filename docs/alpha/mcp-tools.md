@@ -74,11 +74,44 @@ Submit output with `alice_vnext_ingest_agent_output`:
 }
 ```
 
-No-auto-promotion rule:
+Agentic memory commit:
+
+Trusted agents can write explicit "remember/save/add this to memory" instructions through `alice_vnext_commit_memory`. Alice still decides the outcome:
+
+- `committed`: direct active memory with provenance, event log, and revision.
+- `confirmation_required`: sensitive, contradictory, or ambiguous memory waits for `alice_vnext_confirm_memory`.
+- `review_required`: external, generated, low-confidence, or review-only-agent memory stays in `/vnext`.
+- `rejected`: read-only, out-of-scope, unsafe, or policy-bypass attempts are blocked.
+
+```json
+{
+  "agent_id": "hermes",
+  "agent_type": "personal_assistant",
+  "permission_profile": "trusted_local_agent",
+  "intent": "explicit_remember",
+  "title": "Preferred daily planning format",
+  "canonical_text": "The user prefers daily planning summaries with decisions, blockers, and next actions.",
+  "domain": "personal",
+  "sensitivity": "private",
+  "confidence": 0.93,
+  "source_type": "direct_user_instruction"
+}
+```
+
+Memory repair and audit tools:
+
+- `alice_vnext_confirm_memory`
+- `alice_vnext_undo_memory`
+- `alice_vnext_correct_memory`
+- `alice_vnext_forget_memory`
+- `alice_vnext_recent_memory_commits`
+- `alice_vnext_memory_audit`
+
+No-direct-database rule:
 
 - MCP tools can create reviewable sources, artifacts, open loops, and candidate memory proposals.
-- They do not directly write trusted memory.
-- Human review happens in `/vnext`.
+- Trusted writes use Alice's memory commit policy engine, never direct Postgres mutation.
+- Human review, inline confirmation, audit, undo, correction, and forget flows happen in `/vnext`.
 
 Policy errors:
 

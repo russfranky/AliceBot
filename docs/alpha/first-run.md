@@ -19,7 +19,8 @@ Use this checklist after a fresh clone.
 | 13. Generate artifact | `alicebot daily-brief --generate --domain project` | artifact appears in Generated |
 | 14. Review or rate artifact | `/vnext` Generated | rating appears in dogfooding telemetry |
 | 15. Inspect trace | `/vnext` Trace | source, chunks, memories, artifacts, and events link together |
-| 16. Connect an agent | [agent-integration.md](agent-integration.md) | context pack, output ingestion, and proposal flow works |
+| 16. Connect an agent | [agent-integration.md](agent-integration.md) | context pack, output ingestion, proposal flow, and explicit memory commit gates work |
+| 17. Check agentic memory commit | `alicebot vnext smoke agentic-memory-commit` | trusted commit, confirmation, review, undo, correction, forget, and audit gates pass |
 
 When doctor fails, go to [doctor.md](doctor.md) first. It lists the exact command that usually fixes the blocking issue.
 

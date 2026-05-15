@@ -138,6 +138,10 @@ from alicebot_api.vnext_connections import ConnectionFinderRequest, VNextConnect
 from alicebot_api.vnext_connectors import VNextConnectorService
 from alicebot_api.vnext_contradictions import ContradictionFinderRequest, VNextContradictionService
 from alicebot_api.vnext_event_log import append_event
+from alicebot_api.vnext_memory_commit import (
+    VNextMemoryCommitService,
+    memory_commit_request_from_payload,
+)
 from alicebot_api.vnext_projects import ProjectAutomationRequest, VNextProjectService
 from alicebot_api.vnext_queue import QueueTaskRequest, VNextQueueService
 from alicebot_api.vnext_retrieval import VNextRetrievalRequest, VNextRetrievalService
@@ -2230,6 +2234,158 @@ def _handle_alice_vnext_propose_memory(context: MCPRuntimeContext, arguments: Ma
     return {"proposal": memory, "policy_decision": decision.to_record(), "review_required": True}
 
 
+def _handle_alice_vnext_commit_memory(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    identity = _agent_identity_from_arguments(arguments)
+    payload: JsonObject | None = None
+    confidence = _parse_optional_float(arguments, "confidence")
+    request = memory_commit_request_from_payload(
+        {
+            "title": _parse_required_text(arguments, "title"),
+            "canonical_text": _parse_required_text(arguments, "canonical_text"),
+            "memory_type": _parse_optional_text(arguments, "memory_type") or "semantic",
+            "domain": _parse_optional_text(arguments, "domain") or "unknown",
+            "sensitivity": _parse_optional_text(arguments, "sensitivity") or "unknown",
+            "confidence": 0.9 if confidence is None else confidence,
+            "intent": _parse_optional_text(arguments, "intent") or "explicit_remember",
+            "source_type": _parse_optional_text(arguments, "source_type") or "direct_user_instruction",
+            "source_refs": list(_parse_string_list(arguments, "source_refs")),
+            "conversation_excerpt": _parse_optional_text(arguments, "conversation_excerpt"),
+            "rationale": _parse_optional_text(arguments, "rationale"),
+            "idempotency_key": _parse_optional_text(arguments, "idempotency_key"),
+            "project_scope": list(_parse_string_list(arguments, "project_scope")),
+            "contradiction_refs": list(_parse_string_list(arguments, "contradiction_refs")),
+            "trace_id": _parse_optional_text(arguments, "trace_id"),
+        },
+        user_id=context.user_id,
+    )
+    with _vnext_store_context(context) as store:
+        payload = VNextMemoryCommitService(store).commit(identity=identity, request=request)
+    return payload
+
+
+def _handle_alice_vnext_confirm_memory(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    identity = _agent_identity_from_arguments(arguments)
+    blocked_decision: PolicyDecision | None = None
+    payload: JsonObject | None = None
+    with _vnext_store_context(context) as store:
+        _actor_type, _actor_id, decision = _policy_checked(store, identity=identity, action="memory.confirm")
+        if decision.decision == "blocked":
+            blocked_decision = decision
+        else:
+            payload = VNextMemoryCommitService(store).confirm(
+                identity=identity,
+                confirmation_id=_parse_required_text(arguments, "confirmation_id"),
+                action=_parse_optional_text(arguments, "action") or "confirm",
+                canonical_text=_parse_optional_text(arguments, "canonical_text"),
+                rationale=_parse_optional_text(arguments, "rationale"),
+            )
+    if blocked_decision is not None:
+        _raise_mcp_policy_blocked(blocked_decision)
+    if payload is None:
+        raise MCPToolError("vNext memory confirmation did not complete")
+    return payload
+
+
+def _handle_alice_vnext_undo_memory(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    identity = _agent_identity_from_arguments(arguments)
+    blocked_decision: PolicyDecision | None = None
+    payload: JsonObject | None = None
+    with _vnext_store_context(context) as store:
+        _actor_type, _actor_id, decision = _policy_checked(store, identity=identity, action="memory.undo")
+        if decision.decision == "blocked":
+            blocked_decision = decision
+        else:
+            payload = VNextMemoryCommitService(store).undo(
+                identity=identity,
+                memory_id=_parse_optional_text(arguments, "memory_id"),
+                reason=_parse_optional_text(arguments, "reason"),
+            )
+    if blocked_decision is not None:
+        _raise_mcp_policy_blocked(blocked_decision)
+    if payload is None:
+        raise MCPToolError("vNext memory undo did not complete")
+    return payload
+
+
+def _handle_alice_vnext_correct_memory(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    identity = _agent_identity_from_arguments(arguments)
+    blocked_decision: PolicyDecision | None = None
+    payload: JsonObject | None = None
+    with _vnext_store_context(context) as store:
+        _actor_type, _actor_id, decision = _policy_checked(store, identity=identity, action="memory.correct")
+        if decision.decision == "blocked":
+            blocked_decision = decision
+        else:
+            payload = VNextMemoryCommitService(store).correct(
+                identity=identity,
+                memory_id=_parse_required_text(arguments, "memory_id"),
+                canonical_text=_parse_required_text(arguments, "canonical_text"),
+                reason=_parse_optional_text(arguments, "reason"),
+            )
+    if blocked_decision is not None:
+        _raise_mcp_policy_blocked(blocked_decision)
+    if payload is None:
+        raise MCPToolError("vNext memory correction did not complete")
+    return payload
+
+
+def _handle_alice_vnext_forget_memory(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    identity = _agent_identity_from_arguments(arguments)
+    blocked_decision: PolicyDecision | None = None
+    payload: JsonObject | None = None
+    with _vnext_store_context(context) as store:
+        _actor_type, _actor_id, decision = _policy_checked(store, identity=identity, action="memory.forget")
+        if decision.decision == "blocked":
+            blocked_decision = decision
+        else:
+            payload = VNextMemoryCommitService(store).forget(
+                identity=identity,
+                memory_id=_parse_required_text(arguments, "memory_id"),
+                reason=_parse_optional_text(arguments, "reason"),
+            )
+    if blocked_decision is not None:
+        _raise_mcp_policy_blocked(blocked_decision)
+    if payload is None:
+        raise MCPToolError("vNext memory forget did not complete")
+    return payload
+
+
+def _handle_alice_vnext_recent_memory_commits(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    identity = _agent_identity_from_arguments(arguments)
+    blocked_decision: PolicyDecision | None = None
+    payload: JsonObject | None = None
+    with _vnext_store_context(context) as store:
+        _actor_type, _actor_id, decision = _policy_checked(store, identity=identity, action="memory.recent_commits")
+        if decision.decision == "blocked":
+            blocked_decision = decision
+        else:
+            payload = VNextMemoryCommitService(store).recent_commits(
+                limit=_parse_int(arguments, key="limit", default=20, minimum=1, maximum=100)
+            )
+    if blocked_decision is not None:
+        _raise_mcp_policy_blocked(blocked_decision)
+    if payload is None:
+        raise MCPToolError("vNext recent memory commits did not complete")
+    return payload
+
+
+def _handle_alice_vnext_memory_audit(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    identity = _agent_identity_from_arguments(arguments)
+    blocked_decision: PolicyDecision | None = None
+    payload: JsonObject | None = None
+    with _vnext_store_context(context) as store:
+        _actor_type, _actor_id, decision = _policy_checked(store, identity=identity, action="memory.audit")
+        if decision.decision == "blocked":
+            blocked_decision = decision
+        else:
+            payload = VNextMemoryCommitService(store).audit(memory_id=_parse_required_text(arguments, "memory_id"))
+    if blocked_decision is not None:
+        _raise_mcp_policy_blocked(blocked_decision)
+    if payload is None:
+        raise MCPToolError("vNext memory audit did not complete")
+    return payload
+
+
 def _handle_alice_vnext_review_items(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
     with _vnext_store_context(context) as store:
         items = [
@@ -3399,6 +3555,84 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
         ),
     },
     {
+        "name": "alice_vnext_commit_memory",
+        "description": "Commit an explicit trusted-agent memory write through Alice policy, or return confirmation/review/reject.",
+        "inputSchema": _vnext_agent_tool_schema(
+            {
+                "intent": {"type": "string"},
+                "title": {"type": "string"},
+                "canonical_text": {"type": "string"},
+                "memory_type": {"type": "string"},
+                "domain": {"type": "string"},
+                "sensitivity": {"type": "string"},
+                "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                "source_type": {"type": "string"},
+                "source_refs": {"type": "array", "items": {"type": "string"}},
+                "conversation_excerpt": {"type": "string"},
+                "rationale": {"type": "string"},
+                "idempotency_key": {"type": "string"},
+                "contradiction_refs": {"type": "array", "items": {"type": "string"}},
+            },
+            required=["agent_id", "title", "canonical_text"],
+        ),
+    },
+    {
+        "name": "alice_vnext_confirm_memory",
+        "description": "Confirm, reject, or edit a pending inline agentic memory confirmation.",
+        "inputSchema": _vnext_agent_tool_schema(
+            {
+                "confirmation_id": {"type": "string"},
+                "action": {"type": "string", "enum": ["confirm", "reject", "edit"]},
+                "canonical_text": {"type": "string"},
+                "rationale": {"type": "string"},
+            },
+            required=["confirmation_id"],
+        ),
+    },
+    {
+        "name": "alice_vnext_undo_memory",
+        "description": "Undo an agentic memory commit without deleting the audit trail.",
+        "inputSchema": _vnext_agent_tool_schema(
+            {
+                "memory_id": {"type": "string"},
+                "reason": {"type": "string"},
+            },
+        ),
+    },
+    {
+        "name": "alice_vnext_correct_memory",
+        "description": "Correct an agentic memory commit and append a revision.",
+        "inputSchema": _vnext_agent_tool_schema(
+            {
+                "memory_id": {"type": "string"},
+                "canonical_text": {"type": "string"},
+                "reason": {"type": "string"},
+            },
+            required=["memory_id", "canonical_text"],
+        ),
+    },
+    {
+        "name": "alice_vnext_forget_memory",
+        "description": "Forget an agentic memory commit while preserving audit history.",
+        "inputSchema": _vnext_agent_tool_schema(
+            {
+                "memory_id": {"type": "string"},
+                "reason": {"type": "string"},
+            },
+            required=["memory_id"],
+        ),
+    },
+    {
+        "name": "alice_vnext_recent_memory_commits",
+        "description": "List recent agentic memory commits, confirmations, corrections, undos, and forgets.",
+        "inputSchema": _vnext_agent_tool_schema({"limit": {"type": "integer", "minimum": 1, "maximum": 100}}),
+    },
+    {
+        "name": "alice_vnext_memory_audit",
+        "description": "Return memory, revision, provenance, and event audit details for one memory.",
+        "inputSchema": _vnext_agent_tool_schema({"memory_id": {"type": "string"}}, required=["memory_id"]),
+    },
+    {
         "name": "alice_vnext_review_items",
         "description": "List pending vNext memory review items.",
         "inputSchema": _vnext_agent_tool_schema(
@@ -3518,6 +3752,13 @@ _TOOL_HANDLERS = {
     "alice_vnext_find_connections": _handle_alice_generate_connections,
     "alice_vnext_find_contradictions": _handle_alice_generate_contradictions,
     "alice_vnext_propose_memory": _handle_alice_vnext_propose_memory,
+    "alice_vnext_commit_memory": _handle_alice_vnext_commit_memory,
+    "alice_vnext_confirm_memory": _handle_alice_vnext_confirm_memory,
+    "alice_vnext_undo_memory": _handle_alice_vnext_undo_memory,
+    "alice_vnext_correct_memory": _handle_alice_vnext_correct_memory,
+    "alice_vnext_forget_memory": _handle_alice_vnext_forget_memory,
+    "alice_vnext_recent_memory_commits": _handle_alice_vnext_recent_memory_commits,
+    "alice_vnext_memory_audit": _handle_alice_vnext_memory_audit,
     "alice_vnext_review_items": _handle_alice_vnext_review_items,
     "alice_vnext_artifact_get": _handle_alice_vnext_artifact_get,
     "alice_vnext_artifact_review": _handle_alice_vnext_artifact_review,

@@ -42,6 +42,8 @@ READ_ACTIONS = {
     "contradictions.find",
     "review_items.lookup",
     "artifact.lookup",
+    "memory.audit",
+    "memory.recent_commits",
     "scheduler.status",
 }
 
@@ -49,6 +51,11 @@ WRITE_ACTIONS = {
     "source.capture",
     "queue_task.create",
     "artifact.generate",
+    "memory.commit",
+    "memory.confirm",
+    "memory.correct",
+    "memory.forget",
+    "memory.undo",
     "memory.propose",
     "open_loop.create",
     "open_loop.update",
@@ -287,7 +294,13 @@ def evaluate_agent_policy(
 
     if profile == "project_scoped_agent":
         requested_scope = project_scope or identity.project_scope
-        if not requested_scope and action in {"context_pack.request", "artifact.generate", "memory.propose", "scheduler.run_now"}:
+        if not requested_scope and action in {
+            "context_pack.request",
+            "artifact.generate",
+            "memory.commit",
+            "memory.propose",
+            "scheduler.run_now",
+        }:
             reasons.append("project_scope_required")
             decision = "blocked"
         if action == "scheduler.run_now" and workflow_type not in {"connection_report", "contradiction_report", "project_update_scan"}:

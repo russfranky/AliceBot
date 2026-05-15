@@ -219,6 +219,10 @@ function memoryText(memory: VNextMemoryRecord) {
   return memory.canonical_text || textValue(memory.summary) || textValue(memory.title) || memory.memory_key;
 }
 
+function agenticMemoryMetadata(memory: VNextMemoryRecord) {
+  return asRecord(asRecord(memory.metadata_json).agentic_memory);
+}
+
 function sourceText(source: VNextSourceRecord) {
   const metadata = asRecord(source.metadata_json);
   return textValue(metadata.raw_text) || textValue(source.title) || source.source_type;
@@ -276,6 +280,8 @@ const EMPTY_AGENT_ACTIVITY: NonNullable<VNextWorkspacePayload["agent_activity"]>
   policy_blocks: [],
   generated_artifacts: [],
   pending_review_items: [],
+  recent_commits: [],
+  inline_confirmations: [],
 };
 
 const EMPTY_POLICY_TELEMETRY: VNextPolicyTelemetrySummary = {
@@ -694,6 +700,46 @@ const FIXTURE_AGENT_ACTIVITY: NonNullable<VNextWorkspacePayload["agent_activity"
   ],
   generated_artifacts: FIXTURE_ARTIFACTS,
   pending_review_items: FIXTURE_REVIEW_ITEMS,
+  recent_commits: [
+    {
+      id: "memory-fixture-agentic-commit",
+      memory_key: "agentic_memory.semantic.fixture",
+      memory_type: "semantic",
+      status: "active",
+      title: "Launch label preference",
+      canonical_text: "Use public alpha wording for the local vNext release.",
+      domain: "project",
+      sensitivity: "internal",
+      updated_at: "2026-05-10T08:48:00Z",
+      metadata_json: {
+        agentic_memory: {
+          write_mode: "commit",
+          lifecycle_status: "auto_committed",
+          agent_identity: { agent_id: "hermes", permission_profile: "trusted_local_agent" },
+        },
+      },
+    },
+  ],
+  inline_confirmations: [
+    {
+      id: "memory-fixture-agentic-confirmation",
+      memory_key: "agentic_memory.semantic.confirmation",
+      memory_type: "semantic",
+      status: "needs_review",
+      title: "Sensitive reminder",
+      canonical_text: "Confirm before storing sensitive personal preferences.",
+      domain: "personal",
+      sensitivity: "confidential",
+      updated_at: "2026-05-10T08:49:00Z",
+      metadata_json: {
+        agentic_memory: {
+          write_mode: "confirm_inline",
+          lifecycle_status: "pending_inline_confirmation",
+          confirmation: { confirmation_id: "confirm-fixture", status: "pending" },
+        },
+      },
+    },
+  ],
 };
 
 const FIXTURE_POLICY_TELEMETRY: VNextPolicyTelemetrySummary = {
@@ -1091,6 +1137,21 @@ function emptyWorkspace(): WorkspaceView {
   return { ...view, summary: createSummary(view) };
 }
 
+function normalizeAgentActivity(activity: VNextWorkspacePayload["agent_activity"]): NonNullable<VNextWorkspacePayload["agent_activity"]> {
+  if (!activity) {
+    return EMPTY_AGENT_ACTIVITY;
+  }
+  return {
+    agents: Array.isArray(activity.agents) ? activity.agents : [],
+    recent_events: Array.isArray(activity.recent_events) ? activity.recent_events : [],
+    policy_blocks: Array.isArray(activity.policy_blocks) ? activity.policy_blocks : [],
+    generated_artifacts: Array.isArray(activity.generated_artifacts) ? activity.generated_artifacts : [],
+    pending_review_items: Array.isArray(activity.pending_review_items) ? activity.pending_review_items : [],
+    recent_commits: Array.isArray(activity.recent_commits) ? activity.recent_commits : [],
+    inline_confirmations: Array.isArray(activity.inline_confirmations) ? activity.inline_confirmations : [],
+  };
+}
+
 function workspaceFromPayload(payload: VNextWorkspacePayload): WorkspaceView {
   return {
     summary: payload.summary,
@@ -1109,7 +1170,7 @@ function workspaceFromPayload(payload: VNextWorkspacePayload): WorkspaceView {
     dogfooding: payload.dogfooding ?? EMPTY_DOGFOODING,
     doctor: payload.doctor ?? EMPTY_DOCTOR,
     traceability: payload.traceability ?? EMPTY_TRACEABILITY,
-    agentActivity: payload.agent_activity ?? EMPTY_AGENT_ACTIVITY,
+    agentActivity: normalizeAgentActivity(payload.agent_activity),
     policyTelemetry: payload.policy_telemetry ?? EMPTY_POLICY_TELEMETRY,
     scheduler: payload.scheduler ?? EMPTY_SCHEDULER,
     brainCharter: payload.brain_charter,
@@ -3490,6 +3551,71 @@ export function VNextBrainWorkspace({
               ))
             ) : (
               <EmptyState title="No agent events" description="Agent context packs, proposals, generated artifacts, and queue activity will appear here." />
+            )}
+          </div>
+        </SectionCard>
+
+        <SectionCard
+          eyebrow="Agent Activity"
+          title="Trusted memory commits"
+          description="Auto-committed, inline-confirmed, corrected, undone, and forgotten agent memories remain auditable here."
+        >
+          <div className="list-rows">
+            {workspace.agentActivity.recent_commits.length ? (
+              workspace.agentActivity.recent_commits.slice(0, 8).map((memory) => {
+                const agentic = agenticMemoryMetadata(memory);
+                const identity = asRecord(agentic.agent_identity);
+                return (
+                  <article key={`agentic-commit-${memory.id}`} className="list-row">
+                    <div className="list-row__topline">
+                      <div>
+                        <span className="list-row__eyebrow mono">{textValue(agentic.write_mode) || "memory commit"}</span>
+                        <h3 className="list-row__title">{memoryText(memory)}</h3>
+                      </div>
+                      <StatusBadge status={textValue(agentic.lifecycle_status) || memory.status || "active"} />
+                    </div>
+                    <div className="list-row__meta">
+                      <span className="meta-pill">Agent: {textValue(identity.agent_id) || textValue(memory.metadata_json?.agent_id) || "unknown"}</span>
+                      <span className="meta-pill">Domain: {memory.domain ?? "unknown"}</span>
+                      <span className="meta-pill">Sensitivity: {memory.sensitivity ?? "unknown"}</span>
+                    </div>
+                  </article>
+                );
+              })
+            ) : (
+              <EmptyState title="No trusted memory commits" description="Explicit trusted-agent memory commits will appear here with lifecycle status and audit metadata." />
+            )}
+          </div>
+        </SectionCard>
+
+        <SectionCard
+          eyebrow="Agent Activity"
+          title="Inline confirmations"
+          description="Sensitive, contradictory, or ambiguous memory writes wait here until confirmed, edited, rejected, or expired."
+        >
+          <div className="list-rows">
+            {workspace.agentActivity.inline_confirmations.length ? (
+              workspace.agentActivity.inline_confirmations.slice(0, 6).map((memory) => {
+                const agentic = agenticMemoryMetadata(memory);
+                const confirmation = asRecord(agentic.confirmation);
+                return (
+                  <article key={`inline-confirmation-${memory.id}`} className="list-row">
+                    <div className="list-row__topline">
+                      <div>
+                        <span className="list-row__eyebrow mono">{textValue(confirmation.confirmation_id) || "confirmation"}</span>
+                        <h3 className="list-row__title">{memoryText(memory)}</h3>
+                      </div>
+                      <StatusBadge status={textValue(confirmation.status) || memory.status || "pending"} />
+                    </div>
+                    <div className="list-row__meta">
+                      <span className="meta-pill">Reason: {textValue(confirmation.policy_reason) || "policy gate"}</span>
+                      <span className="meta-pill">Expires: {textValue(confirmation.expires_at) || "unknown"}</span>
+                    </div>
+                  </article>
+                );
+              })
+            ) : (
+              <EmptyState title="No inline confirmations" description="Sensitive or conflicting memory writes that need confirmation will appear here." />
             )}
           </div>
         </SectionCard>

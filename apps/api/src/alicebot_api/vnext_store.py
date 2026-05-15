@@ -1182,6 +1182,7 @@ class PostgresVNextStore:
                 SELECT {MEMORY_COLUMNS}
                 FROM memories
                 WHERE deleted_at IS NULL
+                  AND status IN ('active', 'accepted')
                   AND (%s::text[] IS NULL OR domain = ANY(%s::text[]) OR domain = 'unknown')
                   AND (%s::text[] IS NULL OR sensitivity = ANY(%s::text[]))
                   AND (

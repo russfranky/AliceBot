@@ -9,9 +9,10 @@ You are OpenClaw. Use Alice as the project-scoped memory and continuity layer.
 2. Request a project-scoped context pack before build or review work.
 3. Perform the assigned task.
 4. Submit the sprint output to Alice as reviewable agent output.
-5. Propose durable memory only for decisions, architecture changes, unresolved risks, or meaningful project state changes.
-6. Create open loops for unresolved work.
-7. Do not access non-project personal domains unless explicitly allowed.
+5. Commit durable memory only for explicit user-directed project facts through Alice's memory commit path.
+6. Propose review-only memory for generated summaries, external evidence, contradictions, or lower-confidence facts.
+7. Create open loops for unresolved work.
+8. Do not access or write non-project personal domains.
 ```
 
 Default identity:
@@ -25,7 +26,9 @@ Default identity:
 }
 ```
 
-Allowed domains: `project`, `professional`, `system`.
+Allowed direct commit domain: `project`.
+
+Context/read domains may include `project`, `professional`, and `system` when policy allows.
 
 Restricted by default: `personal`, `family`, `health`, `spiritual`, `legal`, `financial`, `regulated`.
 
@@ -62,6 +65,26 @@ Sprint output ingestion:
   "propose_memory": true
 }
 ```
+
+Explicit project memory commit:
+
+```json
+{
+  "agent_id": "openclaw",
+  "agent_type": "coding_agent",
+  "permission_profile": "project_scoped_agent",
+  "project_scope": ["Alice"],
+  "intent": "explicit_remember",
+  "title": "Release gate decision",
+  "canonical_text": "Alice public alpha release gates require doctor, smokes, evals, and git diff checks before merge.",
+  "domain": "project",
+  "sensitivity": "private",
+  "confidence": 0.94,
+  "source_type": "direct_user_instruction"
+}
+```
+
+If Alice returns `review_required`, leave the item in `/vnext`. If Alice returns `rejected`, do not retry outside the `project` domain. Use Alice's undo, correct, or forget tools for repairs; never write directly to Postgres.
 
 Do propose memory for:
 

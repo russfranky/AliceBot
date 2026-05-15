@@ -8,10 +8,11 @@ Universal pattern:
 2. Request scoped context, not raw memory.
 3. Use Alice context packs before planning or acting.
 4. Submit important outputs back to Alice.
-5. Propose memory; do not mutate trusted memory.
-6. Create open loops when work remains.
-7. Respect domain and sensitivity policy.
-8. Use `/vnext` for review, audit, and troubleshooting.
+5. Commit explicit "remember/save/add this to memory" instructions only through Alice's official memory commit path.
+6. Propose memory for inferred, external, generated, ambiguous, or lower-confidence facts.
+7. Create open loops when work remains.
+8. Respect domain and sensitivity policy.
+9. Use `/vnext` for review, audit, undo, correction, forget, and troubleshooting.
 
 ## Agent Identity Fields
 
@@ -29,7 +30,7 @@ Universal pattern:
 Permission profiles:
 
 - `read_only_agent`: context lookup only
-- `project_scoped_agent`: project context, project outputs, review-only memory proposals
+- `project_scoped_agent`: project context, project outputs, explicit project-domain memory commits, and review-only proposals
 - `trusted_local_agent`: broader local assistant context, still policy-filtered
 - `memory_proposal_agent`: proposal-focused agent
 - `admin_agent`: scheduler and administrative actions
@@ -51,12 +52,25 @@ alicebot vnext agents ingest-output \
   --sensitivity private \
   --propose-memory \
   "Decision: Alice public alpha agents use scoped context packs and review-only memory proposals."
+
+alicebot vnext memories commit \
+  --agent-id openclaw \
+  --agent-type coding_agent \
+  --agent-run-id run-2026-05-12-001 \
+  --project-scope Alice \
+  --permission-profile project_scoped_agent \
+  --title "Release gate decision" \
+  --text "Alice public alpha release gates require doctor, smokes, evals, and git diff checks before merge." \
+  --domain project \
+  --sensitivity private \
+  --confidence 0.94
 ```
 
 ## Smoke
 
 ```bash
 alicebot vnext smoke agent-integration-pack
+alicebot vnext smoke agentic-memory-commit
 ```
 
-The smoke verifies scoped context, output ingestion, review-only proposal creation, no auto-promotion, event logging, restricted-domain policy blocking, and `/vnext` agent activity visibility.
+The smokes verify scoped context, output ingestion, explicit trusted memory commits, inline confirmation, review gating, undo/correction/forget, no direct database mutation, event logging, restricted-domain policy blocking, and `/vnext` agent activity visibility.

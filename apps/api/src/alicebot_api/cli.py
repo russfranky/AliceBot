@@ -245,6 +245,11 @@ from alicebot_api.vnext_scheduler_runtime import (
 )
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_json import json_safe
+from alicebot_api.vnext_memory_commit import (
+    VNextMemoryCommitService,
+    VNextMemoryCommitValidationError,
+    memory_commit_request_from_payload,
+)
 from alicebot_api.vnext_secrets import InMemorySecretProvider
 from alicebot_api.vnext_store import PostgresVNextStore
 
@@ -1490,6 +1495,119 @@ def _run_vnext_agent_propose_memory(ctx: CLIContext, args: argparse.Namespace) -
     if memory is None or decision is None:
         raise RuntimeError("agent memory proposal did not complete")
     return _json_dumps({"proposal": memory, "policy_decision": decision.to_record(), "review_required": True})
+
+
+def _run_vnext_memory_commit(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        identity = _vnext_agent_identity_from_args(args)
+        request = memory_commit_request_from_payload(
+            {
+                "title": args.title,
+                "canonical_text": args.text,
+                "memory_type": args.memory_type,
+                "domain": args.domain,
+                "sensitivity": args.sensitivity,
+                "confidence": args.confidence,
+                "intent": args.intent,
+                "source_type": args.source_type,
+                "source_refs": args.source_ref,
+                "conversation_excerpt": args.conversation_excerpt,
+                "rationale": args.rationale,
+                "idempotency_key": args.idempotency_key,
+                "project_scope": getattr(args, "project_scope", None) or [],
+                "contradiction_refs": args.contradiction_ref,
+            },
+            user_id=ctx.user_id,
+        )
+        payload = VNextMemoryCommitService(store).commit(identity=identity, request=request)
+    return _json_dumps(payload)
+
+
+def _run_vnext_memory_confirm(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        identity, _actor_type, _actor_id, decision = _vnext_policy_checked_for_args(
+            store,
+            args,
+            action="memory.confirm",
+        )
+        ensure_policy_allowed(decision)
+        payload = VNextMemoryCommitService(store).confirm(
+            identity=identity,
+            confirmation_id=args.confirmation_id,
+            action=args.action,
+            canonical_text=args.text,
+            rationale=args.rationale,
+        )
+    return _json_dumps(payload)
+
+
+def _run_vnext_memory_undo(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        identity, _actor_type, _actor_id, decision = _vnext_policy_checked_for_args(
+            store,
+            args,
+            action="memory.undo",
+        )
+        ensure_policy_allowed(decision)
+        payload = VNextMemoryCommitService(store).undo(
+            identity=identity,
+            memory_id=args.memory_id,
+            reason=args.reason,
+        )
+    return _json_dumps(payload)
+
+
+def _run_vnext_memory_correct(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        identity, _actor_type, _actor_id, decision = _vnext_policy_checked_for_args(
+            store,
+            args,
+            action="memory.correct",
+        )
+        ensure_policy_allowed(decision)
+        payload = VNextMemoryCommitService(store).correct(
+            identity=identity,
+            memory_id=args.memory_id,
+            canonical_text=args.text,
+            reason=args.reason,
+        )
+    return _json_dumps(payload)
+
+
+def _run_vnext_memory_forget(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        identity, _actor_type, _actor_id, decision = _vnext_policy_checked_for_args(
+            store,
+            args,
+            action="memory.forget",
+        )
+        ensure_policy_allowed(decision)
+        payload = VNextMemoryCommitService(store).forget(identity=identity, memory_id=args.memory_id, reason=args.reason)
+    return _json_dumps(payload)
+
+
+def _run_vnext_memory_recent(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        identity, _actor_type, _actor_id, decision = _vnext_policy_checked_for_args(
+            store,
+            args,
+            action="memory.recent_commits",
+        )
+        ensure_policy_allowed(decision)
+        payload = VNextMemoryCommitService(store).recent_commits(limit=args.limit)
+    return _json_dumps(payload)
+
+
+def _run_vnext_memory_audit(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        identity, _actor_type, _actor_id, decision = _vnext_policy_checked_for_args(
+            store,
+            args,
+            action="memory.audit",
+        )
+        ensure_policy_allowed(decision)
+        payload = VNextMemoryCommitService(store).audit(memory_id=args.memory_id)
+    return _json_dumps(payload)
 
 
 def _run_vnext_agent_policy_telemetry(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -2761,6 +2879,197 @@ def _run_vnext_smoke_local_cors(ctx: CLIContext, _args: argparse.Namespace) -> s
     return _json_dumps(payload)
 
 
+def _run_vnext_smoke_agentic_memory_commit(ctx: CLIContext, _args: argparse.Namespace) -> str:
+    smoke_id = str(uuid4())
+    hermes = AgentIdentity(
+        agent_id="hermes",
+        agent_type="personal_assistant",
+        agent_run_id=f"agentic-memory-smoke-{smoke_id}",
+        task_id="agentic-memory-commit-smoke",
+        permission_profile="trusted_local_agent",
+    )
+    openclaw = AgentIdentity(
+        agent_id="openclaw",
+        agent_type="coding_agent",
+        agent_run_id=f"agentic-memory-smoke-{smoke_id}",
+        task_id="agentic-memory-commit-smoke",
+        project_scope=("Alice",),
+        permission_profile="project_scoped_agent",
+    )
+    read_only = AgentIdentity(
+        agent_id="readonly-smoke",
+        agent_type="unknown",
+        agent_run_id=f"agentic-memory-smoke-{smoke_id}",
+        task_id="agentic-memory-commit-smoke",
+        permission_profile="read_only_agent",
+    )
+    gates: dict[str, bool] = {}
+    with _vnext_store_context(ctx) as store:
+        service = VNextMemoryCommitService(store)
+        committed = service.commit(
+            identity=hermes,
+            request=memory_commit_request_from_payload(
+                {
+                    "title": f"Agentic memory smoke commit {smoke_id}",
+                    "canonical_text": f"Agentic memory smoke {smoke_id} commits explicit trusted facts through Alice.",
+                    "domain": "professional",
+                    "sensitivity": "internal",
+                    "confidence": 0.97,
+                    "idempotency_key": f"agentic-memory-smoke-commit-{smoke_id}",
+                },
+                user_id=ctx.user_id,
+            ),
+        )
+        committed_memory = committed.get("memory") if isinstance(committed.get("memory"), dict) else {}
+        committed_memory_id = str(committed_memory.get("id"))
+        gates["trusted_hermes_commit_active"] = committed.get("status") == "committed" and committed_memory.get("status") == "active"
+
+        before_undo_context = VNextRetrievalService(store).compile_context_pack(
+            VNextRetrievalRequest(
+                query=f"Agentic memory smoke {smoke_id}",
+                domains=("professional",),
+                sensitivity_allowed=("public", "internal", "private", "unknown"),
+                max_items=8,
+            )
+        )
+        gates["committed_memory_enters_context"] = any(
+            str(memory.get("id")) == committed_memory_id for memory in before_undo_context.get("relevant_memories", [])
+        )
+
+        sensitive = service.commit(
+            identity=hermes,
+            request=memory_commit_request_from_payload(
+                {
+                    "title": f"Agentic memory smoke sensitive {smoke_id}",
+                    "canonical_text": f"Agentic memory smoke {smoke_id} keeps sensitive health details behind confirmation.",
+                    "domain": "health",
+                    "sensitivity": "confidential",
+                    "confidence": 0.94,
+                },
+                user_id=ctx.user_id,
+            ),
+        )
+        confirmation_id = str(sensitive.get("confirmation_id"))
+        gates["sensitive_memory_requires_confirmation"] = sensitive.get("status") == "confirmation_required" and confirmation_id.startswith("confirm-")
+        confirmed = service.confirm(identity=hermes, confirmation_id=confirmation_id)
+        confirmed_memory = confirmed.get("memory") if isinstance(confirmed.get("memory"), dict) else {}
+        gates["inline_confirmation_commits"] = confirmed.get("status") == "committed" and confirmed_memory.get("status") == "active"
+
+        external = service.commit(
+            identity=hermes,
+            request=memory_commit_request_from_payload(
+                {
+                    "title": f"Agentic memory smoke external {smoke_id}",
+                    "canonical_text": f"Agentic memory smoke {smoke_id} browser evidence stays reviewable.",
+                    "domain": "professional",
+                    "sensitivity": "internal",
+                    "confidence": 0.91,
+                    "source_type": "browser_clip",
+                },
+                user_id=ctx.user_id,
+            ),
+        )
+        external_memory = external.get("memory") if isinstance(external.get("memory"), dict) else {}
+        gates["external_source_review_required"] = external.get("status") == "review_required" and external_memory.get("status") == "candidate"
+
+        blocked = service.commit(
+            identity=read_only,
+            request=memory_commit_request_from_payload(
+                {
+                    "title": f"Agentic memory smoke blocked {smoke_id}",
+                    "canonical_text": f"Agentic memory smoke {smoke_id} read-only agents cannot write.",
+                    "domain": "professional",
+                    "sensitivity": "internal",
+                    "confidence": 0.91,
+                },
+                user_id=ctx.user_id,
+            ),
+        )
+        gates["read_only_rejected"] = blocked.get("status") == "rejected"
+
+        project_commit = service.commit(
+            identity=openclaw,
+            request=memory_commit_request_from_payload(
+                {
+                    "title": f"Agentic memory smoke project {smoke_id}",
+                    "canonical_text": f"Agentic memory smoke {smoke_id} lets OpenClaw commit scoped project facts.",
+                    "domain": "project",
+                    "sensitivity": "private",
+                    "confidence": 0.93,
+                    "project_scope": ["Alice"],
+                },
+                user_id=ctx.user_id,
+            ),
+        )
+        gates["project_scoped_commit_allowed"] = project_commit.get("status") == "committed"
+
+        out_of_scope = service.commit(
+            identity=openclaw,
+            request=memory_commit_request_from_payload(
+                {
+                    "title": f"Agentic memory smoke out of scope {smoke_id}",
+                    "canonical_text": f"Agentic memory smoke {smoke_id} blocks non-project OpenClaw writes.",
+                    "domain": "family",
+                    "sensitivity": "private",
+                    "confidence": 0.93,
+                    "project_scope": ["Alice"],
+                },
+                user_id=ctx.user_id,
+            ),
+        )
+        gates["project_scoped_out_of_scope_rejected"] = out_of_scope.get("status") == "rejected"
+
+        corrected = service.correct(
+            identity=hermes,
+            memory_id=str(confirmed_memory.get("id")),
+            canonical_text=f"Agentic memory smoke {smoke_id} confirms and corrects sensitive details safely.",
+            reason="Agentic memory smoke correction.",
+        )
+        gates["correction_revises_memory"] = corrected.get("status") == "committed" and "corrects" in str(
+            (corrected.get("memory") if isinstance(corrected.get("memory"), dict) else {}).get("canonical_text")
+        )
+
+        forgotten = service.forget(
+            identity=hermes,
+            memory_id=str(confirmed_memory.get("id")),
+            reason="Agentic memory smoke forget.",
+        )
+        gates["forget_preserves_audit_and_excludes_context"] = forgotten.get("status") == "forgotten" and (
+            forgotten.get("memory") if isinstance(forgotten.get("memory"), dict) else {}
+        ).get("status") == "superseded"
+
+        undone = service.undo(identity=hermes, memory_id=committed_memory_id, reason="Agentic memory smoke undo.")
+        gates["undo_supersedes_committed_memory"] = undone.get("status") == "undone" and (
+            undone.get("memory") if isinstance(undone.get("memory"), dict) else {}
+        ).get("status") == "superseded"
+
+        after_undo_context = VNextRetrievalService(store).compile_context_pack(
+            VNextRetrievalRequest(
+                query=f"Agentic memory smoke {smoke_id}",
+                domains=("professional",),
+                sensitivity_allowed=("public", "internal", "private", "unknown"),
+                max_items=8,
+            )
+        )
+        gates["undone_memory_leaves_context"] = all(
+            str(memory.get("id")) != committed_memory_id for memory in after_undo_context.get("relevant_memories", [])
+        )
+
+        audit = service.audit(memory_id=committed_memory_id)
+        gates["audit_includes_revision_and_undo_event"] = bool(audit.get("revisions")) and any(
+            event.get("event_type") == "agent.memory_undone" for event in audit.get("events", [])
+        )
+        recent = service.recent_commits(limit=20)
+        gates["recent_commits_visible"] = any(
+            str(memory.get("id")) == committed_memory_id for memory in recent.get("recent_commits", [])
+        )
+
+    payload = {"status": "passed" if all(gates.values()) else "failed", "smoke": "agentic-memory-commit", "gates": gates}
+    if payload["status"] != "passed":
+        raise RuntimeError(_json_dumps(payload))
+    return _json_dumps(payload)
+
+
 def _check_headless_http_url(url: str | None) -> JsonObject:
     if not url:
         return {
@@ -2836,6 +3145,7 @@ def _run_vnext_alpha_check(ctx: CLIContext, args: argparse.Namespace) -> str:
             ("dogfood-doctor", _run_vnext_smoke_dogfood_doctor),
             ("live-capture-connectors", _run_vnext_smoke_live_capture_connectors),
             ("capture-to-brief", _run_vnext_smoke_capture_to_brief),
+            ("agentic-memory-commit", _run_vnext_smoke_agentic_memory_commit),
             ("agentic-scheduler", _run_vnext_smoke_agentic_scheduler),
             ("operator-console", _run_vnext_smoke_operator_console),
             ("agent-integration-pack", _run_vnext_smoke_agent_integration_pack),
@@ -4594,6 +4904,65 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_open_loop_review_parser.add_argument("--resolution-note", default=None, help="Resolution note for close.")
     vnext_open_loop_review_parser.set_defaults(handler=_run_vnext_open_loop_review)
 
+    vnext_memories_parser = vnext_subparsers.add_parser("memories", help="Commit, confirm, undo, correct, forget, and audit vNext memories.")
+    vnext_memories_subparsers = vnext_memories_parser.add_subparsers(dest="vnext_memories_command", required=True)
+    vnext_memory_commit_parser = vnext_memories_subparsers.add_parser(
+        "commit",
+        help="Commit an explicit trusted-agent memory write through Alice policy.",
+    )
+    _add_vnext_agent_arguments(vnext_memory_commit_parser)
+    vnext_memory_commit_parser.add_argument("--intent", default="explicit_remember", help="Explicit memory intent.")
+    vnext_memory_commit_parser.add_argument("--title", required=True, help="Memory title.")
+    vnext_memory_commit_parser.add_argument("--text", required=True, help="Canonical memory text.")
+    vnext_memory_commit_parser.add_argument("--memory-type", default="semantic", help="Memory type.")
+    vnext_memory_commit_parser.add_argument("--domain", default="unknown", help="Domain label.")
+    vnext_memory_commit_parser.add_argument("--sensitivity", default="unknown", help="Sensitivity label.")
+    vnext_memory_commit_parser.add_argument("--confidence", type=float, default=0.9, help="Confidence from 0.0 to 1.0.")
+    vnext_memory_commit_parser.add_argument("--source-type", default="direct_user_instruction", help="Source type.")
+    vnext_memory_commit_parser.add_argument("--source-ref", action="append", default=[], help="Source reference. Repeatable.")
+    vnext_memory_commit_parser.add_argument("--conversation-excerpt", default=None, help="Short user conversation excerpt.")
+    vnext_memory_commit_parser.add_argument("--rationale", default=None, help="Agent rationale.")
+    vnext_memory_commit_parser.add_argument("--idempotency-key", default=None, help="Idempotency key for retry safety.")
+    vnext_memory_commit_parser.add_argument("--contradiction-ref", action="append", default=[], help="Contradicted memory or edge id. Repeatable.")
+    vnext_memory_commit_parser.set_defaults(handler=_run_vnext_memory_commit)
+
+    vnext_memory_confirm_parser = vnext_memories_subparsers.add_parser("confirm", help="Confirm, reject, or edit an inline memory confirmation.")
+    _add_vnext_agent_arguments(vnext_memory_confirm_parser)
+    vnext_memory_confirm_parser.add_argument("confirmation_id", help="Confirmation id.")
+    vnext_memory_confirm_parser.add_argument("--action", choices=("confirm", "reject", "edit"), default="confirm", help="Confirmation action.")
+    vnext_memory_confirm_parser.add_argument("--text", default=None, help="Edited canonical memory text.")
+    vnext_memory_confirm_parser.add_argument("--rationale", default=None, help="Confirmation rationale.")
+    vnext_memory_confirm_parser.set_defaults(handler=_run_vnext_memory_confirm)
+
+    vnext_memory_undo_parser = vnext_memories_subparsers.add_parser("undo", help="Undo an agentic memory commit.")
+    _add_vnext_agent_arguments(vnext_memory_undo_parser)
+    vnext_memory_undo_parser.add_argument("--memory-id", default=None, help="Memory id. Defaults to the latest matching agentic commit.")
+    vnext_memory_undo_parser.add_argument("--reason", default=None, help="Undo reason.")
+    vnext_memory_undo_parser.set_defaults(handler=_run_vnext_memory_undo)
+
+    vnext_memory_correct_parser = vnext_memories_subparsers.add_parser("correct", help="Correct an agentic memory commit.")
+    _add_vnext_agent_arguments(vnext_memory_correct_parser)
+    vnext_memory_correct_parser.add_argument("memory_id", help="Memory id.")
+    vnext_memory_correct_parser.add_argument("--text", required=True, help="Corrected canonical memory text.")
+    vnext_memory_correct_parser.add_argument("--reason", default=None, help="Correction reason.")
+    vnext_memory_correct_parser.set_defaults(handler=_run_vnext_memory_correct)
+
+    vnext_memory_forget_parser = vnext_memories_subparsers.add_parser("forget", help="Forget an agentic memory commit without deleting audit history.")
+    _add_vnext_agent_arguments(vnext_memory_forget_parser)
+    vnext_memory_forget_parser.add_argument("memory_id", help="Memory id.")
+    vnext_memory_forget_parser.add_argument("--reason", default=None, help="Forget reason.")
+    vnext_memory_forget_parser.set_defaults(handler=_run_vnext_memory_forget)
+
+    vnext_memory_recent_parser = vnext_memories_subparsers.add_parser("recent", help="List recent agentic memory commits.")
+    _add_vnext_agent_arguments(vnext_memory_recent_parser)
+    vnext_memory_recent_parser.add_argument("--limit", type=int, default=20, help="Maximum commits to list.")
+    vnext_memory_recent_parser.set_defaults(handler=_run_vnext_memory_recent)
+
+    vnext_memory_audit_parser = vnext_memories_subparsers.add_parser("audit", help="Show memory audit details.")
+    _add_vnext_agent_arguments(vnext_memory_audit_parser)
+    vnext_memory_audit_parser.add_argument("memory_id", help="Memory id.")
+    vnext_memory_audit_parser.set_defaults(handler=_run_vnext_memory_audit)
+
     vnext_agents_parser = vnext_subparsers.add_parser("agents", help="Submit and inspect vNext agent proposals.")
     vnext_agents_subparsers = vnext_agents_parser.add_subparsers(dest="vnext_agents_command", required=True)
     vnext_agent_propose_parser = vnext_agents_subparsers.add_parser(
@@ -4706,6 +5075,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     vnext_smoke_parser = vnext_subparsers.add_parser("smoke", help="Run vNext smoke checks.")
     vnext_smoke_subparsers = vnext_smoke_parser.add_subparsers(dest="vnext_smoke_command", required=True)
+    vnext_smoke_agentic_memory_parser = vnext_smoke_subparsers.add_parser(
+        "agentic-memory-commit",
+        help="Run the agentic memory commit, inline confirmation, undo, correction, and audit smoke.",
+    )
+    vnext_smoke_agentic_memory_parser.set_defaults(handler=_run_vnext_smoke_agentic_memory_commit)
     vnext_smoke_agentic_scheduler_parser = vnext_smoke_subparsers.add_parser(
         "agentic-scheduler",
         help="Run the agentic control-plane and governed scheduler smoke.",

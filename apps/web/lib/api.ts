@@ -405,6 +405,8 @@ export type VNextAgentActivity = {
   policy_blocks: VNextEventRecord[];
   generated_artifacts: VNextArtifactRecord[];
   pending_review_items: VNextMemoryRecord[];
+  recent_commits: VNextMemoryRecord[];
+  inline_confirmations: VNextMemoryRecord[];
 };
 
 export type VNextConnectorHealthRecord = {

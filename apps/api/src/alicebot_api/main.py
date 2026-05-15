@@ -492,6 +492,11 @@ from alicebot_api.vnext_contradictions import (
 from alicebot_api.vnext_dogfooding import VNextDogfoodingService
 from alicebot_api.vnext_doctor import VNextDoctorService
 from alicebot_api.vnext_event_log import append_event
+from alicebot_api.vnext_memory_commit import (
+    VNextMemoryCommitService,
+    VNextMemoryCommitValidationError,
+    memory_commit_request_from_payload,
+)
 from alicebot_api.vnext_projects import ProjectAutomationRequest, VNextProjectService, VNextProjectValidationError
 from alicebot_api.vnext_queue import (
     QueueTaskRequest,
@@ -1205,6 +1210,7 @@ class VNextAgentIdentityRequest(BaseModel):
 
 
 class VNextAgentRequest(BaseModel):
+    agent: VNextAgentIdentityRequest | None = None
     agent_identity: VNextAgentIdentityRequest | None = None
     agent_id: str | None = Field(default=None, min_length=1, max_length=120)
     agent_type: str | None = Field(default=None, min_length=1, max_length=80)
@@ -1469,6 +1475,50 @@ class VNextMemoryProposalRequest(VNextAgentRequest):
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     rationale: str | None = Field(default=None, min_length=1, max_length=4000)
     review_required: bool = True
+
+
+class VNextMemoryCommitRequest(VNextAgentRequest):
+    user_id: UUID
+    intent: str = Field(default="explicit_remember", min_length=1, max_length=120)
+    title: str = Field(min_length=1, max_length=280)
+    canonical_text: str = Field(min_length=1, max_length=20_000)
+    memory_type: str = Field(default="semantic", min_length=1, max_length=80)
+    domain: str = Field(default="unknown", min_length=1, max_length=80)
+    sensitivity: str = Field(default="unknown", min_length=1, max_length=80)
+    confidence: float = Field(default=0.9, ge=0.0, le=1.0)
+    source_type: str = Field(default="direct_user_instruction", min_length=1, max_length=120)
+    source_refs: list[object] = Field(default_factory=list)
+    conversation_excerpt: str | None = Field(default=None, min_length=1, max_length=4000)
+    rationale: str | None = Field(default=None, min_length=1, max_length=4000)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
+    contradiction_refs: list[str] = Field(default_factory=list)
+
+
+class VNextMemoryConfirmRequest(VNextAgentRequest):
+    user_id: UUID
+    confirmation_id: str = Field(min_length=1, max_length=160)
+    action: str = Field(default="confirm", min_length=1, max_length=40)
+    canonical_text: str | None = Field(default=None, min_length=1, max_length=20_000)
+    rationale: str | None = Field(default=None, min_length=1, max_length=4000)
+
+
+class VNextMemoryUndoRequest(VNextAgentRequest):
+    user_id: UUID
+    memory_id: UUID | None = None
+    reason: str | None = Field(default=None, min_length=1, max_length=4000)
+
+
+class VNextMemoryCorrectRequest(VNextAgentRequest):
+    user_id: UUID
+    memory_id: UUID
+    canonical_text: str = Field(min_length=1, max_length=20_000)
+    reason: str | None = Field(default=None, min_length=1, max_length=4000)
+
+
+class VNextMemoryForgetRequest(VNextAgentRequest):
+    user_id: UUID
+    memory_id: UUID
+    reason: str | None = Field(default=None, min_length=1, max_length=4000)
 
 
 class VNextSchedulerWorkflowPatchRequest(VNextAgentRequest):
@@ -1739,6 +1789,8 @@ def _vnext_artifact_trace(
 
 def _vnext_agent_identity(request: VNextAgentRequest) -> AgentIdentity | None:
     payload = request.model_dump(mode="json")
+    if payload.get("agent_identity") is None and isinstance(payload.get("agent"), dict):
+        payload["agent_identity"] = payload["agent"]
     return AgentIdentity.from_payload(payload)
 
 
@@ -1824,6 +1876,9 @@ def _vnext_workspace_payload(store: PostgresVNextStore) -> dict[str, object]:
     recent_events = store.list_events(limit=20)
     agent_identities = store.list_agent_identities(limit=20)
     agent_events = store.list_agent_events(limit=50)
+    memory_commit_service = VNextMemoryCommitService(store)
+    recent_memory_commits = memory_commit_service.recent_commits(limit=20)["recent_commits"]
+    inline_confirmations = memory_commit_service.inline_confirmations(limit=20)
     scheduler_status = VNextSchedulerService(store).status()
     scheduler_status = {**scheduler_status, "daemon": daemon_status()}
     connector_health = VNextConnectorService(store).connector_health_all()
@@ -1908,6 +1963,8 @@ def _vnext_workspace_payload(store: PostgresVNextStore) -> dict[str, object]:
                 if isinstance(memory.get("metadata_json"), dict)
                 and memory["metadata_json"].get("agent_id") is not None
             ],
+            "recent_commits": recent_memory_commits,
+            "inline_confirmations": inline_confirmations,
         },
         "policy_telemetry": policy_telemetry,
         "scheduler": scheduler_status,
@@ -7027,6 +7084,173 @@ def create_vnext_memory_proposal(request: VNextMemoryProposalRequest) -> JSONRes
         status_code=201,
         content=jsonable_encoder({"proposal": memory, "policy_decision": decision.to_record(), "review_required": True}),
     )
+
+
+@app.post("/v0/vnext/memories/commit")
+def commit_vnext_memory(request: VNextMemoryCommitRequest) -> JSONResponse:
+    settings = get_settings()
+    try:
+        identity = _vnext_agent_identity(request)
+        commit_request = memory_commit_request_from_payload(
+            request.model_dump(mode="json", exclude={"agent", "agent_identity"}),
+            user_id=request.user_id,
+        )
+    except (AgentIdentityValidationError, VNextMemoryCommitValidationError) as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            store = PostgresVNextStore(conn)
+            payload = VNextMemoryCommitService(store).commit(identity=identity, request=commit_request)
+    except VNextMemoryCommitValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+
+    status_code = 201 if payload.get("status") in {"committed", "confirmation_required", "review_required"} else 200
+    return JSONResponse(status_code=status_code, content=jsonable_encoder(payload))
+
+
+@app.post("/v0/vnext/memories/confirm")
+def confirm_vnext_memory(request: VNextMemoryConfirmRequest) -> JSONResponse:
+    settings = get_settings()
+    try:
+        identity = _vnext_agent_identity(request)
+    except AgentIdentityValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            store = PostgresVNextStore(conn)
+            decision = _vnext_policy_checked(
+                store=store,
+                identity=identity,
+                action="memory.confirm",
+                project_scope=tuple(request.project_scope),
+            )
+            if decision.decision == "blocked":
+                return _vnext_permission_response(decision)
+            payload = VNextMemoryCommitService(store).confirm(
+                identity=identity,
+                confirmation_id=request.confirmation_id,
+                action=request.action,
+                canonical_text=request.canonical_text,
+                rationale=request.rationale,
+            )
+    except VNextMemoryCommitValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.post("/v0/vnext/memories/undo")
+def undo_vnext_memory(request: VNextMemoryUndoRequest) -> JSONResponse:
+    settings = get_settings()
+    try:
+        identity = _vnext_agent_identity(request)
+    except AgentIdentityValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            store = PostgresVNextStore(conn)
+            decision = _vnext_policy_checked(
+                store=store,
+                identity=identity,
+                action="memory.undo",
+                project_scope=tuple(request.project_scope),
+            )
+            if decision.decision == "blocked":
+                return _vnext_permission_response(decision)
+            payload = VNextMemoryCommitService(store).undo(
+                identity=identity,
+                memory_id=str(request.memory_id) if request.memory_id is not None else None,
+                reason=request.reason,
+            )
+    except VNextMemoryCommitValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.post("/v0/vnext/memories/correct")
+def correct_vnext_memory(request: VNextMemoryCorrectRequest) -> JSONResponse:
+    settings = get_settings()
+    try:
+        identity = _vnext_agent_identity(request)
+    except AgentIdentityValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            store = PostgresVNextStore(conn)
+            decision = _vnext_policy_checked(
+                store=store,
+                identity=identity,
+                action="memory.correct",
+                project_scope=tuple(request.project_scope),
+            )
+            if decision.decision == "blocked":
+                return _vnext_permission_response(decision)
+            payload = VNextMemoryCommitService(store).correct(
+                identity=identity,
+                memory_id=str(request.memory_id),
+                canonical_text=request.canonical_text,
+                reason=request.reason,
+            )
+    except VNextMemoryCommitValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.post("/v0/vnext/memories/forget")
+def forget_vnext_memory(request: VNextMemoryForgetRequest) -> JSONResponse:
+    settings = get_settings()
+    try:
+        identity = _vnext_agent_identity(request)
+    except AgentIdentityValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            store = PostgresVNextStore(conn)
+            decision = _vnext_policy_checked(
+                store=store,
+                identity=identity,
+                action="memory.forget",
+                project_scope=tuple(request.project_scope),
+            )
+            if decision.decision == "blocked":
+                return _vnext_permission_response(decision)
+            payload = VNextMemoryCommitService(store).forget(
+                identity=identity,
+                memory_id=str(request.memory_id),
+                reason=request.reason,
+            )
+    except VNextMemoryCommitValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.get("/v0/vnext/memories/recent-commits")
+def list_vnext_recent_memory_commits(user_id: UUID, limit: int = Query(default=20, ge=1, le=100)) -> JSONResponse:
+    settings = get_settings()
+    with user_connection(settings.database_url, user_id) as conn:
+        store = PostgresVNextStore(conn)
+        payload = VNextMemoryCommitService(store).recent_commits(limit=limit)
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.get("/v0/vnext/memories/{memory_id}/audit")
+def get_vnext_memory_audit(memory_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            store = PostgresVNextStore(conn)
+            payload = VNextMemoryCommitService(store).audit(memory_id=str(memory_id))
+    except VNextMemoryCommitValidationError as exc:
+        return _vnext_public_error_response(status_code=404, detail=str(exc))
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
 
 @app.post("/v0/vnext/artifacts/generate/daily-brief")

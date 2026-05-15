@@ -1,13 +1,13 @@
 # Alice vNext Public Alpha
 
-Alice vNext public alpha is a technical, local-first package for design partners who want agent memory and continuity without hosted storage or automatic trusted-memory writes.
+Alice vNext public alpha is a technical, local-first package for design partners who want agent memory and continuity without hosted storage or direct database writes by agents.
 
 Alice is agent-first, not dashboard-first:
 
 1. Install Alice locally.
 2. Connect Hermes, OpenClaw, or a custom agent through MCP/API/CLI.
-3. Let agents request scoped context packs and submit reviewable outputs.
-4. Use `/vnext` to review, govern, audit, configure, and troubleshoot.
+3. Let agents request scoped context packs, submit reviewable outputs, and commit only explicit user-directed memories through Alice policy.
+4. Use `/vnext` to review, govern, audit, undo, correct, forget, configure, and troubleshoot.
 
 Start here:
 
@@ -38,7 +38,8 @@ Current alpha posture:
 - local runtime, not hosted SaaS
 - headless Ubuntu install path for SSH-only dogfood hosts
 - technical setup, not consumer install
-- review-only source, artifact, and agent memory proposal flows
-- no automatic promotion into trusted memory
+- reviewable source, artifact, and agent memory proposal flows
+- explicit trusted-agent memory commits with confirmation/review/reject policy gates
+- no direct Postgres writes by agents
 - supported alpha connectors: local folder, browser clipper MVP, Telegram polling/sync, document payload ingestion, voice transcript payload ingestion, screenshot OCR payload ingestion, and agent output ingestion
 - `/vnext` is the operator console, not the main agent interface

@@ -173,6 +173,7 @@ def test_keyword_search_methods_apply_domain_sensitivity_and_limit_filters() -> 
     source_query, source_params = cursor.executed[1]
     open_loop_query, open_loop_params = cursor.executed[2]
     assert "FROM memories" in memory_query
+    assert "status IN ('active', 'accepted')" in memory_query
     assert "domain = ANY" in memory_query
     assert "sensitivity = ANY" in memory_query
     assert memory_params is not None

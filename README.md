@@ -37,13 +37,13 @@ Alice vNext is the next release candidate for the true second-brain product. It 
 
 - **Alice Core**: local-first storage, provenance, policy, event logging, revisions, graph objects, sources, and connector evidence.
 - **Alice Brain**: user-facing second-brain workflows such as daily briefs, weekly syntheses, context packs, contradiction reports, project updates, open loops, and reviewable artifacts.
-- **Alice Agent Memory**: CLI, API, and MCP surfaces that let agents capture, retrieve, resume, explain, generate context, propose memory, and trigger governed workflows without owning the memory store.
+- **Alice Agent Memory**: CLI, API, and MCP surfaces that let agents capture, retrieve, resume, explain, generate context, propose or explicitly commit memory through policy, and trigger governed workflows without owning the memory store.
 
-The vNext preview currently includes deterministic source capture, retrieval/context packs, queue/artifact workflows, daily and weekly brain artifacts, connection/contradiction/project/open-loop workflows, model-backed source-grounded synthesis, human artifact quality ratings, deterministic-vs-model comparison controls, synthetic evals, live local capture connectors for Telegram, local folders/Obsidian notes, browser clips, and Hermes/OpenClaw-style agent outputs, dedicated connector settings/state storage, encrypted local secret references, deterministic document connector payload ingestion, agent identity/policy auditing, a governed local scheduler with due scans, a local scheduler daemon, policy telemetry, dogfooding readiness telemetry, doctor/readiness checks, capture-to-brief traceability, and a live/fixture-backed `/vnext` operator workspace with source review, memory review, artifact review, project, open-loop, scheduler, connector, and doctor controls.
+The vNext preview currently includes deterministic source capture, retrieval/context packs, queue/artifact workflows, daily and weekly brain artifacts, connection/contradiction/project/open-loop workflows, model-backed source-grounded synthesis, human artifact quality ratings, deterministic-vs-model comparison controls, synthetic evals, live local capture connectors for Telegram, local folders/Obsidian notes, browser clips, and Hermes/OpenClaw-style agent outputs, dedicated connector settings/state storage, encrypted local secret references, deterministic document connector payload ingestion, trusted agent memory commit with inline confirmation/review/reject policy, agent identity/policy auditing, a governed local scheduler with due scans, a local scheduler daemon, policy telemetry, dogfooding readiness telemetry, doctor/readiness checks, capture-to-brief traceability, and a live/fixture-backed `/vnext` operator workspace with source review, memory review, trusted commit audit, artifact review, project, open-loop, scheduler, connector, and doctor controls.
 
 ## Public Alpha Quickstart
 
-Alice is a local-first memory and continuity layer for humans and agents. It lets agents like Hermes, OpenClaw, or your own custom agents request scoped context, submit outputs, propose memories, create open loops, and generate reviewable artifacts without giving them direct write access to trusted memory. The `/vnext` workspace is the operator console for review, audit, configuration, and troubleshooting.
+Alice is a local-first memory and continuity layer for humans and agents. It lets agents like Hermes, OpenClaw, or your own custom agents request scoped context, submit outputs, explicitly commit user-directed memories through Alice policy, propose reviewable memories, create open loops, and generate reviewable artifacts without giving them direct database access to trusted memory. The `/vnext` workspace is the operator console for review, audit, configuration, undo/correction/forget, and troubleshooting.
 
 Alice is not a notes app, an Obsidian clone, a chatbot with memory, hosted SaaS, or automatic memory autopilot. The public alpha is a technical local alpha for design partners and agent builders.
 
@@ -72,6 +72,7 @@ Load safe synthetic demo data and run the public alpha readiness gate:
 alicebot vnext demo load --reset
 alicebot vnext smoke local-cors
 alicebot vnext smoke agent-integration-pack
+alicebot vnext smoke agentic-memory-commit
 alicebot vnext alpha check
 ```
 
@@ -109,6 +110,7 @@ Start with:
 - [Live-backed operator console CTO summary](docs/vnext-live-backed-operator-console-cto-summary.md)
 - [Public alpha packaging CTO summary](docs/vnext-public-alpha-packaging-cto-summary.md)
 - [Headless Ubuntu packaging CTO summary](docs/vnext-headless-ubuntu-cto-summary.md)
+- [Agentic memory commit CTO summary](docs/vnext-agentic-memory-commit-cto-summary.md)
 - [Dogfood daily checklist](docs/runbooks/vnext-dogfood-daily-checklist.md)
 
 ## Release Boundary (`v0.5.1`)

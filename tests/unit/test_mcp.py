@@ -75,6 +75,13 @@ def test_mcp_tool_surface_is_adr_aligned_and_deterministic() -> None:
         "alice_vnext_find_connections",
         "alice_vnext_find_contradictions",
         "alice_vnext_propose_memory",
+        "alice_vnext_commit_memory",
+        "alice_vnext_confirm_memory",
+        "alice_vnext_undo_memory",
+        "alice_vnext_correct_memory",
+        "alice_vnext_forget_memory",
+        "alice_vnext_recent_memory_commits",
+        "alice_vnext_memory_audit",
         "alice_vnext_review_items",
         "alice_vnext_artifact_get",
         "alice_vnext_artifact_review",
@@ -190,10 +197,19 @@ class FakeVNextMCPStore:
                 return memory
         raise AssertionError(memory_id)
 
+    def get_memory(self, memory_id: str) -> dict[str, object] | None:
+        return next((memory for memory in self.memories if memory["id"] == memory_id), None)
+
+    def list_memories(self, *, status: str | None = None) -> list[dict[str, object]]:
+        return [memory for memory in self.memories if status is None or memory.get("status") == status]
+
     def append_revision(self, revision: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**revision, "id": f"revision-{len(self.revisions) + 1}"}
         self.revisions.append(row)
         return row
+
+    def list_revisions(self, memory_id: str) -> list[dict[str, object]]:
+        return [revision for revision in self.revisions if revision["memory_id"] == memory_id]
 
     def create_open_loop(self, loop: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**loop, "id": f"loop-{len(self.open_loops) + 1}", "status": loop.get("status", "open")}
@@ -443,6 +459,96 @@ def test_alice_vnext_context_pack_mcp_tool_normalizes_row_scalars(monkeypatch) -
     assert payload["relevant_memories"][0]["id"] == str(memory_id)
     assert payload["relevant_memories"][0]["first_seen_at"] == "2026-05-10T09:00:00+00:00"
     assert payload["sources"][0]["id"] == str(source_id)
+
+
+def test_alice_vnext_agentic_memory_commit_mcp_tools(monkeypatch) -> None:
+    store = FakeVNextMCPStore()
+
+    @contextmanager
+    def fake_vnext_store_context(_context):
+        yield store
+
+    monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fake_vnext_store_context)
+    context = MCPRuntimeContext(
+        database_url="postgresql://localhost/alicebot",
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+
+    commit_payload = call_mcp_tool(
+        context,
+        name="alice_vnext_commit_memory",
+        arguments={
+            "agent_id": "hermes",
+            "agent_type": "personal_assistant",
+            "permission_profile": "trusted_local_agent",
+            "title": "MCP memory commit",
+            "canonical_text": "Hermes commits explicit memories through Alice.",
+            "domain": "professional",
+            "sensitivity": "internal",
+            "confidence": 0.96,
+        },
+    )
+
+    assert commit_payload["status"] == "committed"
+    memory_id = commit_payload["memory"]["id"]
+
+    recent_payload = call_mcp_tool(
+        context,
+        name="alice_vnext_recent_memory_commits",
+        arguments={"agent_id": "hermes", "permission_profile": "trusted_local_agent"},
+    )
+    assert recent_payload["recent_commits"][0]["id"] == memory_id
+
+    audit_payload = call_mcp_tool(
+        context,
+        name="alice_vnext_memory_audit",
+        arguments={"agent_id": "hermes", "permission_profile": "trusted_local_agent", "memory_id": memory_id},
+    )
+    assert audit_payload["memory"]["id"] == memory_id
+    assert audit_payload["revisions"][0]["action"] == "agentic_memory_commit"
+
+
+def test_alice_vnext_agentic_memory_confirm_mcp_tool(monkeypatch) -> None:
+    store = FakeVNextMCPStore()
+
+    @contextmanager
+    def fake_vnext_store_context(_context):
+        yield store
+
+    monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fake_vnext_store_context)
+    context = MCPRuntimeContext(
+        database_url="postgresql://localhost/alicebot",
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+
+    confirmation_payload = call_mcp_tool(
+        context,
+        name="alice_vnext_commit_memory",
+        arguments={
+            "agent_id": "hermes",
+            "agent_type": "personal_assistant",
+            "permission_profile": "trusted_local_agent",
+            "title": "MCP sensitive memory",
+            "canonical_text": "Sensitive health facts need inline confirmation.",
+            "domain": "health",
+            "sensitivity": "confidential",
+            "confidence": 0.94,
+        },
+    )
+    assert confirmation_payload["status"] == "confirmation_required"
+
+    confirmed_payload = call_mcp_tool(
+        context,
+        name="alice_vnext_confirm_memory",
+        arguments={
+            "agent_id": "hermes",
+            "permission_profile": "trusted_local_agent",
+            "confirmation_id": confirmation_payload["confirmation_id"],
+        },
+    )
+
+    assert confirmed_payload["status"] == "committed"
+    assert confirmed_payload["memory"]["status"] == "active"
 
 
 def test_alice_generate_daily_and_weekly_brief_mcp_tools(monkeypatch) -> None:
