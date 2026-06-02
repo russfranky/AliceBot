@@ -7,6 +7,7 @@ import json
 from uuid import UUID, uuid4
 
 import pytest
+from psycopg.errors import CheckViolation
 
 import alicebot_api.mcp_server as mcp_server
 import alicebot_api.mcp_tools as mcp_tools_module
@@ -114,6 +115,21 @@ def test_call_mcp_tool_requires_object_arguments() -> None:
     )
     with pytest.raises(MCPToolError, match="tool arguments must be a JSON object"):
         call_mcp_tool(context, name="alice_recall", arguments=["not-a-json-object"])
+
+
+def test_call_mcp_tool_converts_postgres_check_violation(monkeypatch) -> None:
+    context = MCPRuntimeContext(
+        database_url="postgresql://localhost/alicebot",
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+
+    def raise_check_violation(_context, _arguments):
+        raise CheckViolation("memories_memory_type_check")
+
+    monkeypatch.setitem(mcp_tools_module._TOOL_HANDLERS, "alice_recall", raise_check_violation)
+
+    with pytest.raises(MCPToolError, match="persisted schema constraint"):
+        call_mcp_tool(context, name="alice_recall", arguments={})
 
 
 class FakeVNextMCPStore:
@@ -506,6 +522,68 @@ def test_alice_vnext_agentic_memory_commit_mcp_tools(monkeypatch) -> None:
     )
     assert audit_payload["memory"]["id"] == memory_id
     assert audit_payload["revisions"][0]["action"] == "agentic_memory_commit"
+
+
+def test_alice_vnext_agentic_memory_commit_normalizes_quote_aliases(monkeypatch) -> None:
+    store = FakeVNextMCPStore()
+
+    @contextmanager
+    def fake_vnext_store_context(_context):
+        yield store
+
+    monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fake_vnext_store_context)
+    context = MCPRuntimeContext(
+        database_url="postgresql://localhost/alicebot",
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+
+    payload = call_mcp_tool(
+        context,
+        name="alice_vnext_commit_memory",
+        arguments={
+            "agent_id": "hermes",
+            "agent_type": "personal_assistant",
+            "permission_profile": "trusted_local_agent",
+            "title": "Quote to remember",
+            "canonical_text": "Control your emotions or someone else will. - Unknown",
+            "memory_type": "quote",
+            "domain": "quotes",
+            "sensitivity": "private",
+            "confidence": 0.96,
+        },
+    )
+
+    assert payload["status"] == "committed"
+    assert payload["memory"]["memory_type"] == "semantic"
+    assert payload["memory"]["domain"] == "learning"
+    assert payload["memory"]["sensitivity"] == "private"
+
+
+def test_alice_vnext_agentic_memory_commit_rejects_invalid_enum_before_store(monkeypatch) -> None:
+    def fail_if_store_opened(_context):
+        raise AssertionError("store should not be opened for invalid enum input")
+
+    monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fail_if_store_opened)
+    context = MCPRuntimeContext(
+        database_url="postgresql://localhost/alicebot",
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+
+    with pytest.raises(MCPToolError, match="memory_type must be one of"):
+        call_mcp_tool(
+            context,
+            name="alice_vnext_commit_memory",
+            arguments={
+                "agent_id": "hermes",
+                "agent_type": "personal_assistant",
+                "permission_profile": "trusted_local_agent",
+                "title": "Invalid typed memory",
+                "canonical_text": "This should be rejected before Postgres.",
+                "memory_type": "totally_invalid_type",
+                "domain": "unknown",
+                "sensitivity": "unknown",
+            },
+        )
 
 
 def test_alice_vnext_agentic_memory_confirm_mcp_tool(monkeypatch) -> None:

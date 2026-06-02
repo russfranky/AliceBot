@@ -42,6 +42,8 @@ Use `alice_vnext_context_pack` with the same identity fields, then submit output
 
 For explicit "remember this" instructions, use `alice_vnext_commit_memory`:
 
+Use canonical schema values for persisted labels. For quote saves, use `memory_type=semantic`; use `domain=learning` only when a quote collection needs an explicit domain. Avoid invented values like `memory_type=quote`, `domain=quotes`, or `sensitivity=sensitive`.
+
 ```json
 {
   "agent_id": "researcher",

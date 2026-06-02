@@ -40,8 +40,11 @@ Recipes:
 - Follow-up context: query open loops and recent decisions.
 - Project briefing context: use project-scoped context before advising.
 - Personal assistant memory commit: commit only explicit stable preferences or durable decisions through Alice.
+- Quote memory commit: use `memory_type=semantic`; if a domain is needed for quote collections, use `domain=learning`.
 - Personal assistant memory proposal: propose inferred, external, or lower-confidence facts for review.
 - Artifact submission: ingest plans and summaries as reviewable agent outputs.
+
+Use only schema-backed enum values for persisted fields. Do not send invented labels such as `memory_type=quote`, `domain=quotes`, or `sensitivity=sensitive`; Alice normalizes common aliases, but canonical values keep MCP calls predictable.
 
 Good explicit commit:
 

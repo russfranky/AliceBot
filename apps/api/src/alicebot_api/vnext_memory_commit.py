@@ -20,6 +20,93 @@ from alicebot_api.vnext_store import PostgresVNextStore, VNextRow
 
 MEMORY_COMMIT_WRITE_MODES = ("commit", "confirm_inline", "propose_review", "reject")
 MEMORY_COMMIT_STATUSES = ("committed", "confirmation_required", "review_required", "rejected")
+VNEXT_DOMAINS = (
+    "professional",
+    "personal",
+    "family",
+    "health",
+    "spiritual",
+    "financial",
+    "legal",
+    "learning",
+    "relationship",
+    "project",
+    "agent_run",
+    "system",
+    "unknown",
+)
+VNEXT_SENSITIVITY_LEVELS = (
+    "public",
+    "internal",
+    "private",
+    "confidential",
+    "highly_sensitive",
+    "sacred",
+    "regulated",
+    "unknown",
+)
+VNEXT_MEMORY_TYPES = (
+    "preference",
+    "identity_fact",
+    "relationship_fact",
+    "project_fact",
+    "decision",
+    "commitment",
+    "routine",
+    "constraint",
+    "working_style",
+    "episode",
+    "semantic",
+    "project_state",
+    "belief",
+    "thesis",
+    "person",
+    "relationship",
+    "open_loop",
+    "value",
+    "pattern",
+    "contradiction",
+    "question",
+    "answer",
+    "artifact_summary",
+    "agent_run",
+    "system",
+)
+_MEMORY_TYPE_ALIASES = {
+    "fact": "semantic",
+    "note": "semantic",
+    "quote": "semantic",
+    "quote_collection": "semantic",
+    "quote_memory": "semantic",
+    "quote_note": "semantic",
+    "quotes": "semantic",
+    "quotation": "semantic",
+    "quotation_note": "semantic",
+    "quotations": "semantic",
+    "saved_quote": "semantic",
+}
+_DOMAIN_ALIASES = {
+    "work": "professional",
+    "career": "professional",
+    "finance": "financial",
+    "money": "financial",
+    "quote": "learning",
+    "quote_collection": "learning",
+    "quote_memory": "learning",
+    "quote_note": "learning",
+    "quotes": "learning",
+    "quotation": "learning",
+    "quotation_note": "learning",
+    "quotations": "learning",
+    "philosophy": "learning",
+    "saved_quote": "learning",
+    "wisdom": "learning",
+    "general": "unknown",
+}
+_SENSITIVITY_ALIASES = {
+    "sensitive": "confidential",
+    "secret": "highly_sensitive",
+}
 TRUSTED_COMMIT_PROFILES = {"trusted_local_agent", "admin_agent"}
 PROJECT_COMMIT_PROFILES = {"project_scoped_agent"}
 REVIEW_ONLY_PROFILES = {"memory_proposal_agent"}
@@ -125,6 +212,25 @@ def _normalized_text(value: object, *, field_name: str) -> str:
     if normalized == "":
         raise VNextMemoryCommitValidationError(f"{field_name} must not be empty")
     return normalized
+
+
+def _enum_token(value: str) -> str:
+    return "_".join(value.casefold().replace("-", "_").split())
+
+
+def _enum_value(
+    value: object,
+    *,
+    field_name: str,
+    allowed_values: tuple[str, ...],
+    aliases: Mapping[str, str] | None = None,
+) -> str:
+    normalized = _normalized_text(value, field_name=field_name)
+    token = _enum_token(normalized)
+    canonical = aliases.get(token, token) if aliases is not None else token
+    if canonical not in allowed_values:
+        raise VNextMemoryCommitValidationError(f"{field_name} must be one of: {', '.join(allowed_values)}")
+    return canonical
 
 
 def _optional_text(value: object) -> str | None:
@@ -1063,9 +1169,24 @@ def memory_commit_request_from_payload(payload: Mapping[str, object], *, user_id
         user_id=str(user_id),
         title=_normalized_text(payload.get("title"), field_name="title"),
         canonical_text=_normalized_text(payload.get("canonical_text"), field_name="canonical_text"),
-        memory_type=_normalized_text(payload.get("memory_type", "semantic"), field_name="memory_type"),
-        domain=_normalized_text(payload.get("domain", "unknown"), field_name="domain"),
-        sensitivity=_normalized_text(payload.get("sensitivity", "unknown"), field_name="sensitivity"),
+        memory_type=_enum_value(
+            payload.get("memory_type", "semantic"),
+            field_name="memory_type",
+            allowed_values=VNEXT_MEMORY_TYPES,
+            aliases=_MEMORY_TYPE_ALIASES,
+        ),
+        domain=_enum_value(
+            payload.get("domain", "unknown"),
+            field_name="domain",
+            allowed_values=VNEXT_DOMAINS,
+            aliases=_DOMAIN_ALIASES,
+        ),
+        sensitivity=_enum_value(
+            payload.get("sensitivity", "unknown"),
+            field_name="sensitivity",
+            allowed_values=VNEXT_SENSITIVITY_LEVELS,
+            aliases=_SENSITIVITY_ALIASES,
+        ),
         confidence=float(confidence),
         intent=_normalized_text(payload.get("intent", "explicit_remember"), field_name="intent"),
         source_type=_normalized_text(payload.get("source_type", "direct_user_instruction"), field_name="source_type"),
@@ -1086,6 +1207,9 @@ __all__ = [
     "MemoryCommitRequest",
     "VNextMemoryCommitService",
     "VNextMemoryCommitValidationError",
+    "VNEXT_DOMAINS",
+    "VNEXT_MEMORY_TYPES",
+    "VNEXT_SENSITIVITY_LEVELS",
     "evaluate_memory_commit_policy",
     "memory_commit_request_from_payload",
 ]

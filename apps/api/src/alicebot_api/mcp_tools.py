@@ -7,6 +7,8 @@ from datetime import datetime
 from typing import cast
 from uuid import UUID, uuid4
 
+from psycopg.errors import CheckViolation
+
 from alicebot_api.continuity_capture import (
     ContinuityCaptureValidationError,
     capture_continuity_candidates,
@@ -140,6 +142,9 @@ from alicebot_api.vnext_contradictions import ContradictionFinderRequest, VNextC
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_memory_commit import (
     VNextMemoryCommitService,
+    VNEXT_DOMAINS,
+    VNEXT_MEMORY_TYPES,
+    VNEXT_SENSITIVITY_LEVELS,
     memory_commit_request_from_payload,
 )
 from alicebot_api.vnext_projects import ProjectAutomationRequest, VNextProjectService
@@ -3562,9 +3567,9 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
                 "intent": {"type": "string"},
                 "title": {"type": "string"},
                 "canonical_text": {"type": "string"},
-                "memory_type": {"type": "string"},
-                "domain": {"type": "string"},
-                "sensitivity": {"type": "string"},
+                "memory_type": {"type": "string", "enum": list(VNEXT_MEMORY_TYPES)},
+                "domain": {"type": "string", "enum": list(VNEXT_DOMAINS)},
+                "sensitivity": {"type": "string", "enum": list(VNEXT_SENSITIVITY_LEVELS)},
                 "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
                 "source_type": {"type": "string"},
                 "source_refs": {"type": "array", "items": {"type": "string"}},
@@ -3805,6 +3810,11 @@ def call_mcp_tool(
         TemporalStateValidationError,
     ) as exc:
         raise MCPToolError(str(exc)) from exc
+    except CheckViolation as exc:
+        raise MCPToolError(
+            "vNext request violates a persisted schema constraint; use schema-backed enum values "
+            "for memory_type, domain, sensitivity, status, and action fields."
+        ) from exc
     except (TypeError, ValueError) as exc:
         raise MCPToolError(str(exc)) from exc
 

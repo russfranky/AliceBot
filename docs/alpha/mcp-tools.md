@@ -83,6 +83,8 @@ Trusted agents can write explicit "remember/save/add this to memory" instruction
 - `review_required`: external, generated, low-confidence, or review-only-agent memory stays in `/vnext`.
 - `rejected`: read-only, out-of-scope, unsafe, or policy-bypass attempts are blocked.
 
+Use canonical schema values for persisted labels. For quote saves, use `memory_type=semantic`; use `domain=learning` only when a quote collection needs an explicit domain. Avoid invented values like `memory_type=quote`, `domain=quotes`, or `sensitivity=sensitive`.
+
 ```json
 {
   "agent_id": "hermes",
