@@ -19,3 +19,12 @@ def test_runtime_role_init_only_grants_connect_on_alicebot_database() -> None:
     assert "GRANT CONNECT ON DATABASE %I TO %I" in init_sql
     assert "current_database()" in init_sql
     assert "GRANT CONNECT ON DATABASE postgres TO alicebot_app;" not in init_sql
+
+
+def test_archive_maintenance_workflow_uses_current_postgres_bootstrap() -> None:
+    workflow = (REPO_ROOT / ".github" / "workflows" / "archive-maintenance.yml").read_text()
+
+    assert "infra/postgres/init/001_roles.sh" in workflow
+    assert "infra/postgres/init/001_roles.sql" not in workflow
+    assert "DATABASE_ADMIN_URL: postgresql://alicebot_admin:alicebot_admin@localhost:5432/alicebot" in workflow
+    assert "DATABASE_URL: postgresql://alicebot_app:alicebot_app@localhost:5432/alicebot" in workflow

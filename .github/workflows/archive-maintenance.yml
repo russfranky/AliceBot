@@ -37,16 +37,19 @@ jobs:
       postgres:
         image: pgvector/pgvector:pg16
         env:
-          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: alicebot_admin
+          POSTGRES_PASSWORD: alicebot_admin
+          POSTGRES_DB: alicebot
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-cmd "pg_isready -U alicebot_admin -d alicebot"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
     env:
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/alicebot
+      DATABASE_ADMIN_URL: postgresql://alicebot_admin:alicebot_admin@localhost:5432/alicebot
+      DATABASE_URL: postgresql://alicebot_app:alicebot_app@localhost:5432/alicebot
       ALICEBOT_AUTH_USER_ID: 00000000-0000-0000-0000-000000000001
 
     steps:
@@ -65,10 +68,14 @@ jobs:
 
       - name: Prepare database
         env:
-          PGPASSWORD: postgres
+          PGHOST: localhost
+          PGPASSWORD: alicebot_admin
+          POSTGRES_USER: alicebot_admin
+          POSTGRES_DB: alicebot
+          ALICEBOT_APP_USER: alicebot_app
+          ALICEBOT_APP_PASSWORD: alicebot_app
         run: |
-          psql -h localhost -U postgres -d postgres -c "CREATE DATABASE alicebot;"
-          psql -h localhost -U postgres -d alicebot -f infra/postgres/init/001_roles.sql
+          infra/postgres/init/001_roles.sh
           python -m alembic -c apps/api/alembic.ini upgrade head
 
       - name: Resolve schedule mode
