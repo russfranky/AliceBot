@@ -19,7 +19,7 @@ RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
-ReadWritePaths=__ALICE_INSTALL_DIR__ __ALICE_STATE_DIR__ %h/.alicebot
+ReadWritePaths=__ALICE_INSTALL_DIR__ __ALICE_STATE_DIR__ __ALICE_RUNTIME_DIR__
 
 [Install]
 WantedBy=multi-user.target

@@ -188,10 +188,13 @@ def test_headless_ubuntu_packaging_is_discoverable_and_safe_by_default() -> None
         assert "Restart=on-failure" in service
         assert "EnvironmentFile=__ALICE_ENV_FILE__" in service
         assert "0.0.0.0" not in service
+        assert "%h/.alicebot" not in service
 
     assert "127.0.0.1" in api_service
     assert "127.0.0.1" in web_service
     assert "127.0.0.1" in scheduler_service
+    assert "__ALICE_RUNTIME_DIR__" in api_service
+    assert "__ALICE_RUNTIME_DIR__/vnext-scheduler" in scheduler_service
     assert "headless-ubuntu" in cli
     assert "--headless" in cli
 
@@ -227,6 +230,15 @@ def test_installation_issue_regressions_are_guarded() -> None:
 
     assert "PNPM_VERSION" in installer
     assert "pnpm@latest" not in installer
+    assert "install_pnpm_from_npm" in installer
+    assert "command -v npm" in installer
+    assert '"${npm_bin}" install -g "pnpm@${PNPM_VERSION}"' in installer
+    assert 'sudo "${npm_bin}" install -g "pnpm@${PNPM_VERSION}"' in installer
+    assert "postgresql-${pg_major}-pgvector" in installer
+    assert "CREATE EXTENSION IF NOT EXISTS vector" in installer
+    assert '"${ALICE_RUNTIME_DIR}/vnext-scheduler"' in installer
+    assert "run_in_install_dir" in installer
+    assert "-c apps/api/alembic.ini" in installer
     assert "write_lite_env_if_missing" in installer
     assert "write_web_env_if_missing" in installer
     assert "validate_env_files" in installer
@@ -242,6 +254,9 @@ def test_installation_issue_regressions_are_guarded() -> None:
     assert "ALICEBOT_APP_PASSWORD" in postgres_init
     assert "ALTER ROLE" in postgres_init
     assert 'ALICE_MCP_COMMAND="' in install_doc
+    assert "postgresql-16-pgvector" in install_doc
+    assert "CREATE EXTENSION IF NOT EXISTS vector" in install_doc
+    assert "`~/.alicebot`" in install_doc
     assert "CORS_ALLOWED_ORIGINS=http://127.0.0.1:3000,http://localhost:3000" in install_doc
     assert "docker compose down -v" in install_doc
     assert "Cannot find module './316.js'" in troubleshooting

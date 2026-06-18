@@ -9,6 +9,7 @@ CONFIG_DIR="${HOME}/.config/alicebot"
 DATA_DIR="${HOME}/.local/share/alicebot"
 STATE_DIR="${HOME}/.local/state/alicebot"
 SECRETS_DIR="${HOME}/.config/alicebot/secrets"
+ALICE_RUNTIME_DIR="${HOME}/.alicebot"
 ENV_FILE=""
 SKIP_POSTGRES_INSTALL=0
 NON_INTERACTIVE=0
@@ -102,12 +103,20 @@ CONFIG_DIR="$(realpath -m "${CONFIG_DIR/#\~/${HOME}}")"
 DATA_DIR="$(realpath -m "${DATA_DIR/#\~/${HOME}}")"
 STATE_DIR="$(realpath -m "${STATE_DIR/#\~/${HOME}}")"
 SECRETS_DIR="$(realpath -m "${SECRETS_DIR/#\~/${HOME}}")"
+ALICE_RUNTIME_DIR="$(realpath -m "${ALICE_RUNTIME_DIR/#\~/${HOME}}")"
 ENV_FILE="${CONFIG_DIR}/.env"
 
 run() {
   log "+ $*"
   if [ "${DRY_RUN}" -eq 0 ]; then
     "$@"
+  fi
+}
+
+run_in_install_dir() {
+  log "+ (cd ${INSTALL_DIR} && $*)"
+  if [ "${DRY_RUN}" -eq 0 ]; then
+    (cd "${INSTALL_DIR}" && "$@")
   fi
 }
 
@@ -145,8 +154,23 @@ install_system_packages() {
     openssl pkg-config libpq-dev redis-tools
 }
 
+install_pnpm_from_npm() {
+  local npm_bin npm_prefix
+  npm_bin="$(command -v npm || true)"
+  if [ -z "${npm_bin}" ]; then
+    fail "npm is required to install pnpm when corepack is unavailable."
+  fi
+
+  npm_prefix="$("${npm_bin}" config get prefix 2>/dev/null || true)"
+  if [[ "${npm_bin}" == "${HOME}/"* || "${npm_prefix}" == "${HOME}/"* ]]; then
+    run "${npm_bin}" install -g "pnpm@${PNPM_VERSION}"
+  else
+    run sudo "${npm_bin}" install -g "pnpm@${PNPM_VERSION}"
+  fi
+}
+
 install_node_and_pnpm() {
-  local node_major
+  local corepack_bin node_major
   node_major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || true)"
   if [ -z "${node_major}" ] || [ "${node_major}" -lt 20 ]; then
     log "Installing Node.js 20 through NodeSource."
@@ -163,12 +187,36 @@ install_node_and_pnpm() {
     run sudo apt-get update
     run sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
   fi
-  if command -v corepack >/dev/null 2>&1; then
-    run sudo corepack enable
-    run sudo corepack prepare "pnpm@${PNPM_VERSION}" --activate
+  corepack_bin="$(command -v corepack || true)"
+  if [ -n "${corepack_bin}" ]; then
+    if [[ "${corepack_bin}" == "${HOME}/"* ]]; then
+      run "${corepack_bin}" enable
+      run "${corepack_bin}" prepare "pnpm@${PNPM_VERSION}" --activate
+    else
+      run sudo "${corepack_bin}" enable
+      run sudo "${corepack_bin}" prepare "pnpm@${PNPM_VERSION}" --activate
+    fi
   elif ! command -v pnpm >/dev/null 2>&1; then
-    run sudo npm install -g "pnpm@${PNPM_VERSION}"
+    install_pnpm_from_npm
   fi
+}
+
+install_pgvector_package() {
+  if [ "${DRY_RUN}" -eq 1 ]; then
+    log "+ install postgresql-\$(server major)-pgvector for local Postgres"
+    return
+  fi
+
+  local package pg_major pg_version_num
+  pg_version_num="$(sudo -u postgres psql -Atqc "SHOW server_version_num")"
+  pg_major="${pg_version_num:0:2}"
+  package="postgresql-${pg_major}-pgvector"
+
+  if ! apt-cache show "${package}" >/dev/null 2>&1; then
+    fail "Required pgvector package ${package} is not available. Install pgvector for PostgreSQL ${pg_major}, or rerun with --skip-postgres-install and provide DATABASE_URL/DATABASE_ADMIN_URL for a Postgres instance with pgvector."
+  fi
+
+  run sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "${package}"
 }
 
 prepare_postgres() {
@@ -178,6 +226,7 @@ prepare_postgres() {
   fi
   run sudo DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql postgresql-contrib
   run sudo systemctl enable --now postgresql
+  install_pgvector_package
   if [ "${DRY_RUN}" -eq 1 ]; then
     log "+ prepare local alicebot Postgres roles/database without printing generated passwords"
     return
@@ -209,7 +258,7 @@ random_secret() {
 }
 
 write_env_if_missing() {
-  run mkdir -p "${CONFIG_DIR}" "${DATA_DIR}" "${STATE_DIR}/logs" "${SECRETS_DIR}"
+  run mkdir -p "${CONFIG_DIR}" "${DATA_DIR}" "${STATE_DIR}/logs" "${SECRETS_DIR}" "${ALICE_RUNTIME_DIR}/vnext-scheduler"
   if [ -f "${ENV_FILE}" ]; then
     log "Preserving existing ${ENV_FILE}."
   else
@@ -314,6 +363,7 @@ SELECT 'CREATE DATABASE alicebot OWNER alicebot_admin'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'alicebot')\\gexec
 GRANT CONNECT ON DATABASE alicebot TO alicebot_app;
 SQL
+  sudo -u postgres psql -d alicebot -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/null
 }
 
 install_project_dependencies() {
@@ -331,7 +381,7 @@ run_migrations_and_checks() {
     . "${ENV_FILE}"
     set +a
   fi
-  run "${INSTALL_DIR}/.venv/bin/python" -m alembic -c "${INSTALL_DIR}/apps/api/alembic.ini" upgrade head
+  run_in_install_dir "${INSTALL_DIR}/.venv/bin/python" -m alembic -c apps/api/alembic.ini upgrade head
   run "${INSTALL_DIR}/.venv/bin/alicebot" vnext doctor --fix-safe --ci
   if [ "${RUN_ALPHA_CHECK}" -eq 1 ]; then
     run "${INSTALL_DIR}/.venv/bin/alicebot" vnext alpha check --headless --skip-smokes
@@ -355,6 +405,7 @@ install_systemd_units() {
         -e "s#__ALICE_INSTALL_DIR__#${INSTALL_DIR}#g" \
         -e "s#__ALICE_ENV_FILE__#${ENV_FILE}#g" \
         -e "s#__ALICE_STATE_DIR__#${STATE_DIR}#g" \
+        -e "s#__ALICE_RUNTIME_DIR__#${ALICE_RUNTIME_DIR}#g" \
         "${INSTALL_DIR}/packaging/systemd/${service}.service" \
         | sudo tee "/etc/systemd/system/${service}.service" >/dev/null
     fi

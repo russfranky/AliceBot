@@ -7,10 +7,12 @@ Supported assumptions for this alpha:
 - Ubuntu 22.04 LTS or 24.04 LTS
 - Python 3.12-compatible system Python or newer venv support
 - Node 20 through NodeSource or an existing Node 20 install
-- local Postgres on the same host, or an existing Postgres reached through `DATABASE_URL`
+- local Postgres with `pgvector` on the same host, or an existing Postgres reached through `DATABASE_URL`
 - services bound to `127.0.0.1` by default
 
-This is an RC/dogfood install path for `v0.6.0-alpha-rc.2`, not a public beta or hosted SaaS release. `rc.2` supersedes `rc.1` for Ubuntu installs after the first install attempt exposed setup and environment drift issues.
+This is the current headless install path for the Alice vNext public-preview line. The active preview release target is `v0.5.1-vnext-preview` on top of stable `v0.5.1`.
+
+Historical note: `v0.6.0-alpha-rc.2` remains an older internal Ubuntu dogfood packaging milestone. Keep it for audit trail and rollback evidence, but do not treat it as the current public preview boundary.
 
 ## Recommended Secure Access
 
@@ -31,26 +33,20 @@ Do not expose `/vnext`, the API, MCP, or browser clipper endpoint publicly by de
 ## Inspect-Before-Run Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/samrusani/AliceBot/v0.6.0-alpha-rc.2/scripts/install-ubuntu.sh -o install-alice.sh
-less install-alice.sh
-bash install-alice.sh --tag v0.6.0-alpha-rc.2
-```
-
-Install from `main` instead:
-
-```bash
 curl -fsSL https://raw.githubusercontent.com/samrusani/AliceBot/main/scripts/install-ubuntu.sh -o install-alice.sh
 less install-alice.sh
 bash install-alice.sh --branch main --install-dir ~/alicebot
 ```
+
+For an immutable preview install after the preview tag is published, replace `--branch main` with `--tag v0.5.1-vnext-preview`.
 
 Use `--non-interactive` only after you have chosen a safe install directory and know whether the host should install local Postgres.
 
 ## Installer Options
 
 ```bash
-bash install-alice.sh --tag v0.6.0-alpha-rc.2
 bash install-alice.sh --branch main
+bash install-alice.sh --tag v0.5.1-vnext-preview
 bash install-alice.sh --install-dir ~/alicebot
 bash install-alice.sh --skip-postgres-install
 bash install-alice.sh --install-systemd
@@ -74,9 +70,11 @@ Default paths:
 - config: `~/.config/alicebot/.env`
 - data: `~/.local/share/alicebot/`
 - logs/state: `~/.local/state/alicebot/logs/`
+- runtime pid/status files: `~/.alicebot/`
 - local secret references: `~/.config/alicebot/secrets/`
 
 The installer renders [packaging/ubuntu/alicebot.env.example](../../packaging/ubuntu/alicebot.env.example) into `~/.config/alicebot/.env` if the file does not already exist. Existing config is preserved.
+For local Postgres installs, it detects the server major version, installs the matching `postgresql-<major>-pgvector` package, and creates the `vector` extension before migrations.
 
 Important config keys:
 
@@ -102,10 +100,10 @@ Secrets are referenced, not printed. Store real connector secrets through the co
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y ca-certificates curl git build-essential python3 python3-venv python3-pip libpq-dev postgresql postgresql-contrib
+sudo apt-get install -y ca-certificates curl git build-essential python3 python3-venv python3-pip libpq-dev postgresql postgresql-contrib postgresql-16-pgvector
 git clone https://github.com/samrusani/AliceBot.git ~/alicebot
 cd ~/alicebot
-git checkout tags/v0.6.0-alpha-rc.2
+git checkout main
 python3 -m venv .venv
 ./.venv/bin/python -m pip install -e '.[dev]'
 corepack enable
@@ -118,12 +116,14 @@ cp packaging/ubuntu/alicebot.env.example ~/.config/alicebot/.env
 less ~/.config/alicebot/.env
 ln -sfn ~/.config/alicebot/.env .env
 scripts/validate_env.sh ~/.config/alicebot/.env .env.lite apps/web/.env.local
+# Create the alicebot database/roles to match ~/.config/alicebot/.env before this step.
+sudo -u postgres psql -d alicebot -c 'CREATE EXTENSION IF NOT EXISTS vector;'
 ./.venv/bin/python -m alembic -c apps/api/alembic.ini upgrade head
 ./.venv/bin/alicebot vnext doctor --fix-safe --ci
 ./.venv/bin/alicebot vnext alpha check --headless --skip-smokes
 ```
 
-If you use existing Postgres, set `DATABASE_URL` and `DATABASE_ADMIN_URL` before migrations.
+If you use existing Postgres, set `DATABASE_URL` and `DATABASE_ADMIN_URL` before migrations and confirm the database has `CREATE EXTENSION IF NOT EXISTS vector;` installed by a superuser. On Ubuntu 22.04, replace `postgresql-16-pgvector` with the package matching the installed server major version.
 
 ## Systemd Services
 
@@ -136,7 +136,7 @@ Templates live under [packaging/systemd](../../packaging/systemd):
 Install them through:
 
 ```bash
-bash install-alice.sh --tag v0.6.0-alpha-rc.2 --install-systemd
+bash install-alice.sh --branch main --install-systemd
 ```
 
 Then start:
@@ -161,6 +161,7 @@ Service behavior:
 - API binds to `127.0.0.1:8000`
 - web binds to `127.0.0.1:3000`
 - scheduler uses the governed `alicebot vnext scheduler daemon start --foreground` path
+- scheduler pid/status files live under the explicit installing-user path `~/.alicebot`, not systemd `%h`
 - logs are visible through `journalctl`
 
 ## Headless Alpha Check
@@ -203,7 +204,7 @@ CLI-only fallback if you cannot open `/vnext`:
 
 ```bash
 ~/alicebot/.venv/bin/alicebot vnext demo load --reset
-~/alicebot/.venv/bin/alicebot context-pack --query "public alpha launch checklist" --domain project --sensitivity-allowed private
+~/alicebot/.venv/bin/alicebot context-pack --query "public preview launch checklist" --domain project --sensitivity-allowed private
 ~/alicebot/.venv/bin/alicebot daily-brief --domain project --sensitivity-allowed private
 ~/alicebot/.venv/bin/alicebot vnext artifacts list
 ~/alicebot/.venv/bin/alicebot vnext demo reset
@@ -255,6 +256,16 @@ Postgres unreachable:
 systemctl status postgresql
 sudo -u postgres psql -c 'SELECT 1'
 ```
+
+Migration fails with `extension "vector" is not available`:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y postgresql-16-pgvector
+sudo -u postgres psql -d alicebot -c 'CREATE EXTENSION IF NOT EXISTS vector;'
+```
+
+Use the pgvector package that matches your Postgres server major version.
 
 Environment file rejected before startup:
 
