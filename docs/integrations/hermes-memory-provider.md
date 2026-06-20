@@ -160,10 +160,12 @@ Practical default:
 - `prefetch_max_recent_changes` (int)
 - `prefetch_max_open_loops` (int)
 - `prefetch_include_non_promotable_facts` (bool)
-- `sync_turn_capture_enabled` (bool, default `false`)
+- `sync_turn_capture_enabled` (bool, default `false`; when omitted, an explicitly configured `bridge_mode: assist` or `bridge_mode: auto` enables `sync_turn` capture)
 - `memory_write_capture_enabled` (bool, default `false`)
 - `bridge_mode` (string enum: `manual`, `assist`, `auto`; default `assist`)
 - `session_end_flush_timeout_seconds` (float, default `5.0`)
+
+`sync_turn_capture_enabled: false` always wins. Use that when you want bridge recall/prefetch behavior without post-turn capture, even if `bridge_mode` is `assist` or `auto`.
 
 Legacy compatibility keys still accepted for shipped configs:
 

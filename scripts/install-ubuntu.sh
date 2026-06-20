@@ -366,6 +366,49 @@ SQL
   sudo -u postgres psql -d alicebot -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/null
 }
 
+seed_default_user_from_env() {
+  if [ "${DRY_RUN}" -eq 1 ]; then
+    log "+ seed configured local Alice user row if missing"
+    return
+  fi
+  "${INSTALL_DIR}/.venv/bin/python" - <<'PY'
+import os
+from uuid import UUID
+
+import psycopg
+
+
+user_id_raw = os.environ.get("ALICEBOT_AUTH_USER_ID", "").strip()
+if not user_id_raw:
+    raise SystemExit("ALICEBOT_AUTH_USER_ID is required before seeding the local Alice user")
+
+try:
+    user_id = UUID(user_id_raw)
+except ValueError as exc:
+    raise SystemExit("ALICEBOT_AUTH_USER_ID must be a valid UUID") from exc
+
+conninfo = os.environ.get("DATABASE_ADMIN_URL") or os.environ.get("DATABASE_URL")
+if not conninfo:
+    raise SystemExit("DATABASE_ADMIN_URL or DATABASE_URL is required before seeding the local Alice user")
+
+email = f"local-alpha-{user_id}@alicebot.local"
+display_name = "Local Alpha User"
+
+with psycopg.connect(conninfo) as conn:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO users (id, email, display_name)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (id) DO UPDATE
+            SET email = EXCLUDED.email,
+                display_name = EXCLUDED.display_name
+            """,
+            (user_id, email, display_name),
+        )
+PY
+}
+
 install_project_dependencies() {
   run python3 -m venv "${INSTALL_DIR}/.venv"
   run "${INSTALL_DIR}/.venv/bin/python" -m pip install --upgrade pip
@@ -382,6 +425,7 @@ run_migrations_and_checks() {
     set +a
   fi
   run_in_install_dir "${INSTALL_DIR}/.venv/bin/python" -m alembic -c apps/api/alembic.ini upgrade head
+  seed_default_user_from_env
   run "${INSTALL_DIR}/.venv/bin/alicebot" vnext doctor --fix-safe --ci
   if [ "${RUN_ALPHA_CHECK}" -eq 1 ]; then
     run "${INSTALL_DIR}/.venv/bin/alicebot" vnext alpha check --headless --skip-smokes

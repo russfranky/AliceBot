@@ -239,9 +239,15 @@ def test_installation_issue_regressions_are_guarded() -> None:
     assert '"${ALICE_RUNTIME_DIR}/vnext-scheduler"' in installer
     assert "run_in_install_dir" in installer
     assert "-c apps/api/alembic.ini" in installer
+    assert "seed_default_user_from_env" in installer
+    assert "INSERT INTO users (id, email, display_name)" in installer
+    assert "ON CONFLICT (id) DO UPDATE" in installer
     assert "write_lite_env_if_missing" in installer
     assert "write_web_env_if_missing" in installer
     assert "validate_env_files" in installer
+    migrations_section = installer.split("run_migrations_and_checks()", 1)[1].split("install_systemd_units()", 1)[0]
+    assert migrations_section.index("alembic") < migrations_section.index("seed_default_user_from_env")
+    assert migrations_section.index("seed_default_user_from_env") < migrations_section.index("vnext doctor")
 
     for script in (dev_up, api_dev, lite_up, migrate):
         assert "scripts/validate_env.sh" in script

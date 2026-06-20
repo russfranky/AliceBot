@@ -203,6 +203,142 @@ def test_bridge_status_reports_legacy_config_compatibility(
     ]
 
 
+def test_default_bridge_mode_does_not_enable_sync_capture(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_provider_module(monkeypatch)
+    config_path = tmp_path / "alice_memory_provider.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "base_url": "http://127.0.0.1:8000",
+                "user_id": "00000000-0000-0000-0000-000000000001",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    provider = module.AliceMemoryProvider()
+    provider.initialize(session_id="bridge-default", hermes_home=str(tmp_path), agent_context="primary")
+    status = provider.get_status(hermes_home=str(tmp_path))
+
+    assert status["ready"] is True
+    assert status["config"]["bridge_mode"] == "assist"
+    assert status["config"]["sync_turn_capture_enabled"] is False
+    assert status["lifecycle_hooks"]["sync_turn"] is False
+
+
+def test_bridge_mode_auto_implies_sync_capture_when_flag_is_omitted(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_provider_module(monkeypatch)
+    config_path = tmp_path / "alice_memory_provider.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "base_url": "http://127.0.0.1:8000",
+                "user_id": "00000000-0000-0000-0000-000000000001",
+                "bridge_mode": "auto",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    provider = module.AliceMemoryProvider()
+    provider.initialize(session_id="bridge-auto", hermes_home=str(tmp_path), agent_context="primary")
+    status = provider.get_status(hermes_home=str(tmp_path))
+
+    assert status["ready"] is True
+    assert status["config"]["bridge_mode"] == "auto"
+    assert status["config"]["sync_turn_capture_enabled"] is True
+    assert status["lifecycle_hooks"]["sync_turn"] is True
+
+
+def test_bridge_mode_auto_respects_explicit_sync_capture_false(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_provider_module(monkeypatch)
+    config_path = tmp_path / "alice_memory_provider.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "base_url": "http://127.0.0.1:8000",
+                "user_id": "00000000-0000-0000-0000-000000000001",
+                "bridge_mode": "auto",
+                "sync_turn_capture_enabled": False,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    provider = module.AliceMemoryProvider()
+    provider.initialize(session_id="bridge-auto-disabled", hermes_home=str(tmp_path), agent_context="primary")
+    status = provider.get_status(hermes_home=str(tmp_path))
+
+    assert status["ready"] is True
+    assert status["config"]["bridge_mode"] == "auto"
+    assert status["config"]["sync_turn_capture_enabled"] is False
+    assert status["lifecycle_hooks"]["sync_turn"] is False
+
+
+def test_invalid_bridge_mode_does_not_imply_sync_capture(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_provider_module(monkeypatch)
+    config_path = tmp_path / "alice_memory_provider.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "base_url": "http://127.0.0.1:8000",
+                "user_id": "00000000-0000-0000-0000-000000000001",
+                "bridge_mode": "automatic",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    provider = module.AliceMemoryProvider()
+    status = provider.get_status(hermes_home=str(tmp_path))
+
+    assert status["ready"] is True
+    assert status["config"]["bridge_mode"] == "assist"
+    assert status["config"]["sync_turn_capture_enabled"] is False
+    assert status["lifecycle_hooks"]["sync_turn"] is False
+
+
+def test_save_config_preserves_bridge_mode_sync_capture_omission(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_provider_module(monkeypatch)
+    provider = module.AliceMemoryProvider()
+
+    provider.save_config(
+        {
+            "base_url": "http://127.0.0.1:8000",
+            "user_id": "00000000-0000-0000-0000-000000000001",
+            "bridge_mode": "auto",
+        },
+        str(tmp_path),
+    )
+
+    saved = json.loads((tmp_path / "alice_memory_provider.json").read_text(encoding="utf-8"))
+    assert saved["bridge_mode"] == "auto"
+    assert saved["sync_turn_capture_enabled"] is True
+
+
 def test_bridge_status_reports_invalid_config_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     module = _load_provider_module(monkeypatch)
     config_path = tmp_path / "alice_memory_provider.json"

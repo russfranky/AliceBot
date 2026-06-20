@@ -75,6 +75,7 @@ Default paths:
 
 The installer renders [packaging/ubuntu/alicebot.env.example](../../packaging/ubuntu/alicebot.env.example) into `~/.config/alicebot/.env` if the file does not already exist. Existing config is preserved.
 For local Postgres installs, it detects the server major version, installs the matching `postgresql-<major>-pgvector` package, and creates the `vector` extension before migrations.
+After migrations, it seeds the configured local Alice user row when missing so CLI, scheduler, MCP, and headless doctor checks have a valid continuity owner even when `/vnext` has not been opened yet.
 
 Important config keys:
 
@@ -86,6 +87,7 @@ ALICE_API_HOST=127.0.0.1
 ALICE_API_PORT=8000
 ALICE_WEB_HOST=127.0.0.1
 ALICE_WEB_PORT=3000
+ALICEBOT_AUTH_USER_ID=00000000-0000-0000-0000-000000000001
 ALICE_SECRET_PROVIDER=encrypted_local
 MODEL_PROVIDER=deterministic_local
 CORS_ALLOWED_ORIGINS=http://127.0.0.1:3000,http://localhost:3000
@@ -119,6 +121,20 @@ scripts/validate_env.sh ~/.config/alicebot/.env .env.lite apps/web/.env.local
 # Create the alicebot database/roles to match ~/.config/alicebot/.env before this step.
 sudo -u postgres psql -d alicebot -c 'CREATE EXTENSION IF NOT EXISTS vector;'
 ./.venv/bin/python -m alembic -c apps/api/alembic.ini upgrade head
+set -a
+. ~/.config/alicebot/.env
+set +a
+psql "$DATABASE_ADMIN_URL" <<'SQL'
+INSERT INTO users (id, email, display_name)
+VALUES (
+  '00000000-0000-0000-0000-000000000001',
+  'local-alpha-00000000-0000-0000-0000-000000000001@alicebot.local',
+  'Local Alpha User'
+)
+ON CONFLICT (id) DO UPDATE
+SET email = EXCLUDED.email,
+    display_name = EXCLUDED.display_name;
+SQL
 ./.venv/bin/alicebot vnext doctor --fix-safe --ci
 ./.venv/bin/alicebot vnext alpha check --headless --skip-smokes
 ```

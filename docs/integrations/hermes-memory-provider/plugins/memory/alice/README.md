@@ -32,8 +32,13 @@ The provider reads and writes:
 - `max_recent_changes` (int, default `5`)
 - `max_open_loops` (int, default `5`)
 - `include_non_promotable_facts` (bool, default `false`)
-- `auto_capture` (bool, default `false`)
+- `sync_turn_capture_enabled` (bool, default `false`; when omitted, an explicit `bridge_mode` of `assist` or `auto` enables turn capture)
+- `bridge_mode` (string enum: `manual`, `assist`, `auto`; default `assist`)
 - `mirror_memory_writes` (bool, default `false`)
+
+Legacy `auto_capture` and `capture_mode` keys are still accepted. Explicit
+`sync_turn_capture_enabled: false` disables turn capture even when `bridge_mode`
+is `assist` or `auto`.
 
 ## Transport and Identity Safety
 

@@ -23,6 +23,25 @@ project_scope:
 
 Use `trusted_local_agent` only for a local operator-owned Hermes runtime on the same host. For narrower project work, use `project_scoped_agent`.
 
+## Memory Provider Capture Config
+
+For the Alice Hermes memory provider, `bridge_mode: auto` or `bridge_mode: assist`
+now enables post-turn `sync_turn` capture when `sync_turn_capture_enabled` is
+omitted. Keep the flag explicit in production dogfood configs so the posture is
+obvious:
+
+```json
+{
+  "base_url": "http://127.0.0.1:8000",
+  "user_id": "00000000-0000-0000-0000-000000000001",
+  "bridge_mode": "auto",
+  "sync_turn_capture_enabled": true
+}
+```
+
+Set `sync_turn_capture_enabled` to `false` when Hermes should use Alice recall
+and prefetch without committing post-turn capture candidates.
+
 ## MCP Config Example
 
 ```yaml

@@ -184,6 +184,12 @@ def _parse_bridge_mode(value: Any, *, default: str) -> str:
     return default
 
 
+def _bridge_mode_implies_sync_capture(_bridge_mode: str, raw_bridge_mode: Any) -> bool:
+    if not isinstance(raw_bridge_mode, str):
+        return False
+    return raw_bridge_mode.strip().lower() in {"assist", "auto"}
+
+
 def _normalize_base_url(value: str) -> str:
     normalized = value.strip().rstrip("/")
     if normalized.endswith("/v0"):
@@ -251,7 +257,15 @@ def _resolve_config_value(values: Dict[str, Any], key: str) -> tuple[Any, str]:
 
 
 def _default_config() -> Dict[str, Any]:
-    return {
+    bridge_mode_value = _first_non_empty(
+        os.environ.get("ALICE_MEMORY_BRIDGE_MODE"),
+        os.environ.get("ALICE_MEMORY_CAPTURE_MODE"),
+    )
+    sync_turn_capture_value = _first_non_empty(
+        os.environ.get("ALICE_MEMORY_SYNC_TURN_CAPTURE_ENABLED"),
+        os.environ.get("ALICE_MEMORY_AUTO_CAPTURE"),
+    )
+    config = {
         "base_url": os.environ.get("ALICE_API_BASE_URL", _DEFAULT_BASE_URL),
         "user_id": os.environ.get("ALICE_MEMORY_USER_ID", os.environ.get("ALICEBOT_AUTH_USER_ID", "")),
         "timeout_seconds": _parse_float(
@@ -294,26 +308,12 @@ def _default_config() -> Dict[str, Any]:
             ),
             default=False,
         ),
-        "sync_turn_capture_enabled": _parse_bool(
-            _first_non_empty(
-                os.environ.get("ALICE_MEMORY_SYNC_TURN_CAPTURE_ENABLED"),
-                os.environ.get("ALICE_MEMORY_AUTO_CAPTURE"),
-            ),
-            default=False,
-        ),
         "memory_write_capture_enabled": _parse_bool(
             _first_non_empty(
                 os.environ.get("ALICE_MEMORY_MEMORY_WRITE_CAPTURE_ENABLED"),
                 os.environ.get("ALICE_MEMORY_MIRROR_WRITES"),
             ),
             default=False,
-        ),
-        "bridge_mode": _parse_bridge_mode(
-            _first_non_empty(
-                os.environ.get("ALICE_MEMORY_BRIDGE_MODE"),
-                os.environ.get("ALICE_MEMORY_CAPTURE_MODE"),
-            ),
-            default=_DEFAULT_BRIDGE_MODE,
         ),
         "session_end_flush_timeout_seconds": _parse_float(
             os.environ.get("ALICE_MEMORY_SESSION_END_FLUSH_TIMEOUT_SECONDS"),
@@ -322,6 +322,14 @@ def _default_config() -> Dict[str, Any]:
             max_value=30.0,
         ),
     }
+    if sync_turn_capture_value is not None:
+        config["sync_turn_capture_enabled"] = _parse_bool(
+            sync_turn_capture_value,
+            default=False,
+        )
+    if bridge_mode_value is not None:
+        config["bridge_mode"] = bridge_mode_value
+    return config
 
 
 def _load_config_with_status(hermes_home: str) -> Dict[str, Any]:
@@ -490,12 +498,21 @@ class AliceMemoryProvider(MemoryProvider):
         ]
 
     def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
-        cfg = _load_config(hermes_home)
+        cfg = _default_config()
+        path = _config_path(hermes_home)
+        if path.exists():
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    for key, value in raw.items():
+                        if value is not None and value != "":
+                            cfg[key] = value
+            except Exception:
+                logger.debug("Failed to parse %s before saving config", path, exc_info=True)
         cfg.update(values)
         cfg, errors, _ = _load_config_dict_from_values(cfg)
         if errors:
             raise ValueError("; ".join(errors))
-        path = _config_path(hermes_home)
         path.write_text(json.dumps(cfg, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     def system_prompt_block(self) -> str:
@@ -1021,12 +1038,20 @@ def _load_config_dict_from_values(values: Dict[str, Any]) -> tuple[Dict[str, Any
         default=False,
     )
 
+    bridge_mode_value, bridge_mode_source = _resolve_config_value(values, "bridge_mode")
+    if bridge_mode_source != "bridge_mode":
+        legacy_config_keys.append(bridge_mode_source)
+    config["bridge_mode"] = _parse_bridge_mode(
+        bridge_mode_value,
+        default=_DEFAULT_BRIDGE_MODE,
+    )
+
     sync_turn_capture_value, sync_turn_capture_source = _resolve_config_value(values, "sync_turn_capture_enabled")
     if sync_turn_capture_source != "sync_turn_capture_enabled":
         legacy_config_keys.append(sync_turn_capture_source)
     config["sync_turn_capture_enabled"] = _parse_bool(
         sync_turn_capture_value,
-        default=False,
+        default=_bridge_mode_implies_sync_capture(config["bridge_mode"], bridge_mode_value),
     )
 
     memory_write_capture_value, memory_write_capture_source = _resolve_config_value(
@@ -1038,14 +1063,6 @@ def _load_config_dict_from_values(values: Dict[str, Any]) -> tuple[Dict[str, Any
     config["memory_write_capture_enabled"] = _parse_bool(
         memory_write_capture_value,
         default=False,
-    )
-
-    bridge_mode_value, bridge_mode_source = _resolve_config_value(values, "bridge_mode")
-    if bridge_mode_source != "bridge_mode":
-        legacy_config_keys.append(bridge_mode_source)
-    config["bridge_mode"] = _parse_bridge_mode(
-        bridge_mode_value,
-        default=_DEFAULT_BRIDGE_MODE,
     )
 
     config["session_end_flush_timeout_seconds"] = _parse_float(
