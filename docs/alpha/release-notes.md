@@ -1,8 +1,10 @@
-# Alice vNext Public Alpha Release Notes
+# Alice vNext Public Preview Install Notes
 
 Audience: technical design partners and agent builders.
 
-This is a local technical alpha, not hosted SaaS, not a production SLA, and not automatic memory autopilot.
+This file stays under the legacy `docs/alpha` path, but it now describes the current public-preview install posture.
+
+This is a local technical preview, not hosted SaaS, not a production SLA, and not automatic memory autopilot.
 
 ## Included
 
@@ -21,7 +23,7 @@ This is a local technical alpha, not hosted SaaS, not a production SLA, and not 
 - Hermes skill guidance
 - OpenClaw skill guidance
 - custom agent guide
-- alpha readiness command
+- preview-readiness command
 
 ## Who It Is For
 
@@ -55,7 +57,7 @@ Start with [quickstart.md](quickstart.md), then run:
 alicebot vnext alpha check
 ```
 
-Headless Ubuntu dogfood readiness is prepared for `v0.6.0-alpha-rc.2` through [headless-ubuntu-install.md](headless-ubuntu-install.md), [hermes-dogfood-ubuntu.md](hermes-dogfood-ubuntu.md), `scripts/install-ubuntu.sh`, systemd templates under `packaging/systemd/`, and:
+Headless Ubuntu dogfood readiness uses the current preview install guide at [headless-ubuntu-install.md](headless-ubuntu-install.md), [hermes-dogfood-ubuntu.md](hermes-dogfood-ubuntu.md), `scripts/install-ubuntu.sh`, systemd templates under `packaging/systemd/`, and:
 
 ```bash
 alicebot vnext alpha check --headless

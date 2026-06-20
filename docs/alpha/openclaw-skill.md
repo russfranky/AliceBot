@@ -76,7 +76,7 @@ Explicit project memory commit:
   "project_scope": ["Alice"],
   "intent": "explicit_remember",
   "title": "Release gate decision",
-  "canonical_text": "Alice public alpha release gates require doctor, smokes, evals, and git diff checks before merge.",
+  "canonical_text": "Alice public preview release gates require doctor, smokes, evals, and git diff checks before merge.",
   "domain": "project",
   "sensitivity": "private",
   "confidence": 0.94,

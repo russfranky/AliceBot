@@ -55,18 +55,7 @@ Canonical handoff state lives at [.ai/handoff/CURRENT_STATE.md](.ai/handoff/CURR
 - `M-001` is implemented in this working tree and should be validated in GitHub Actions after PR push/merge.
 - Alice vNext Sprint 1 through Sprint 12, the live capture connectors sprint, and dogfood hardening are implemented and in the public-preview release gate.
 
-## Immediate Control Tower Decisions Needed
-- Use the separate `PostgresVNextStore` facade as the Sprint 2 persistence boundary unless a concrete integration blocker appears.
-- Decide whether old `memories` rows should be backfilled into full v2 canonical text/domain/sensitivity values before Sprint 2.
-- Decide whether the vNext capture API should expose local folder import directly or keep folder import CLI-only for local deployments.
-- Decide whether vNext context packs should be automatically persisted as generated artifacts or remain ephemeral until a user enqueues a queue task.
-- Decide which queue write policies may advance beyond deterministic local artifacts into external tool execution.
-- Decide how production daily/weekly scheduling should be configured and whether model-backed synthesis should replace or augment the deterministic Sprint 5 templates.
-- Decide how accepted vNext graph edges should influence retrieval ranking beyond trace/neighborhood visibility.
-- Decide how vNext belief status history should be unified with the existing temporal-state APIs and whether contradiction classification should use model-backed evidence review.
-- Decide how project-update rejection suppression should be persisted beyond event logs and how UI project pages should expose candidate review state.
-- Decide which remaining vNext UI write surfaces should become live-backed after the current live/fixture hybrid workspace.
-- Decide when the deterministic eval harness should graduate to model-backed, live-store-backed, or human-rated scoring.
-- Decide whether the next connector security layer should use OS keychain, hosted secret infrastructure, or both behind the existing secret-provider interface.
-- After dogfood hardening, decide the next build slice: broader live-backed `/vnext` workflows, managed connector OAuth, production scheduling, or model-backed evaluation.
+## Post-Preview Decisions
+- After the preview gate closes, choose the next product slice: broader live-backed `/vnext` workflows, managed connector OAuth, production scheduling, or model-backed evaluation.
+- Decide whether the older implementation-planning notes for early vNext sprints should be compacted or archived now that the release gate is the active execution posture.
 - Avoid reopening completed Phase 14 or `HF-001` scope unless a concrete defect or release-readiness issue is identified.

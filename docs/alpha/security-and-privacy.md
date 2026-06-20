@@ -1,6 +1,6 @@
 # Public Alpha Security And Privacy
 
-Alice public alpha is local-first.
+Alice public preview is local-first.
 
 Security posture:
 

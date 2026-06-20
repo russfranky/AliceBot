@@ -76,6 +76,24 @@ alicebot vnext smoke local-cors
 alicebot vnext doctor --fix-safe --ci
 ```
 
+## Next.js Dev Server Uses CPU While Idle
+
+If Activity Monitor shows `next-server` using noticeable CPU while Alice is idle, check whether it was started through `make dev` or `pnpm --dir apps/web dev`. That mode runs the Next.js development watcher and compiler, which can keep native `next-swc` worker activity alive even when no agent work is happening.
+
+If the agent only needs Alice's API/MCP surface and not the web UI, stop the web process and run only:
+
+```bash
+make api
+```
+
+If you want `/vnext` open for a long-running local agent or Hermes session, stop the dev server and run:
+
+```bash
+make runtime
+```
+
+This builds the web app and serves `/vnext` with `next start`, which is the low-CPU runtime path. Keep `make dev` for active web UI development where hot reload matters.
+
 ## `/vnext` Fails With `Cannot find module './316.js'`
 
 If the web server returns a 500 for `/vnext?mode=live` with an error like `Cannot find module './316.js'` from `.next/server/webpack-runtime.js`, the local Next.js dev cache is stale or mixed across builds.

@@ -5,7 +5,6 @@
 - Phase 10: shipped
 - Phase 11: shipped
 - Bridge `B1`-`B4`: shipped
-- Bridge Phase (`B1`-`B4`): shipped
 - Phase 12: shipped
 - Phase 13: shipped
 - Phase 14: shipped

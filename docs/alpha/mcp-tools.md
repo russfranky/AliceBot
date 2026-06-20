@@ -43,7 +43,7 @@ Request scoped context with `alice_vnext_context_pack`:
   "task_id": "public-alpha-docs",
   "project_scope": ["Alice"],
   "permission_profile": "project_scoped_agent",
-  "query": "Alice public alpha packaging",
+  "query": "Alice public preview packaging",
   "scope": {
     "domains": ["project"],
     "projects": ["Alice"]

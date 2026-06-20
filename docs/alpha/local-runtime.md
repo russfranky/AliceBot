@@ -8,13 +8,17 @@ The alpha runtime is local and technical. It runs Postgres, Redis, API, web, and
 make setup
 make migrate
 make doctor
-make dev
+make runtime
 make alpha-check
 alicebot vnext alpha check --headless
 alicebot vnext smoke headless-ubuntu
 ```
 
-Equivalent explicit commands:
+`make runtime` is the recommended low-CPU local mode. It builds the web app and serves `/vnext` with `next start`. Use `make dev` only for web UI development.
+
+For API-only agent or Hermes sessions, use `make api` and skip the web process entirely.
+
+Equivalent explicit development commands:
 
 ```bash
 ./scripts/dev_up.sh

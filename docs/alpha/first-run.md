@@ -10,7 +10,7 @@ Use this checklist after a fresh clone.
 | 4. Start API | `APP_RELOAD=false ./scripts/api_dev.sh` | API serves locally |
 | 5. Start scheduler | `alicebot vnext scheduler daemon start --foreground` | daemon reports status and due scans |
 | 6. Check live browser env | `cat apps/web/.env.local` | `NEXT_PUBLIC_ALICEBOT_API_BASE_URL=http://127.0.0.1:8000` and a local user id are present |
-| 7. Start `/vnext` | `pnpm --dir apps/web dev` | web app serves locally |
+| 7. Start `/vnext` | `pnpm --dir apps/web build` then `pnpm --dir apps/web start --hostname 127.0.0.1 --port 3000` | web app serves locally |
 | 8. Open `/vnext` | `http://localhost:3000/vnext` | live mode loads or shows a clear empty state |
 | 9. Configure Brain Charter | [../vnext/ALICE.example.md](../vnext/ALICE.example.md) | Brain Charter is visible in Settings |
 | 10. Configure one capture path | local folder, browser clipper, or Telegram | connector health becomes configured |
@@ -25,3 +25,5 @@ Use this checklist after a fresh clone.
 When doctor fails, go to [doctor.md](doctor.md) first. It lists the exact command that usually fixes the blocking issue.
 
 For local live mode, `.env` must include `CORS_ALLOWED_ORIGINS=http://127.0.0.1:3000,http://localhost:3000`, and `apps/web/.env.local` must include `NEXT_PUBLIC_ALICEBOT_API_BASE_URL=http://127.0.0.1:8000`.
+
+Use `pnpm --dir apps/web dev` only while editing the web UI. For long-running agent or Hermes sessions, prefer `make runtime` as the combined API plus web command, or use the `next start` command above when API is already running.

@@ -41,11 +41,11 @@ Alice vNext is the next release candidate for the true second-brain product. It 
 
 The vNext preview currently includes deterministic source capture, retrieval/context packs, queue/artifact workflows, daily and weekly brain artifacts, connection/contradiction/project/open-loop workflows, model-backed source-grounded synthesis, human artifact quality ratings, deterministic-vs-model comparison controls, synthetic evals, live local capture connectors for Telegram, local folders/Obsidian notes, browser clips, and Hermes/OpenClaw-style agent outputs, dedicated connector settings/state storage, encrypted local secret references, deterministic document connector payload ingestion, trusted agent memory commit with inline confirmation/review/reject policy, agent identity/policy auditing, a governed local scheduler with due scans, a local scheduler daemon, policy telemetry, dogfooding readiness telemetry, doctor/readiness checks, capture-to-brief traceability, and a live/fixture-backed `/vnext` operator workspace with source review, memory review, trusted commit audit, artifact review, project, open-loop, scheduler, connector, and doctor controls.
 
-## Public Alpha Quickstart
+## Public Preview Quickstart
 
 Alice is a local-first memory and continuity layer for humans and agents. It lets agents like Hermes, OpenClaw, or your own custom agents request scoped context, submit outputs, explicitly commit user-directed memories through Alice policy, propose reviewable memories, create open loops, and generate reviewable artifacts without giving them direct database access to trusted memory. The `/vnext` workspace is the operator console for review, audit, configuration, undo/correction/forget, and troubleshooting.
 
-Alice is not a notes app, an Obsidian clone, a chatbot with memory, hosted SaaS, or automatic memory autopilot. The public alpha is a technical local alpha for design partners and agent builders.
+Alice is not a notes app, an Obsidian clone, a chatbot with memory, hosted SaaS, or automatic memory autopilot. The current release candidate is a technical local public preview for design partners and agent builders.
 
 Fast path:
 
@@ -66,7 +66,7 @@ Then open:
 http://localhost:3000/vnext
 ```
 
-Load safe synthetic demo data and run the public alpha readiness gate:
+Load safe synthetic demo data and run the preview-readiness gate:
 
 ```bash
 alicebot vnext demo load --reset
@@ -78,7 +78,7 @@ alicebot vnext alpha check
 
 Agent integration starts with [docs/alpha/agent-integration.md](docs/alpha/agent-integration.md), [docs/alpha/mcp-tools.md](docs/alpha/mcp-tools.md), [docs/alpha/hermes-skill.md](docs/alpha/hermes-skill.md), and [docs/alpha/openclaw-skill.md](docs/alpha/openclaw-skill.md). Security, privacy, and limitations are documented in [docs/alpha/security-and-privacy.md](docs/alpha/security-and-privacy.md) and [docs/alpha/known-limitations.md](docs/alpha/known-limitations.md).
 
-Headless Ubuntu/Hermes dogfood starts with [docs/alpha/headless-ubuntu-install.md](docs/alpha/headless-ubuntu-install.md) and [docs/alpha/hermes-dogfood-ubuntu.md](docs/alpha/hermes-dogfood-ubuntu.md). The secure default is localhost binding plus SSH tunneling:
+Headless Ubuntu/Hermes preview dogfood starts with [docs/alpha/headless-ubuntu-install.md](docs/alpha/headless-ubuntu-install.md) and [docs/alpha/hermes-dogfood-ubuntu.md](docs/alpha/hermes-dogfood-ubuntu.md). The secure default is localhost binding plus SSH tunneling:
 
 ```bash
 ssh -L 3000:127.0.0.1:3000 -L 8000:127.0.0.1:8000 user@server
@@ -86,8 +86,8 @@ ssh -L 3000:127.0.0.1:3000 -L 8000:127.0.0.1:8000 user@server
 
 Start with:
 
-- [Public alpha docs](docs/alpha/README.md)
-- [Public alpha quickstart](docs/alpha/quickstart.md)
+- [Public preview docs](docs/alpha/README.md)
+- [Public preview quickstart](docs/alpha/quickstart.md)
 - [First-run checklist](docs/alpha/first-run.md)
 - [Headless Ubuntu install](docs/alpha/headless-ubuntu-install.md)
 - [Hermes dogfood on Ubuntu](docs/alpha/hermes-dogfood-ubuntu.md)
@@ -108,7 +108,7 @@ Start with:
 - [Live capture connectors CTO summary](docs/vnext-live-capture-connectors-cto-summary.md)
 - [Dogfood hardening CTO summary](docs/vnext-dogfood-hardening-cto-summary.md)
 - [Live-backed operator console CTO summary](docs/vnext-live-backed-operator-console-cto-summary.md)
-- [Public alpha packaging CTO summary](docs/vnext-public-alpha-packaging-cto-summary.md)
+- [Legacy public-alpha packaging CTO summary](docs/vnext-public-alpha-packaging-cto-summary.md)
 - [Headless Ubuntu packaging CTO summary](docs/vnext-headless-ubuntu-cto-summary.md)
 - [Agentic memory commit CTO summary](docs/vnext-agentic-memory-commit-cto-summary.md)
 - [Dogfood daily checklist](docs/runbooks/vnext-dogfood-daily-checklist.md)

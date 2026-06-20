@@ -1,6 +1,6 @@
 # Dogfooding Guide
 
-Daily public alpha dogfood loop:
+Daily public preview dogfood loop:
 
 ```bash
 alicebot vnext doctor --fix-safe --ci
@@ -21,7 +21,7 @@ Then use `/vnext`:
 Include these with bug reports:
 
 - output from `alicebot vnext doctor --fix-safe --ci`
-- output from `alicebot vnext alpha check --skip-smokes`
+- output from the preview-readiness command `alicebot vnext alpha check --skip-smokes`
 - failing smoke command and error
 - `/vnext` page and action that failed
 - redacted connector config, never secret values

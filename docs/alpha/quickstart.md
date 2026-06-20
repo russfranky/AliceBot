@@ -31,19 +31,24 @@ Expected success:
 
 ## Start Alice
 
-Run API and web together:
+Run API and web together for day-to-day local use:
 
 ```bash
-make dev
+make runtime
 ```
+
+`make runtime` builds the web app and serves it with `next start`, which avoids the idle CPU cost of the Next.js development watcher.
 
 Or use separate terminals:
 
 ```bash
 APP_RELOAD=false ./scripts/api_dev.sh
-pnpm --dir apps/web dev
+pnpm --dir apps/web build
+pnpm --dir apps/web start --hostname 127.0.0.1 --port 3000
 alicebot vnext scheduler daemon start --foreground
 ```
+
+Use `make dev` or `pnpm --dir apps/web dev` only when editing the web UI and you need hot reload.
 
 Open:
 

@@ -1,6 +1,6 @@
 # Demo Dataset And Demo Mode
 
-The public alpha ships a small synthetic vNext dataset in:
+The public preview ships a small synthetic vNext dataset in:
 
 ```text
 fixtures/vnext/demo_dataset.json

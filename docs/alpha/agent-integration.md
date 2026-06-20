@@ -38,7 +38,7 @@ Permission profiles:
 ## CLI Example
 
 ```bash
-alicebot context-pack "Alice public alpha sprint context" --domain project --project Alice
+alicebot context-pack "Alice public preview sprint context" --domain project --project Alice
 
 alicebot vnext agents ingest-output \
   --agent-id openclaw \
@@ -51,7 +51,7 @@ alicebot vnext agents ingest-output \
   --domain project \
   --sensitivity private \
   --propose-memory \
-  "Decision: Alice public alpha agents use scoped context packs and review-only memory proposals."
+  "Decision: Alice public preview agents use scoped context packs and review-only memory proposals."
 
 alicebot vnext memories commit \
   --agent-id openclaw \
@@ -60,7 +60,7 @@ alicebot vnext memories commit \
   --project-scope Alice \
   --permission-profile project_scoped_agent \
   --title "Release gate decision" \
-  --text "Alice public alpha release gates require doctor, smokes, evals, and git diff checks before merge." \
+  --text "Alice public preview release gates require doctor, smokes, evals, and git diff checks before merge." \
   --domain project \
   --sensitivity private \
   --confidence 0.94

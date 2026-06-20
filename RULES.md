@@ -8,8 +8,11 @@
 - Keep [CURRENT_STATE.md](CURRENT_STATE.md) factual/current and [ROADMAP.md](ROADMAP.md) future-facing.
 - Keep [.ai/handoff/CURRENT_STATE.md](.ai/handoff/CURRENT_STATE.md) as the canonical handoff copy when duplicate current-state files exist.
 
-## Phase 14 Rule
-- Phase 14 is a platform-and-adoption phase. Prioritize provider adapters, model packs, reference integrations, and design partner onboarding. Do not allow scope drift into new substrate research, new channels, or enterprise governance work unless required by a declared Phase 14 deliverable.
+## Phase 14 Baseline Rule
+- Phase 14 was a platform-and-adoption phase. Preserve that shipped boundary as baseline truth: provider adapters, model packs, reference integrations, and design partner onboarding are complete baseline surfaces, not open scope.
+
+## Active vNext Preview Rule
+- While `v0.5.1-vnext-preview` is the active release gate, prioritize release accuracy, install clarity, preview-safe docs, and verification evidence. Do not add net-new feature scope unless it is required to fix preview readiness, release evidence, or operator safety.
 
 ## Provider Rules
 - Continuity semantics must not fork by provider.

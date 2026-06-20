@@ -1,6 +1,6 @@
 # Alice vNext Local Runtime
 
-Alice vNext now includes a local scheduler runtime for running governed Alice Brain workflows in the background. This is a local alpha runtime, not a hosted scheduler service.
+Alice vNext now includes a local scheduler runtime for running governed Alice Brain workflows in the background. This is a local preview runtime, not a hosted scheduler service.
 
 ## What It Runs
 
@@ -132,4 +132,4 @@ The live-capture connector smoke verifies allowlisted Telegram import, rejected 
 
 The connector-hardening smoke verifies dedicated connector settings/state rows, Telegram cursor persistence, rejected-chat logging, local-folder generated-output ignores, restart dedupe, and health counters. The local-cors smoke verifies the explicit localhost CORS allowlist and public browser API env needed by `/vnext?mode=live`. The secret-redaction smoke verifies that Telegram and browser clipper secrets never appear in persisted source/event output. The dogfood-doctor smoke verifies migration readiness, default connector rows, scheduler posture, configured secret references, and blocking failure counts. The operator-console smoke verifies the live daily operation path across source review, memory review, artifact review/rating, source-backed open loops, scheduler run-now, connector health, doctor readiness, event logging, and capture-to-brief traceability.
 
-The agent-integration-pack smoke verifies the public alpha agent path: OpenClaw identity, scoped project context, review-only output ingestion, review-only memory proposal creation, no auto-promotion, event logging, restricted-domain policy blocking, and Agent Activity visibility. The alpha check wraps readiness posture and the core smokes into one command for technical design partners.
+The agent-integration-pack smoke verifies the public-preview agent path: OpenClaw identity, scoped project context, review-only output ingestion, review-only memory proposal creation, no auto-promotion, event logging, restricted-domain policy blocking, and Agent Activity visibility. The `alicebot vnext alpha check` command remains the preview-readiness wrapper for technical design partners.

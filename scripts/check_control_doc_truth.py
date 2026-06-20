@@ -45,7 +45,7 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
     ControlDocTruthRule(
         relative_path="RULES.md",
         required_markers=(
-            "Phase 14 is a platform-and-adoption phase.",
+            "While `v0.5.1-vnext-preview` is the active release gate",
             "Continuity semantics must not fork by provider.",
         ),
     ),

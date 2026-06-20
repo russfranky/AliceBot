@@ -34,7 +34,7 @@ Do not propose memory for:
   "project_scope": ["Alice"],
   "permission_profile": "project_scoped_agent",
   "title": "Decision: Review-only agent memory",
-  "canonical_text": "Alice public alpha agents must create review-only memory proposals, not trusted memory.",
+  "canonical_text": "Alice public preview agents must create review-only memory proposals, not trusted memory.",
   "domain": "project",
   "sensitivity": "private",
   "confidence": 0.86,
@@ -58,7 +58,7 @@ Do not propose memory for:
 ## Project Update Proposal
 
 ```json
-{"proposal_type":"project_update","canonical_text":"The public alpha packaging sprint is ready for design-partner onboarding after alpha-check passes.","domain":"project","sensitivity":"private","confidence":0.8}
+{"proposal_type":"project_update","canonical_text":"The public preview packaging sprint is ready for design-partner onboarding after alpha-check passes.","domain":"project","sensitivity":"private","confidence":0.8}
 ```
 
 ## Belief Update Proposal
@@ -70,13 +70,13 @@ Do not propose memory for:
 ## Open-loop Proposal
 
 ```json
-{"proposal_type":"open_loop","canonical_text":"Confirm which design partner will run the first public alpha install.","domain":"project","sensitivity":"private","confidence":0.76}
+{"proposal_type":"open_loop","canonical_text":"Confirm which design partner will run the first public preview install.","domain":"project","sensitivity":"private","confidence":0.76}
 ```
 
 ## Contradiction Proposal
 
 ```json
-{"proposal_type":"contradiction","canonical_text":"Resolve whether public alpha should prioritize Gmail/Calendar connectors or agent skill hardening next.","domain":"project","sensitivity":"private","confidence":0.7}
+{"proposal_type":"contradiction","canonical_text":"Resolve whether public preview should prioritize Gmail/Calendar connectors or agent skill hardening next.","domain":"project","sensitivity":"private","confidence":0.7}
 ```
 
 Review behavior:

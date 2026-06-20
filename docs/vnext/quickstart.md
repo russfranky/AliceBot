@@ -18,7 +18,7 @@ cd AliceBot
 make setup
 ```
 
-Then start the project-native public alpha setup:
+Then start the project-native public preview setup:
 
 ```bash
 make migrate
@@ -47,7 +47,13 @@ alicebot vnext migrations status
 alicebot vnext doctor --fix-safe
 ```
 
-Run the API and web app in separate terminals:
+Run the low-CPU day-to-day runtime:
+
+```bash
+make runtime
+```
+
+Use separate terminals only when you are actively editing the web UI and need hot reload:
 
 ```bash
 APP_RELOAD=false ./scripts/api_dev.sh
@@ -156,7 +162,7 @@ The operator-console smoke verifies the live `/vnext` loop end to end: source re
 
 The agent-integration-pack smoke verifies OpenClaw identity, project-scoped context, review-only output ingestion and memory proposal creation, no auto-promotion, event logging, restricted-domain policy blocking, and Agent Activity visibility.
 
-Load or reset the synthetic public alpha demo dataset:
+Load or reset the synthetic public preview demo dataset:
 
 ```bash
 alicebot vnext demo load --reset

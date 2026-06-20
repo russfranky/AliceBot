@@ -1,6 +1,8 @@
-# Alice vNext Public Alpha
+# Alice vNext Public Preview
 
-Alice vNext public alpha is a technical, local-first package for design partners who want agent memory and continuity without hosted storage or direct database writes by agents.
+This folder keeps the legacy `docs/alpha` path name, but the current release posture is Alice vNext public preview.
+
+Alice vNext public preview is a technical, local-first package for design partners who want agent memory and continuity without hosted storage or direct database writes by agents.
 
 Alice is agent-first, not dashboard-first:
 
