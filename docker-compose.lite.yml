@@ -9,7 +9,7 @@ services:
       ALICEBOT_APP_USER: ${ALICEBOT_COMPOSE_APP_USER:-alicebot_app}
       ALICEBOT_APP_PASSWORD: ${ALICEBOT_COMPOSE_APP_PASSWORD:-alicebot_app}
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${ALICEBOT_POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro

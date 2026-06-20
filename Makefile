@@ -2,8 +2,10 @@ PYTHON ?= ./.venv/bin/python
 ALICEBOT ?= ./.venv/bin/alicebot
 PNPM ?= pnpm
 WEB_DIR ?= apps/web
+ALICE_WEB_HOST ?= 127.0.0.1
+ALICE_WEB_PORT ?= 3000
 
-.PHONY: setup migrate dev doctor vnext scheduler alpha-check test-web test-python
+.PHONY: setup migrate api dev runtime web-build doctor vnext scheduler alpha-check test-web test-python
 
 setup:
 	@test -f .env || cp .env.example .env
@@ -18,6 +20,9 @@ setup:
 migrate:
 	./scripts/dev_up.sh
 
+api:
+	APP_RELOAD=false ./scripts/api_dev.sh
+
 doctor:
 	$(ALICEBOT) vnext doctor --fix-safe --ci
 
@@ -30,9 +35,23 @@ dev:
 	trap 'kill $$api_pid $$web_pid 2>/dev/null || true' INT TERM EXIT; \
 	wait $$api_pid $$web_pid
 
+runtime:
+	./scripts/dev_up.sh
+	$(PNPM) --dir $(WEB_DIR) build
+	APP_RELOAD=false ./scripts/api_dev.sh & \
+	api_pid=$$!; \
+	$(PNPM) --dir $(WEB_DIR) start --hostname $(ALICE_WEB_HOST) --port $(ALICE_WEB_PORT) & \
+	web_pid=$$!; \
+	trap 'kill $$api_pid $$web_pid 2>/dev/null || true' INT TERM EXIT; \
+	wait $$api_pid $$web_pid
+
+web-build:
+	$(PNPM) --dir $(WEB_DIR) build
+
 vnext:
-	@echo "Start the local runtime with: make dev"
-	@echo "Then open: http://localhost:3000/vnext"
+	@echo "Start the low-CPU local runtime with: make runtime"
+	@echo "Use make dev only when editing the web UI."
+	@echo "Then open: http://localhost:$(ALICE_WEB_PORT)/vnext"
 
 scheduler:
 	$(ALICEBOT) vnext scheduler daemon start --foreground
