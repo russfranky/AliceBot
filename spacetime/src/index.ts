@@ -1,4 +1,5 @@
 import { schema, table, t, SenderError } from 'spacetimedb/server';
+import { ScheduleAt } from 'spacetimedb';
 
 // Alice continuity core as a single SpacetimeDB TypeScript module (Q1 deep, Q2 TypeScript),
 // core slice (Q5). Embeddings live in the external vector service (Q3); records carry
@@ -212,6 +213,49 @@ const appliedRequests = table(
   },
 );
 
+// --- Execution pillar (worker -> module), tick-slice. The approval-gated task-run state machine.
+// The external single-tick worker collapses into reducers + an opt-in scheduled reducer; the real
+// tool execution (HTTP) will later be a procedure. Execution is STUBBED here via stubMode. ---
+const tasks = table(
+  { name: 'tasks' },
+  {
+    id: t.u64().primaryKey().autoInc(),
+    workspaceId: t.u64().index('btree'),
+    title: t.string(),
+    status: t.string(), // 'open' | 'approved' | 'executed'
+    createdAt: t.timestamp(),
+  },
+);
+
+const taskRuns = table(
+  { name: 'task_runs' },
+  {
+    id: t.u64().primaryKey().autoInc(),
+    workspaceId: t.u64().index('btree'),
+    taskId: t.u64(),
+    status: t.string().index('btree'), // 'queued' | 'running' | 'retrying' | 'succeeded' | 'failed'
+    stubMode: t.string(),              // slice stand-in for real execution: succeed|fail_transient|fail_policy
+    stopReason: t.string(),            // '' | 'fatal_error' | 'policy_blocked'
+    retryPosture: t.string(),          // 'normal'
+    retryCount: t.u32(),
+    retryCap: t.u32(),
+    failureClass: t.string(),          // '' | 'transient' | 'policy'
+    createdAt: t.timestamp(),
+    updatedAt: t.timestamp(),
+  },
+);
+
+// tick_schedule: opt-in scheduler. arm_ticker inserts an interval row -> the scheduler fires
+// scheduledTick(row), which drains one task_run for row.workspaceId (system tick, no per-caller auth).
+const tickSchedule = table(
+  { name: 'tick_schedule', scheduled: (): any => scheduledTick },
+  {
+    scheduledId: t.u64().primaryKey().autoInc(),
+    scheduledAt: t.scheduleAt(),
+    workspaceId: t.u64().index('btree'),
+  },
+);
+
 const spacetimedb = schema({
   appliedRequests,
   workspaces,
@@ -228,6 +272,9 @@ const spacetimedb = schema({
   contradictionCases,
   providerKeys,
   embeddings,
+  tasks,
+  taskRuns,
+  tickSchedule,
 });
 export default spacetimedb;
 
@@ -820,5 +867,120 @@ export const recallSemantic = spacetimedb.procedure(
       return acc;
     });
     return JSON.stringify(out);
+  },
+);
+
+// ---------------------------------------------------------------------------------------------
+// Execution pillar — tick state machine (reducers), per-caller views, and an opt-in scheduled tick.
+// This is the worker's claim+tick loop ported into the module; real tool execution (a procedure)
+// is stubbed via stubMode so this slice needs no secrets/HTTP.
+// ---------------------------------------------------------------------------------------------
+
+// tickOneTaskRun: claim the next runnable run in a workspace and advance it one step. Execution is
+// STUBBED via stubMode (the real tool call becomes a procedure later). Deterministic -> reducer-safe.
+function tickOneTaskRun(ctx: any, workspaceId: bigint): boolean {
+  let next: any = null;
+  for (const r of ctx.db.taskRuns.status.filter('queued')) {
+    if (r.workspaceId === workspaceId) { next = r; break; }
+  }
+  if (!next) {
+    for (const r of ctx.db.taskRuns.status.filter('retrying')) {
+      if (r.workspaceId === workspaceId) { next = r; break; }
+    }
+  }
+  if (!next) return false;
+
+  let status = 'succeeded';
+  let stopReason = '';
+  let failureClass = '';
+  let retryCount = next.retryCount;
+  if (next.stubMode === 'fail_policy') {
+    status = 'failed'; stopReason = 'policy_blocked'; failureClass = 'policy'; // terminal, no retry
+  } else if (next.stubMode === 'fail_transient') {
+    retryCount = next.retryCount + 1;
+    if (retryCount <= next.retryCap) { status = 'retrying'; failureClass = 'transient'; }
+    else { status = 'failed'; stopReason = 'fatal_error'; failureClass = 'transient'; }
+  }
+  ctx.db.taskRuns.id.update({ ...next, status, stopReason, failureClass, retryCount, updatedAt: ctx.timestamp });
+  return true;
+}
+
+export const createTask = spacetimedb.reducer(
+  { workspaceId: t.u64(), title: t.string() },
+  (ctx, { workspaceId, title }) => {
+    assertMember(ctx, workspaceId);
+    ctx.db.tasks.insert({ id: 0n, workspaceId, title, status: 'approved', createdAt: ctx.timestamp });
+  },
+);
+
+export const enqueueTaskRun = spacetimedb.reducer(
+  { workspaceId: t.u64(), taskId: t.u64(), stubMode: t.string(), retryCap: t.u32() },
+  (ctx, { workspaceId, taskId, stubMode, retryCap }) => {
+    assertMember(ctx, workspaceId);
+    ctx.db.taskRuns.insert({
+      id: 0n, workspaceId, taskId, status: 'queued', stubMode,
+      stopReason: '', retryPosture: 'normal', retryCount: 0, retryCap,
+      failureClass: '', createdAt: ctx.timestamp, updatedAt: ctx.timestamp,
+    });
+  },
+);
+
+// tickNextTaskRun: user-callable single tick (membership-checked) — the manual equivalent of one
+// worker tick.
+export const tickNextTaskRun = spacetimedb.reducer(
+  { workspaceId: t.u64() },
+  (ctx, { workspaceId }) => {
+    assertMember(ctx, workspaceId);
+    tickOneTaskRun(ctx, workspaceId);
+  },
+);
+
+// scheduledTick: the scheduled target — a reducer (DB-only, atomic). Runs as a system tick on the
+// scheduled row's workspace. This is the worker *process* collapsed into the module.
+export const scheduledTick = spacetimedb.reducer(
+  { row: tickSchedule.rowType },
+  (ctx, { row }) => {
+    tickOneTaskRun(ctx, row.workspaceId);
+  },
+);
+
+// armTicker / disarmTicker: opt-in control of the background ticker (owner/member-gated). Not armed
+// by default, so production never gets a runaway scheduler unless a member turns it on.
+export const armTicker = spacetimedb.reducer(
+  { workspaceId: t.u64(), intervalMicros: t.u64() },
+  (ctx, { workspaceId, intervalMicros }) => {
+    assertMember(ctx, workspaceId);
+    for (const s of ctx.db.tickSchedule.workspaceId.filter(workspaceId)) {
+      ctx.db.tickSchedule.scheduledId.delete(s.scheduledId); // replace existing schedule
+    }
+    ctx.db.tickSchedule.insert({ scheduledId: 0n, scheduledAt: ScheduleAt.interval(intervalMicros), workspaceId });
+  },
+);
+
+export const disarmTicker = spacetimedb.reducer(
+  { workspaceId: t.u64() },
+  (ctx, { workspaceId }) => {
+    assertMember(ctx, workspaceId);
+    for (const s of ctx.db.tickSchedule.workspaceId.filter(workspaceId)) {
+      ctx.db.tickSchedule.scheduledId.delete(s.scheduledId);
+    }
+  },
+);
+
+export const myTasks = spacetimedb.view(
+  { name: 'my_tasks', public: true },
+  t.array(tasks.rowType),
+  (ctx) => {
+    const mine = callerWorkspaceIds(ctx);
+    return [...ctx.db.tasks.iter()].filter((x) => mine.has(x.workspaceId));
+  },
+);
+
+export const myTaskRuns = spacetimedb.view(
+  { name: 'my_task_runs', public: true },
+  t.array(taskRuns.rowType),
+  (ctx) => {
+    const mine = callerWorkspaceIds(ctx);
+    return [...ctx.db.taskRuns.iter()].filter((x) => mine.has(x.workspaceId));
   },
 );
