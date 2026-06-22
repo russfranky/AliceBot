@@ -4,13 +4,14 @@ Routes `alice capture` / `alice recall` to the hosted SpacetimeDB continuity mod
 HTTP with a per-user token, instead of Postgres. Selected via `--backend spacetimedb` (or
 `ALICE_BACKEND=spacetimedb`). Non-destructive: the Postgres path stays the default and is untouched.
 
-Identity + token + workspace persist in a 0600 file under the user's config dir so repeat
-invocations reuse the same tenant. stdlib only; no local database.
+State: the non-secret identity + workspace persist in a 0600 file under the user's config dir; the
+token is stored in Alice's encrypted `SecretProvider` (ref `spacetime-token:<identity>`, encrypted
+at rest and auto-redacted in logs because the ref contains "token"). When the module is loaded
+standalone without the app package, it falls back to keeping the token in the 0600 state file.
+stdlib transport only; no local database.
 
-This is the first Track-B slice. Deliberately NOT yet included (follow-ups):
-  * in-module idempotency on writes (request-id + unique constraint; SpacetimeDB has no built-in);
-  * output parity with the Postgres `format_capture_output` / `format_recall_output`;
-  * token storage via `vnext_secrets.SecretProvider` (currently a local 0600 state file).
+Deliberately NOT yet included (follow-up): output parity with the Postgres `format_capture_output`
+/ `format_recall_output`. (Write idempotency and SecretProvider-backed tokens are done.)
 """
 from __future__ import annotations
 
@@ -43,6 +44,18 @@ def _ssl_context() -> ssl.SSLContext | None:
 _SSL = _ssl_context()
 
 
+def _secret_provider():
+    """Alice's encrypted secret store, if importable (the CLI context). Returns None when the
+    backend is loaded standalone without the app package, in which case the caller keeps the token
+    in the local state file instead."""
+    try:
+        from alicebot_api.vnext_secrets import default_secret_provider
+
+        return default_secret_provider()
+    except Exception:
+        return None
+
+
 def _post(path: str, body, token: str | None, content_type: str) -> tuple[int, str]:
     data = body.encode() if isinstance(body, str) else (json.dumps(body).encode() if body is not None else None)
     req = urllib.request.Request(f"{BASE}{path}", data=data, method="POST")
@@ -70,61 +83,71 @@ class SpacetimeBackend:
     """The entire Track-B CLI adapter: provision a tenant, capture, recall."""
 
     def __init__(self) -> None:
-        self._state = self._load_or_provision()
+        self._provider = _secret_provider()
+        self._identity, self._workspace, self._token = self._load_or_provision()
 
     # --- identity / token / workspace state ----------------------------------------------
-    def _load_or_provision(self) -> dict:
+    def _load_or_provision(self) -> tuple[str, int, str]:
         if _STATE.exists():
-            state = json.loads(_STATE.read_text())
-            if state.get("token") and state.get("workspace_id") is not None:
-                return state
+            st = json.loads(_STATE.read_text())
+            token: str | None = None
+            if self._provider and st.get("token_ref"):
+                token = self._provider.get_secret(st["token_ref"])
+            elif st.get("token"):  # legacy/standalone plaintext token
+                token = st["token"]
+            if token and st.get("identity") and st.get("workspace_id") is not None:
+                return st["identity"], st["workspace_id"], token
+        # provision a fresh identity + workspace (caller becomes owner+member)
         _, body = _post("/v1/identity", None, None, "application/json")
         ident = json.loads(body)
-        token = ident["token"]
-        self._call("create_workspace", ["Alice CLI"], token)
-        ws = self._sql("SELECT id FROM my_workspaces", token)[0][0]
-        state = {"identity": ident["identity"], "token": token, "workspace_id": ws}
-        self._save(state)
-        return state
+        identity, token = ident["identity"], ident["token"]
+        _post(f"/v1/database/{DB}/call/create_workspace", ["Alice CLI"], token, "application/json")
+        _, sb = _post(f"/v1/database/{DB}/sql", "SELECT id FROM my_workspaces", token, "text/plain")
+        ws = json.loads(sb)[0]["rows"][0][0]
+        self._persist(identity, ws, token)
+        return identity, ws, token
 
-    def _save(self, state: dict) -> None:
+    def _persist(self, identity: str, ws: int, token: str) -> None:
+        st: dict = {"identity": identity, "workspace_id": ws}
+        if self._provider:
+            ref = f"spacetime-token:{identity}"  # "token" in the ref -> auto-redacted by is_secret_key
+            self._provider.set_secret(ref, token)  # encrypted at rest by the secret store
+            st["token_ref"] = ref
+        else:
+            st["token"] = token  # standalone fallback: no app secret store available
         _STATE.parent.mkdir(parents=True, exist_ok=True)
-        _STATE.write_text(json.dumps(state))
+        _STATE.write_text(json.dumps(st))
         try:
-            _STATE.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600 — the token is a secret
+            _STATE.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600 (only holds non-secrets when provider present)
         except OSError:
             pass
 
     # --- transport ------------------------------------------------------------------------
-    def _token(self, override: str | None = None) -> str:
-        return override or self._state["token"]
-
     def _call(self, reducer: str, args: list, token: str | None = None) -> int:
-        status, _ = _post(f"/v1/database/{DB}/call/{reducer}", args, self._token(token), "application/json")
+        status, _ = _post(f"/v1/database/{DB}/call/{reducer}", args, token or self._token, "application/json")
         return status
 
     def _call_proc(self, name: str, args: list, token: str | None = None):
-        _, body = _post(f"/v1/database/{DB}/call/{name}", args, self._token(token), "application/json")
+        _, body = _post(f"/v1/database/{DB}/call/{name}", args, token or self._token, "application/json")
         return _decode(body)
 
     def _sql(self, query: str, token: str | None = None) -> list:
-        _, body = _post(f"/v1/database/{DB}/sql", query, self._token(token), "text/plain")
+        _, body = _post(f"/v1/database/{DB}/sql", query, token or self._token, "text/plain")
         return json.loads(body)[0]["rows"]
 
     # --- operations -----------------------------------------------------------------------
     def capture(self, raw_content: str, explicit_signal: str | None, request_id: str | None = None) -> dict:
-        ws = self._state["workspace_id"]
         # requestId makes the write idempotent: a retry of the same logical capture reuses the id and
         # the module returns the existing object instead of creating a duplicate.
         ref = self._call_proc(
             "capture_with_embedding",
-            [ws, raw_content, "cli", explicit_signal or "note", request_id or uuid.uuid4().hex],
+            [self._workspace, raw_content, "cli", explicit_signal or "note", request_id or uuid.uuid4().hex],
         )
         rows = self._sql("SELECT id, status, trust_class, embedding_ref FROM my_continuity_objects")
         latest = max(rows, key=lambda r: r[0]) if rows else None
         return {
             "backend": "spacetimedb",
-            "workspace_id": ws,
+            "workspace_id": self._workspace,
             "embedding_ref": ref,
             "object": (
                 {"id": latest[0], "status": latest[1], "trust_class": latest[2], "embedding_ref": latest[3]}
@@ -134,5 +157,5 @@ class SpacetimeBackend:
         }
 
     def recall(self, query: str, limit: int) -> dict:
-        hits = self._call_proc("recall_lexical", [self._state["workspace_id"], query or "", limit])
+        hits = self._call_proc("recall_lexical", [self._workspace, query or "", limit])
         return {"backend": "spacetimedb", "query": query, "results": hits}

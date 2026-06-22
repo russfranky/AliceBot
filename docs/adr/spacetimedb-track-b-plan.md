@@ -42,7 +42,14 @@ A single `SpacetimeClient` (the reference is the prototype):
 | list workspaces | `SELECT … FROM my_workspaces` |
 | (admin) grant worker membership | `add_member` (TS tooling — identity arg) |
 
-## Token lifecycle & storage (resolved — reuses `vnext_secrets.SecretProvider`)
+## Token lifecycle & storage (resolved + implemented in the CLI backend — reuses `vnext_secrets.SecretProvider`)
+
+**Done:** `spacetime_backend.py` stores the token via `default_secret_provider().set_secret(
+"spacetime-token:<identity>", token)` (encrypted at rest); the local state file holds only the
+non-secret identity + workspace + `token_ref`. Verified: an isolated CLI run wrote **no** plaintext
+token to the state file and recalled successfully by reading the token back from the secret store. A
+standalone fallback (no app package) keeps the token in the 0600 state file. The spec below is the
+full design.
 
 Alice already has the right primitive in `apps/api/src/alicebot_api/vnext_secrets.py`: a
 `SecretProvider` protocol (`get_secret`/`set_secret`/`has_secret`) with an `env:`-ref provider and a
