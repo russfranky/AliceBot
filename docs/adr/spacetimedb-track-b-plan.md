@@ -96,7 +96,9 @@ they hold the long-lived token), and the TS worker uses the client SDK, which pe
 
 - When workspaces are provisioned per Alice user (e.g., `create_workspace` at signup).
 - The SATS `Identity` encoder for the rare `add_member` path from Python (or keep it TS-only).
-- Idempotency keys for re-pointed writes (capture/commit replay safety).
+- Idempotency keys for re-pointed writes (capture/commit replay safety). **Confirmed:** SpacetimeDB
+  has **no built-in** request-id/dedup mechanism — idempotency must be enforced **in-module** (e.g. a
+  `request_id` column with a unique constraint + insert-or-ignore, or an "already-applied" check).
 
 ## Deferred to Track C
 

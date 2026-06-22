@@ -173,6 +173,15 @@ as the verified `recall_lexical`; the **only** unverified seam is a real externa
     — the same table API the reducers use — are valid inside a procedure transaction. Confirmed
     transitively by the docs and directly on maincloud (`embed_semantic` finds/inserts/updates/
     deletes inside tx2 and the writes land).
+13. **Scheduled tables can target a procedure — verified on maincloud.** A scheduled table
+    (`table({ name, scheduled: () => targetProc }, { scheduledId: t.u64().primaryKey().autoInc(),
+    scheduledAt: t.scheduleAt(), … })`) fires its target at the scheduled time. Two gotchas: the
+    target takes the **row as a single argument** (`{ row: tbl.rowType }`, not the destructured
+    columns — a column-by-column arg schema is a publish error `expected to have type (0: &N)`);
+    and the target **may be a procedure**, so scheduled work can do outbound HTTP. Validated on a
+    throwaway db: a one-shot scheduled probe procedure fired ~on time, ran `ctx.http.fetch`
+    (HTTP 200), and wrote a `withTx` row. This unblocks periodic re-embedding / synthesis /
+    maintenance — no reducer→procedure handoff and no external cron needed.
 
 ## Schema migrations — what maincloud allows (cited)
 
