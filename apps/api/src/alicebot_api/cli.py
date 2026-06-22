@@ -302,6 +302,18 @@ def _parse_optional_json_object(raw_value: str | None, *, option_name: str) -> J
     return payload
 
 
+def _add_backend_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--backend",
+        choices=("postgres", "spacetimedb"),
+        default=os.environ.get("ALICE_BACKEND", "postgres"),
+        help=(
+            "Persistence backend. 'spacetimedb' (Track B) routes to the hosted SpacetimeDB module "
+            "over HTTP; default 'postgres' is unchanged."
+        ),
+    )
+
+
 def _add_scope_filter_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--query", default=None, help="Optional query text.")
     parser.add_argument("--thread-id", type=_parse_uuid, default=None, help="Optional thread UUID scope.")
@@ -549,6 +561,10 @@ def _load_maintenance_status_snapshot() -> dict[str, object]:
 
 def _run_capture(ctx: CLIContext, args: argparse.Namespace) -> str:
     raw_content = " ".join(args.raw_content).strip()
+    if getattr(args, "backend", "postgres") == "spacetimedb":
+        from alicebot_api.spacetime_backend import SpacetimeBackend
+
+        return _json_dumps(SpacetimeBackend().capture(raw_content, args.explicit_signal))
     with _store_context(ctx) as store:
         payload = capture_continuity_input(
             store,
@@ -3624,6 +3640,10 @@ def _run_mutation_operations(ctx: CLIContext, args: argparse.Namespace) -> str:
 
 
 def _run_recall(ctx: CLIContext, args: argparse.Namespace) -> str:
+    if getattr(args, "backend", "postgres") == "spacetimedb":
+        from alicebot_api.spacetime_backend import SpacetimeBackend
+
+        return _json_dumps(SpacetimeBackend().recall(args.query, args.limit))
     with _store_context(ctx) as store:
         payload = query_continuity_recall(
             store,
@@ -4320,6 +4340,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional explicit signal for deterministic derivation.",
     )
+    _add_backend_argument(capture_parser)
     capture_parser.set_defaults(handler=_run_capture)
 
     context_pack_parser = subparsers.add_parser("context-pack", help="Compile an Alice vNext context pack.")
@@ -5247,6 +5268,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Include hybrid retrieval stage scores and exclusion reasons.",
     )
+    _add_backend_argument(recall_parser)
     recall_parser.set_defaults(handler=_run_recall)
 
     state_at_parser = subparsers.add_parser(
