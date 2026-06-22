@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import urllib.request
+import uuid
 
 # Hosted SpacetimeDB (maincloud) by default — no local database.
 BASE = os.environ.get("ALICE_SPACETIME_BASE", "https://maincloud.spacetimedb.com")
@@ -61,7 +62,7 @@ def main() -> None:
     ws = c.sql("SELECT id FROM my_workspaces", token)[0][0]
     print("workspace id:", ws)
 
-    print("capture_with_embedding ->", c.call("capture_with_embedding", [ws, "remember the python path", "cli", "decision"], token))
+    print("capture_with_embedding ->", c.call("capture_with_embedding", [ws, "remember the python path", "cli", "decision", uuid.uuid4().hex], token))
     objs = c.sql("SELECT id, status, trust_class, embedding_ref FROM my_continuity_objects", token)
     print("my_continuity_objects:", objs)
 

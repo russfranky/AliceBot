@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from alice_spacetime_reference import SpacetimeClient  # noqa: E402
@@ -50,7 +51,7 @@ def main() -> None:
     step("STDB-001", "create_workspace", f_create_ws)
 
     def f_capture():
-        body = c.call_proc("capture_with_embedding", [S["ws"], "invoices are due in Q3", "qa", "decision"], tok)
+        body = c.call_proc("capture_with_embedding", [S["ws"], "invoices are due in Q3", "qa", "decision", uuid.uuid4().hex], tok)
         rows = c.sql("SELECT id, status, trust_class FROM my_continuity_objects", tok)
         S["obj"] = rows[0][0]
         ref = _unwrap(body)
@@ -64,7 +65,7 @@ def main() -> None:
     step("STDB-003", "commit_memory -> committed", f_commit)
 
     def f_correct():
-        st = c.call("correct_memory", [S["obj"], "invoices moved to Q4"], tok)
+        st = c.call("correct_memory", [S["obj"], "invoices moved to Q4", uuid.uuid4().hex], tok)
         r = c.sql("SELECT status, trust_class, embedding_ref FROM my_continuity_objects", tok)[0]
         return st == 200 and r[1] == "user_confirmed" and r[2] == "", f"status={st} row={r}"
     step("STDB-004", "correct_memory -> supersede + reset ref", f_correct)
@@ -93,7 +94,7 @@ def main() -> None:
     step("STDB-007", "record_trust_signal", f_trust)
 
     def f_contra():
-        c.call_proc("capture_with_embedding", [S["ws"], "invoices are due in Q2", "qa", "decision"], tok)
+        c.call_proc("capture_with_embedding", [S["ws"], "invoices are due in Q2", "qa", "decision", uuid.uuid4().hex], tok)
         ids = [r[0] for r in c.sql("SELECT id FROM my_continuity_objects", tok)]
         o2 = [i for i in ids if i != S["obj"]][0]
         s1 = c.call("open_contradiction", [S["ws"], S["obj"], o2, "q4 vs q2"], tok)
@@ -191,6 +192,15 @@ def main() -> None:
         objs = c.sql("SELECT id FROM my_continuity_objects", tokB)
         return objs == [], f"B sees {objs} continuity objects"
     step("STDB-015e", "perm: second identity sees none of A's rows", f_perm_isolation)
+
+    def f_idem():
+        rid = uuid.uuid4().hex
+        before = len(c.sql("SELECT id FROM my_continuity_objects", tok))
+        c.call_proc("capture_with_embedding", [S["ws"], "idem replay probe", "qa", "note", rid], tok)
+        c.call_proc("capture_with_embedding", [S["ws"], "idem replay probe", "qa", "note", rid], tok)
+        after = len(c.sql("SELECT id FROM my_continuity_objects", tok))
+        return after == before + 1, f"2 same-requestId captures -> +{after - before} object(s)"
+    step("STDB-IDEM", "idempotency: replay capture -> one object (same requestId)", f_idem)
 
     p = sum(1 for r in RESULTS if r[2])
     f = len(RESULTS) - p

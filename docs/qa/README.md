@@ -10,10 +10,10 @@ Runnable test harness (SpacetimeDB surface): [`../../clients/python/qa_smoke.py`
 
 ## How to run the SpacetimeDB regression (Phase 3 / Phase 5)
 ```bash
-python3 clients/python/qa_smoke.py   # provisions 2 fresh identities; 22 checks; exits non-zero on any FAIL
+python3 clients/python/qa_smoke.py   # provisions 2 fresh identities; 23 checks; exits non-zero on any FAIL
 ```
 No local database — runs against hosted maincloud (`alice-continuity`). Covers happy path, error
-path, boundary (recall limit), and cross-tenant permission/security cases.
+path, boundary (recall limit), cross-tenant permission/security, and write idempotency (replay).
 
 ## Scope reality (why coverage is uneven)
 The repo has three very different surfaces:
@@ -64,3 +64,25 @@ accumulating outer state → refactored to the documented `withTx`-returns-a-val
 Within the agreed scope (SpacetimeDB surface): all executed tests pass; **no open critical or
 high-severity defects; no broken in-scope user journeys.** The only open items are the documented
 incomplete-feature TODOs for production semantic recall — not defects.
+
+## Iteration 3 report (2026-06-22)
+
+**1. Coverage summary** — **23/23 checks pass** on `alice-continuity`; added `STDB-IDEM` (write
+idempotency). Track B now has idempotent writes.
+
+**2. Feature added & tested:** write idempotency — `applied_requests` table + `requestId` on
+`capture_with_embedding` (procedure: replay returns the prior object and skips the embed HTTP) and
+`correct_memory` (reducer: atomic no-op on replay). `STDB-IDEM` proves two same-`requestId` captures
+create exactly one object; the `.unique()` mechanics (find / checked no-op / duplicate-insert
+rollback) were pre-verified on a throwaway db before touching production.
+
+**3. Defects found:** 0 in the module. (One self-inflicted *test-ordering* bug surfaced during the
+run — the replay test was inserted between capture and commit, breaking the single-object assumption
+of the commit/correct assertions; fixed by moving it to the end. The module logic was correct.)
+
+**4. Defects fixed:** the test-ordering bug above.
+
+**5. Remaining risks** — unchanged: `recall_semantic` neighbor quality + the two `embed_semantic`
+production TODOs; legacy surface out of scope by choice.
+
+**6. Confidence** — SpacetimeDB surface **~93%** (idempotent writes add robustness); whole product ~15%.

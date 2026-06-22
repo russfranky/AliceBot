@@ -97,8 +97,11 @@ they hold the long-lived token), and the TS worker uses the client SDK, which pe
 - When workspaces are provisioned per Alice user (e.g., `create_workspace` at signup).
 - The SATS `Identity` encoder for the rare `add_member` path from Python (or keep it TS-only).
 - Idempotency keys for re-pointed writes (capture/commit replay safety). **Confirmed:** SpacetimeDB
-  has **no built-in** request-id/dedup mechanism — idempotency must be enforced **in-module** (e.g. a
-  `request_id` column with a unique constraint + insert-or-ignore, or an "already-applied" check).
+  has **no built-in** request-id/dedup mechanism. **Implemented in-module:** an `applied_requests`
+  table (`requestId` with `.unique()`) + a `requestId` arg on `capture_with_embedding` (procedure —
+  pre-check skips the embed HTTP on replay) and `correct_memory` (reducer — atomic no-op on replay);
+  the unique constraint backstops the concurrent race. Verified on maincloud (qa_smoke STDB-IDEM:
+  two same-`requestId` captures → one object). The CLI backend generates a `uuid4` per logical write.
 
 ## Deferred to Track C
 

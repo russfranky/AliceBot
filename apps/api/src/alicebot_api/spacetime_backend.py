@@ -19,6 +19,7 @@ import os
 import ssl
 import stat
 import urllib.request
+import uuid
 from pathlib import Path
 
 BASE = os.environ.get("ALICE_SPACETIME_BASE", "https://maincloud.spacetimedb.com")
@@ -111,9 +112,14 @@ class SpacetimeBackend:
         return json.loads(body)[0]["rows"]
 
     # --- operations -----------------------------------------------------------------------
-    def capture(self, raw_content: str, explicit_signal: str | None) -> dict:
+    def capture(self, raw_content: str, explicit_signal: str | None, request_id: str | None = None) -> dict:
         ws = self._state["workspace_id"]
-        ref = self._call_proc("capture_with_embedding", [ws, raw_content, "cli", explicit_signal or "note"])
+        # requestId makes the write idempotent: a retry of the same logical capture reuses the id and
+        # the module returns the existing object instead of creating a duplicate.
+        ref = self._call_proc(
+            "capture_with_embedding",
+            [ws, raw_content, "cli", explicit_signal or "note", request_id or uuid.uuid4().hex],
+        )
         rows = self._sql("SELECT id, status, trust_class, embedding_ref FROM my_continuity_objects")
         latest = max(rows, key=lambda r: r[0]) if rows else None
         return {

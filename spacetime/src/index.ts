@@ -197,7 +197,23 @@ const embeddings = table(
   },
 );
 
+// applied_requests: idempotency ledger. A client-supplied requestId dedupes a retried write — a
+// replay finds the prior entry and returns its result instead of creating a duplicate. The unique
+// constraint backstops the rare concurrent race (a duplicate insert throws -> the tx rolls back).
+const appliedRequests = table(
+  { name: 'applied_requests' },
+  {
+    id: t.u64().primaryKey().autoInc(),
+    requestId: t.string().unique(),
+    workspaceId: t.u64(),
+    op: t.string(),    // 'capture' | 'correct'
+    resultId: t.u64(), // created object id (capture) or revision id (correct)
+    createdAt: t.timestamp(),
+  },
+);
+
 const spacetimedb = schema({
+  appliedRequests,
   workspaces,
   workspaceMembers,
   captureEvents,
@@ -312,11 +328,12 @@ export const commitMemory = spacetimedb.reducer(
 // correctMemory: correction-aware path — new revision, supersede prior, repoint current,
 // mark 'user_confirmed', re-enqueue embedding (content changed → stale vector).
 export const correctMemory = spacetimedb.reducer(
-  { objectId: t.u64(), newContent: t.string() },
-  (ctx, { objectId, newContent }) => {
+  { objectId: t.u64(), newContent: t.string(), requestId: t.string() },
+  (ctx, { objectId, newContent, requestId }) => {
     const obj = ctx.db.continuityObjects.id.find(objectId);
     if (!obj) throw new Error('continuity object not found');
     assertMember(ctx, obj.workspaceId);
+    if (ctx.db.appliedRequests.requestId.find(requestId)) return; // replay -> no-op (atomic reducer)
 
     const current = ctx.db.memoryRevisions.id.find(obj.currentRevisionId);
     const nextNo = current ? current.revisionNo + 1 : 1;
@@ -342,6 +359,9 @@ export const correctMemory = spacetimedb.reducer(
       trustClass: 'user_confirmed',
       embeddingRef: '',
       updatedAt: ctx.timestamp,
+    });
+    ctx.db.appliedRequests.insert({
+      id: 0n, requestId, workspaceId: obj.workspaceId, op: 'correct', resultId: rev.id, createdAt: ctx.timestamp,
     });
 
     // embeddingRef reset above; re-embed via the embedViaHttp procedure (worker-less).
@@ -548,19 +568,39 @@ export const embedViaHttp = spacetimedb.procedure(
 // transaction), then write the capture event + candidate object + first revision in one
 // deterministic transaction. Replaces capture-reducer → work_queue → external worker.
 export const captureWithEmbedding = spacetimedb.procedure(
-  { workspaceId: t.u64(), rawContent: t.string(), source: t.string(), kind: t.string() },
+  { workspaceId: t.u64(), rawContent: t.string(), source: t.string(), kind: t.string(), requestId: t.string() },
   t.string(), // returns the embeddingRef
-  (ctx, { workspaceId, rawContent, source, kind }) => {
-    // 1) embed (HTTP, outside the transaction). Non-secret endpoint until secrets are documented.
+  (ctx, { workspaceId, rawContent, source, kind, requestId }) => {
+    // tx1: membership + idempotency pre-check. A replay (same requestId) returns the prior object's
+    // ref and skips the embed HTTP entirely — no duplicate object, no wasted provider call.
+    const pre = ctx.withTx((tx: any) => {
+      let member = false;
+      for (const m of tx.db.workspaceMembers.memberIdentity.filter(ctx.sender)) {
+        if (m.workspaceId === workspaceId) { member = true; break; }
+      }
+      const existing = tx.db.appliedRequests.requestId.find(requestId);
+      let priorRef = '';
+      if (existing) {
+        const obj = tx.db.continuityObjects.id.find(existing.resultId);
+        priorRef = obj ? obj.embeddingRef : '';
+      }
+      return { member, applied: !!existing, priorRef };
+    });
+    if (!pre.member) throw new SenderError('unauthorized: not a member of this workspace');
+    if (pre.applied) return pre.priorRef;
+
+    // embed (HTTP, outside any transaction). Non-secret endpoint until secrets are documented.
     const resp = ctx.http.fetch('https://example.com', { method: 'GET' });
     const embeddingRef = `vec:http:${resp.status}`;
-    // 2) persist the capture deterministically, authorized by workspace membership.
+
+    // tx2: persist atomically, re-checking membership and the idempotency ledger (concurrent winner).
     ctx.withTx((tx: any) => {
       let member = false;
       for (const m of tx.db.workspaceMembers.memberIdentity.filter(ctx.sender)) {
         if (m.workspaceId === workspaceId) { member = true; break; }
       }
       if (!member) throw new SenderError('unauthorized: not a member of this workspace');
+      if (tx.db.appliedRequests.requestId.find(requestId)) return; // won by a concurrent call
       const event = tx.db.captureEvents.insert({
         id: 0n, workspaceId, rawContent, source, createdBy: ctx.sender, createdAt: ctx.timestamp,
       });
@@ -574,6 +614,9 @@ export const captureWithEmbedding = spacetimedb.procedure(
         authorIdentity: ctx.sender, supersededBy: 0n, createdAt: ctx.timestamp,
       });
       tx.db.continuityObjects.id.update({ ...obj, currentRevisionId: rev.id });
+      tx.db.appliedRequests.insert({
+        id: 0n, requestId, workspaceId, op: 'capture', resultId: obj.id, createdAt: ctx.timestamp,
+      });
     });
     return embeddingRef;
   },
