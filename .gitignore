@@ -10,7 +10,8 @@ apps/web/.env.local.*
 __pycache__/
 *.pyc
 apps/web/.next/
-apps/web/node_modules/
+node_modules/
+spacetime/dist/
 artifacts/
 
 # Internal operating docs (keep local, exclude from public repo)
