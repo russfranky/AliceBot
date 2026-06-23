@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-06-22
+
+- Began porting Alice onto a hosted **SpacetimeDB** module (maincloud, db `alice-continuity`) as a
+  parallel backend direction. The Postgres app remains the system of record; the SpacetimeDB module
+  is additive and verified independently on maincloud. Two pillars are live:
+  - **Continuity core:** workspaces/tenancy, capture (a procedure with inline embedding),
+    commit/correct with revision supersession, open loops, entity graph, trust signals,
+    contradictions, and recall (lexical + procedure-orchestrated semantic against an external vector
+    store). Per-caller isolation via private tables + views. Write idempotency via a `requestId` +
+    `applied_requests` ledger.
+  - **Execution pillar:** the external task worker collapsed into the module — claim/tick/retry
+    state machine (reducers), real HTTP tool execution (procedures), a scheduled procedure that
+    drains the queue with no external cron, approval gating, a tools registry/allowlist with per-run
+    endpoints, an idempotent `tool_executions` ledger, and stuck-run recovery.
+- Added the Alice CLI `--backend spacetimedb` flag routing `capture` / `recall` to the module over
+  HTTP, with the per-user token stored in the encrypted `SecretProvider` (state file holds no token).
+- Added a stdlib Python reference client and a 23-check maincloud regression harness
+  (`clients/python/qa_smoke.py`), green after every publish.
+- Decision records: `docs/adr/spacetimedb-continuity-port.md`,
+  `docs/adr/spacetimedb-execution-pillar.md`, `docs/adr/spacetimedb-track-b-plan.md`.
+
 ## 2026-05-11
 
 - Added the Alice vNext dogfood hardening slice: dedicated connector settings/state tables, encrypted local secret-provider fallback, connector cursor/checkpoint persistence, migration/doctor readiness checks, live `/vnext` connector configuration, browser clipper token enforcement, Telegram retry/cursor hardening, generated-output recapture prevention, and daily dogfood runbook.

@@ -15,6 +15,24 @@ Alice is a modular continuity platform with shared continuity semantics across l
 - Web/admin: Next.js app in [`apps/web`](apps/web)
 - CLI + MCP: Python CLI/MCP plus package shims in [`packages/alice-cli`](packages/alice-cli) and [`packages/alice-core`](packages/alice-core)
 - Ops/demo/test scripts: [`scripts`](scripts)
+- Emerging backend (additive): a hosted **SpacetimeDB** module in [`spacetime/src/index.ts`](spacetime/src/index.ts) on maincloud — see the SpacetimeDB section below
+
+## SpacetimeDB Module Backend (Emerging, Additive)
+A parallel port of Alice's storage and domain logic onto a hosted **SpacetimeDB** module
+([`spacetime/src/index.ts`](spacetime/src/index.ts), db `alice-continuity` on maincloud). It is
+additive — the Postgres stack above remains the system of record. Mapping: **reducers** for atomic
+state changes, **procedures** for outbound HTTP + transactional writes, **views** for per-caller
+reads; per-caller isolation via private tables + views; write idempotency via a `requestId` ledger.
+Two pillars are live (continuity core + execution). Decisions: [`docs/adr/spacetimedb-continuity-port.md`](docs/adr/spacetimedb-continuity-port.md),
+[`docs/adr/spacetimedb-execution-pillar.md`](docs/adr/spacetimedb-execution-pillar.md),
+[`docs/adr/spacetimedb-track-b-plan.md`](docs/adr/spacetimedb-track-b-plan.md).
+
+Module tables: `workspaces`, `workspace_members`, `capture_events`, `continuity_objects`,
+`memory_revisions`, `open_loops`, `entities`, `entity_edges`, `trust_signals`,
+`contradiction_cases`, `provider_keys`, `embeddings`, `applied_requests`; execution pillar `tasks`,
+`task_runs`, `tool_executions`, `tools`, `task_tools`, `approvals`, plus the `tick_schedule` /
+`exec_schedule` scheduled tables. (`artifacts` / `work_queue` are inert legacy, retained because
+SpacetimeDB cannot drop a table without wiping the database.)
 
 ## Shipped Module Boundaries
 

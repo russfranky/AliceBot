@@ -18,6 +18,25 @@ Canonical handoff state lives at [.ai/handoff/CURRENT_STATE.md](.ai/handoff/CURR
 - Alice vNext public preview release gate is active.
 - Alice vNext dogfood hardening is implemented in this working tree.
 
+## SpacetimeDB Port (In Progress, Additive)
+- A parallel port of Alice onto a hosted **SpacetimeDB** module is underway on maincloud
+  (db `alice-continuity`). It is additive and does not change the Postgres baseline, which remains
+  the system of record.
+- Two pillars are live and verified on maincloud:
+  - Continuity core — tenancy, capture/commit/correct (revision supersession), open loops, entity
+    graph, trust signals, contradictions, lexical + semantic recall; per-caller isolation via private
+    tables + views; write idempotency via `requestId` + `applied_requests`.
+  - Execution pillar — the task worker collapsed into the module: claim/tick/retry state machine
+    (reducers), real HTTP tool execution (procedures), a scheduled procedure draining the queue with
+    no external cron, approval gating, a tools registry/allowlist with per-run endpoints, an
+    idempotent `tool_executions` ledger, and stuck-run recovery.
+- Surfaces: `alice capture/recall --backend spacetimedb` (token in the encrypted `SecretProvider`),
+  a stdlib Python reference client, and a 23-check maincloud regression harness (`clients/python/qa_smoke.py`).
+- Detail and decisions live in `docs/adr/spacetimedb-continuity-port.md`,
+  `docs/adr/spacetimedb-execution-pillar.md`, and `docs/adr/spacetimedb-track-b-plan.md`.
+- Open follow-ons: execution budgets, task lineage/artifacts, secrets for authed tools, and
+  re-pointing the Postgres-backed CLI/MCP/API surfaces (Track B) and data migration (Track C).
+
 ## Current Baseline Truth
 - Alice has typed memory, provenance, trust classes, correction/supersession behavior, open loops, recall, resumption, and explainability.
 - Alice exposes CLI, MCP, hosted/product, provider-runtime, and Hermes bridge surfaces.

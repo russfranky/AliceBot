@@ -22,6 +22,16 @@ These remain baseline truth and are not future milestones.
 - Alice vNext dogfood hardening is implemented for dedicated connector settings/state, local secret references, readiness doctor checks, live `/vnext` connector configuration, and daily-use runbooks.
 - Alice vNext public preview release gate is active for `v0.5.1-vnext-preview`.
 
+## SpacetimeDB Port (Active, Additive)
+- An additive port of Alice onto a hosted SpacetimeDB module (maincloud) is in progress alongside
+  the Postgres baseline; Postgres remains the system of record.
+- Live and verified on maincloud: the continuity core (capture/commit/correct, recall, idempotency,
+  per-caller isolation) and the execution pillar (the task worker collapsed into a scheduled
+  procedure — approval-gated, tools registry/allowlist with per-run endpoints, idempotent
+  `tool_executions`, retry/backoff, stuck-run recovery).
+- Next: execution budgets, task lineage/artifacts, secrets for authed tools; Track B re-point of the
+  CLI/MCP/API surfaces and Track C Postgres→SpacetimeDB data migration. See `docs/adr/spacetimedb-*.md`.
+
 ## Completed Phase 14 Sequence
 
 ### P14-S1: Provider Abstraction Cleanup + OpenAI-Compatible Adapter

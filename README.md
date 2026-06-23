@@ -423,6 +423,11 @@ Alice is built around a shared continuity core with:
 
 That means the system behaves consistently across local workflows, MCP-connected agents, and imported data sources.
 
+An additive port of the storage and domain logic onto a hosted **SpacetimeDB** module (maincloud) is
+in progress alongside the Postgres baseline — see the SpacetimeDB section in [ARCHITECTURE.md](ARCHITECTURE.md)
+and the decision records in [`docs/adr/`](docs/adr/). The Alice CLI can route `capture`/`recall` to
+it with `--backend spacetimedb`.
+
 ## Scope Notes
 
 Included in the `v0.5.1` release:
@@ -445,6 +450,9 @@ Deferred beyond `v0.5.1`:
 
 ## Docs
 
+- [SpacetimeDB Port — Continuity Core (ADR)](docs/adr/spacetimedb-continuity-port.md)
+- [SpacetimeDB Port — Execution Pillar (ADR)](docs/adr/spacetimedb-execution-pillar.md)
+- [SpacetimeDB Port — Track B Re-point Plan (ADR)](docs/adr/spacetimedb-track-b-plan.md)
 - [vNext Preview](docs/vnext/README.md)
 - [Public Alpha](docs/alpha/README.md)
 - [Public Alpha Quickstart](docs/alpha/quickstart.md)
