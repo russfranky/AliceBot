@@ -1,7 +1,8 @@
 # ADR: Port Alice's execution pillar to the SpacetimeDB module — tick-slice
 
-Status: **Tick-slice + real (HTTP) execution live on maincloud (verified).** Execution runs through
-a procedure against a *stub tool endpoint*; per-run tool config + tools registry + secrets are the
+Status: **Execution pillar slice live on maincloud (verified).** Claim+tick+retry, real HTTP
+execution, a **scheduled executor** (the worker loop fully in-module), and stuck-`running` recovery
+all work against a *stub tool endpoint*; per-run tool config + tools registry + secrets are the
 follow-on.
 
 ## Context
@@ -46,6 +47,13 @@ any tx, then `withTx` records a `tool_executions` row and transitions the run by
 `succeeded`, else retry-to-cap → `retrying`/`failed`), and `my_tool_executions` view. This is the
 real proxy-execution path; it calls a fixed stub endpoint until the tools registry + secrets land.
 
+**Scheduled execution + recovery (added):** `exec_schedule` (opt-in) targets `scheduled_execute` —
+a **procedure** that claims a run, HTTP-calls the tool, then records + transitions it; armed via
+`arm_executor` / `disarm_executor`. `recover_stuck_runs` requeues runs stuck in `running` (a
+procedure that died after claiming) older than a threshold, counting the stuck attempt as a
+transient failure. Shared `claimNextRun` / `recordAndTransition` helpers back both the
+client-callable and scheduled paths. This is the worker's execution loop fully inside the module.
+
 ## Verification (observed on maincloud)
 
 - **Manual ticks** (throwaway db): `succeed` → `succeeded`; `fail_policy` → `failed` /
@@ -60,14 +68,17 @@ real proxy-execution path; it calls a fixed stub endpoint until the tools regist
 - **Real execution** (production): an enqueued run was claimed → HTTP 200 → `succeeded` with one
   `tool_executions` row; a replay with the same `requestId` returned the same outcome with **no**
   second row and no re-claim; an empty queue returned `idle`.
+- **Scheduled real execution** (throwaway): armed a 3s `exec_schedule`; two queued runs were drained
+  to `succeeded` by the **scheduled procedure** (real HTTP), no manual calls. **Stuck recovery**
+  (throwaway): a run forced to `running` and aged past the threshold was requeued to `retrying` /
+  `retry_count 1` / `transient` (also validating the stored-timestamp comparison). Production:
+  published additively (`exec_schedule` created, data preserved), regression 23/23.
 
 ## Not done (follow-on, in rough order)
 
 - **Per-run tool config + tools registry/allowlist + secrets:** `execute_next_task_run` calls a
   fixed stub endpoint today; real tools need a registry/allowlist and (for authed tools) the
   secrets-in-procedure pattern.
-- **Wire `execute_next_task_run` to the scheduler** (scheduled *procedure*, already proven) and add
-  **stuck-`running` recovery** (a claimed run whose procedure died mid-flight → requeue).
 - **Approval gating** port (the trust layer before execution), **execution budgets** (cost/rate),
   **task_steps / lineage / artifacts**.
 - Retire the external worker process once the scheduled tick covers it; re-point the API/CLI surfaces.

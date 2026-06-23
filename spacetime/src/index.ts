@@ -256,6 +256,17 @@ const tickSchedule = table(
   },
 );
 
+// exec_schedule: opt-in scheduler for REAL execution. arm_executor inserts an interval row -> the
+// scheduler fires scheduledExecute(row) (a PROCEDURE — it does the HTTP tool call), draining one run.
+const execSchedule = table(
+  { name: 'exec_schedule', scheduled: (): any => scheduledExecute },
+  {
+    scheduledId: t.u64().primaryKey().autoInc(),
+    scheduledAt: t.scheduleAt(),
+    workspaceId: t.u64().index('btree'),
+  },
+);
+
 // tool_executions: idempotent audit ledger for real (HTTP) task-run execution. requestId .unique()
 // dedupes a retried execution; one row per executed attempt.
 const toolExecutions = table(
@@ -290,6 +301,7 @@ const spacetimedb = schema({
   tasks,
   taskRuns,
   tickSchedule,
+  execSchedule,
   toolExecutions,
 });
 export default spacetimedb;
@@ -921,6 +933,38 @@ function tickOneTaskRun(ctx: any, workspaceId: bigint): boolean {
   return true;
 }
 
+// claimNextRun: atomically claim the next runnable run in a workspace (-> 'running'). Shared by the
+// client-callable and scheduled execution procedures. Returns the claimed run id, or null if idle.
+function claimNextRun(tx: any, workspaceId: bigint, now: any): { runId: bigint; retryCount: number } | null {
+  let next: any = null;
+  for (const r of tx.db.taskRuns.status.filter('queued')) { if (r.workspaceId === workspaceId) { next = r; break; } }
+  if (!next) { for (const r of tx.db.taskRuns.status.filter('retrying')) { if (r.workspaceId === workspaceId) { next = r; break; } } }
+  if (!next) return null;
+  tx.db.taskRuns.id.update({ ...next, status: 'running', updatedAt: now });
+  return { runId: next.id, retryCount: next.retryCount };
+}
+
+// recordAndTransition: write the idempotent tool_executions row and transition the run by HTTP
+// status (2xx -> succeeded; else retry-to-cap -> retrying/failed). Shared tx2 body.
+function recordAndTransition(tx: any, workspaceId: bigint, runId: bigint, requestId: string, httpStatus: number, now: any): { outcome: string } {
+  const won = tx.db.toolExecutions.requestId.find(requestId);
+  if (won) return { outcome: won.outcome }; // concurrent winner / replay
+  const run = tx.db.taskRuns.id.find(runId);
+  const ok = httpStatus >= 200 && httpStatus < 300;
+  let outcome = 'succeeded';
+  let stopReason = '';
+  let failureClass = '';
+  let retryCount = run ? run.retryCount : 0;
+  if (!ok && run) {
+    retryCount = run.retryCount + 1;
+    if (retryCount <= run.retryCap) { outcome = 'retrying'; failureClass = 'transient'; }
+    else { outcome = 'failed'; stopReason = 'fatal_error'; failureClass = 'transient'; }
+  }
+  if (run) tx.db.taskRuns.id.update({ ...run, status: outcome, stopReason, failureClass, retryCount, updatedAt: now });
+  tx.db.toolExecutions.insert({ id: 0n, workspaceId, taskRunId: runId, requestId, httpStatus, outcome, createdAt: now });
+  return { outcome };
+}
+
 export const createTask = spacetimedb.reducer(
   { workspaceId: t.u64(), title: t.string() },
   (ctx, { workspaceId, title }) => {
@@ -1009,7 +1053,7 @@ export const executeNextTaskRun = spacetimedb.procedure(
   { workspaceId: t.u64(), requestId: t.string() },
   t.string(),
   (ctx, { workspaceId, requestId }) => {
-    // tx1: membership + idempotency + claim.
+    // tx1: membership + idempotency replay check + claim.
     const claim = ctx.withTx((tx: any) => {
       let member = false;
       for (const m of tx.db.workspaceMembers.memberIdentity.filter(ctx.sender)) {
@@ -1020,12 +1064,8 @@ export const executeNextTaskRun = spacetimedb.procedure(
       if (existing) {
         return { member: true, replay: true, runId: existing.taskRunId.toString(), httpStatus: existing.httpStatus, outcome: existing.outcome };
       }
-      let next: any = null;
-      for (const r of tx.db.taskRuns.status.filter('queued')) { if (r.workspaceId === workspaceId) { next = r; break; } }
-      if (!next) { for (const r of tx.db.taskRuns.status.filter('retrying')) { if (r.workspaceId === workspaceId) { next = r; break; } } }
-      if (!next) return { member: true, idle: true };
-      tx.db.taskRuns.id.update({ ...next, status: 'running', updatedAt: ctx.timestamp });
-      return { member: true, runId: next.id.toString() };
+      const c = claimNextRun(tx, workspaceId, ctx.timestamp);
+      return c ? { member: true, runId: c.runId.toString() } : { member: true, idle: true };
     });
     if (!claim.member) throw new SenderError('unauthorized: not a member of this workspace');
     if (claim.replay) return JSON.stringify({ replay: true, runId: claim.runId, httpStatus: claim.httpStatus, outcome: claim.outcome });
@@ -1033,29 +1073,9 @@ export const executeNextTaskRun = spacetimedb.procedure(
 
     // HTTP: execute the tool (outside any tx). Stub endpoint until the tools registry + secrets land.
     const resp = ctx.http.fetch('https://example.com', { method: 'GET' });
-    const ok = resp.status >= 200 && resp.status < 300;
-
-    // tx2: record the execution + transition the claimed run.
     const runId = BigInt(claim.runId);
-    const result = ctx.withTx((tx: any) => {
-      const won = tx.db.toolExecutions.requestId.find(requestId);
-      if (won) return { httpStatus: won.httpStatus, outcome: won.outcome }; // concurrent winner
-      const run = tx.db.taskRuns.id.find(runId);
-      let outcome = 'succeeded', stopReason = '', failureClass = '', retryCount = run ? run.retryCount : 0;
-      if (!ok && run) {
-        retryCount = run.retryCount + 1;
-        if (retryCount <= run.retryCap) { outcome = 'retrying'; failureClass = 'transient'; }
-        else { outcome = 'failed'; stopReason = 'fatal_error'; failureClass = 'transient'; }
-      }
-      if (run) {
-        tx.db.taskRuns.id.update({ ...run, status: outcome, stopReason, failureClass, retryCount, updatedAt: ctx.timestamp });
-      }
-      tx.db.toolExecutions.insert({
-        id: 0n, workspaceId, taskRunId: runId, requestId, httpStatus: resp.status, outcome, createdAt: ctx.timestamp,
-      });
-      return { httpStatus: resp.status, outcome };
-    });
-    return JSON.stringify({ runId: claim.runId, httpStatus: result.httpStatus, outcome: result.outcome });
+    const result = ctx.withTx((tx: any) => recordAndTransition(tx, workspaceId, runId, requestId, resp.status, ctx.timestamp));
+    return JSON.stringify({ runId: claim.runId, httpStatus: resp.status, outcome: result.outcome });
   },
 );
 
@@ -1065,5 +1085,66 @@ export const myToolExecutions = spacetimedb.view(
   (ctx) => {
     const mine = callerWorkspaceIds(ctx);
     return [...ctx.db.toolExecutions.iter()].filter((x) => mine.has(x.workspaceId));
+  },
+);
+
+// scheduledExecute: the scheduled REAL-execution target — a PROCEDURE (so it can do HTTP). Runs as a
+// system tick on the row's workspace: claim one run, HTTP-call the tool, record + transition. This
+// is the worker's execution loop fully inside the module. requestId is derived from the run+attempt
+// so a re-fire of the same attempt dedupes via the tool_executions unique constraint.
+export const scheduledExecute = spacetimedb.procedure(
+  { row: execSchedule.rowType },
+  t.string(),
+  (ctx, { row }) => {
+    const workspaceId = row.workspaceId;
+    const claim = ctx.withTx((tx: any) => {
+      const c = claimNextRun(tx, workspaceId, ctx.timestamp);
+      return { idle: !c, runId: c ? c.runId.toString() : '', retryCount: c ? c.retryCount : 0 };
+    });
+    if (claim.idle) return JSON.stringify({ idle: true });
+    const requestId = `sched:${claim.runId}:${claim.retryCount}`;
+    const resp = ctx.http.fetch('https://example.com', { method: 'GET' });
+    const result = ctx.withTx((tx: any) =>
+      recordAndTransition(tx, workspaceId, BigInt(claim.runId), requestId, resp.status, ctx.timestamp),
+    );
+    return JSON.stringify({ runId: claim.runId, outcome: result.outcome });
+  },
+);
+
+// arm/disarm the real-execution scheduler (opt-in, member-gated). Not armed by default.
+export const armExecutor = spacetimedb.reducer(
+  { workspaceId: t.u64(), intervalMicros: t.u64() },
+  (ctx, { workspaceId, intervalMicros }) => {
+    assertMember(ctx, workspaceId);
+    for (const s of ctx.db.execSchedule.workspaceId.filter(workspaceId)) ctx.db.execSchedule.scheduledId.delete(s.scheduledId);
+    ctx.db.execSchedule.insert({ scheduledId: 0n, scheduledAt: ScheduleAt.interval(intervalMicros), workspaceId });
+  },
+);
+
+export const disarmExecutor = spacetimedb.reducer(
+  { workspaceId: t.u64() },
+  (ctx, { workspaceId }) => {
+    assertMember(ctx, workspaceId);
+    for (const s of ctx.db.execSchedule.workspaceId.filter(workspaceId)) ctx.db.execSchedule.scheduledId.delete(s.scheduledId);
+  },
+);
+
+// recoverStuckRuns: requeue runs stuck in 'running' (a procedure that claimed then died before its
+// commit) older than staleMicros. The stuck attempt counts as a transient failure (retry-to-cap).
+export const recoverStuckRuns = spacetimedb.reducer(
+  { workspaceId: t.u64(), staleMicros: t.u64() },
+  (ctx, { workspaceId, staleMicros }) => {
+    assertMember(ctx, workspaceId);
+    const cutoff = ctx.timestamp.microsSinceUnixEpoch - staleMicros;
+    for (const r of ctx.db.taskRuns.status.filter('running')) {
+      if (r.workspaceId !== workspaceId) continue;
+      if (r.updatedAt.microsSinceUnixEpoch >= cutoff) continue; // not stale yet
+      const retryCount = r.retryCount + 1;
+      if (retryCount <= r.retryCap) {
+        ctx.db.taskRuns.id.update({ ...r, status: 'retrying', failureClass: 'transient', retryCount, updatedAt: ctx.timestamp });
+      } else {
+        ctx.db.taskRuns.id.update({ ...r, status: 'failed', stopReason: 'stuck', failureClass: 'transient', retryCount, updatedAt: ctx.timestamp });
+      }
+    }
   },
 );
