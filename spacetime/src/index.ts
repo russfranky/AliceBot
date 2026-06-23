@@ -256,6 +256,21 @@ const tickSchedule = table(
   },
 );
 
+// tool_executions: idempotent audit ledger for real (HTTP) task-run execution. requestId .unique()
+// dedupes a retried execution; one row per executed attempt.
+const toolExecutions = table(
+  { name: 'tool_executions' },
+  {
+    id: t.u64().primaryKey().autoInc(),
+    workspaceId: t.u64().index('btree'),
+    taskRunId: t.u64(),
+    requestId: t.string().unique(),
+    httpStatus: t.u32(),
+    outcome: t.string(), // 'succeeded' | 'retrying' | 'failed'
+    createdAt: t.timestamp(),
+  },
+);
+
 const spacetimedb = schema({
   appliedRequests,
   workspaces,
@@ -275,6 +290,7 @@ const spacetimedb = schema({
   tasks,
   taskRuns,
   tickSchedule,
+  toolExecutions,
 });
 export default spacetimedb;
 
@@ -982,5 +998,72 @@ export const myTaskRuns = spacetimedb.view(
   (ctx) => {
     const mine = callerWorkspaceIds(ctx);
     return [...ctx.db.taskRuns.iter()].filter((x) => mine.has(x.workspaceId));
+  },
+);
+
+// executeNextTaskRun: the REAL execution path (replaces stub_mode). A procedure (HTTP-capable):
+// tx1 claims the next runnable run (-> 'running'); HTTP calls the tool (stub endpoint until the
+// tools registry + secrets land); tx2 records a tool_executions row and transitions the run by HTTP
+// status (2xx -> succeeded; else retry to cap -> retrying/failed). Idempotent on requestId.
+export const executeNextTaskRun = spacetimedb.procedure(
+  { workspaceId: t.u64(), requestId: t.string() },
+  t.string(),
+  (ctx, { workspaceId, requestId }) => {
+    // tx1: membership + idempotency + claim.
+    const claim = ctx.withTx((tx: any) => {
+      let member = false;
+      for (const m of tx.db.workspaceMembers.memberIdentity.filter(ctx.sender)) {
+        if (m.workspaceId === workspaceId) { member = true; break; }
+      }
+      if (!member) return { member: false };
+      const existing = tx.db.toolExecutions.requestId.find(requestId);
+      if (existing) {
+        return { member: true, replay: true, runId: existing.taskRunId.toString(), httpStatus: existing.httpStatus, outcome: existing.outcome };
+      }
+      let next: any = null;
+      for (const r of tx.db.taskRuns.status.filter('queued')) { if (r.workspaceId === workspaceId) { next = r; break; } }
+      if (!next) { for (const r of tx.db.taskRuns.status.filter('retrying')) { if (r.workspaceId === workspaceId) { next = r; break; } } }
+      if (!next) return { member: true, idle: true };
+      tx.db.taskRuns.id.update({ ...next, status: 'running', updatedAt: ctx.timestamp });
+      return { member: true, runId: next.id.toString() };
+    });
+    if (!claim.member) throw new SenderError('unauthorized: not a member of this workspace');
+    if (claim.replay) return JSON.stringify({ replay: true, runId: claim.runId, httpStatus: claim.httpStatus, outcome: claim.outcome });
+    if (claim.idle) return JSON.stringify({ idle: true });
+
+    // HTTP: execute the tool (outside any tx). Stub endpoint until the tools registry + secrets land.
+    const resp = ctx.http.fetch('https://example.com', { method: 'GET' });
+    const ok = resp.status >= 200 && resp.status < 300;
+
+    // tx2: record the execution + transition the claimed run.
+    const runId = BigInt(claim.runId);
+    const result = ctx.withTx((tx: any) => {
+      const won = tx.db.toolExecutions.requestId.find(requestId);
+      if (won) return { httpStatus: won.httpStatus, outcome: won.outcome }; // concurrent winner
+      const run = tx.db.taskRuns.id.find(runId);
+      let outcome = 'succeeded', stopReason = '', failureClass = '', retryCount = run ? run.retryCount : 0;
+      if (!ok && run) {
+        retryCount = run.retryCount + 1;
+        if (retryCount <= run.retryCap) { outcome = 'retrying'; failureClass = 'transient'; }
+        else { outcome = 'failed'; stopReason = 'fatal_error'; failureClass = 'transient'; }
+      }
+      if (run) {
+        tx.db.taskRuns.id.update({ ...run, status: outcome, stopReason, failureClass, retryCount, updatedAt: ctx.timestamp });
+      }
+      tx.db.toolExecutions.insert({
+        id: 0n, workspaceId, taskRunId: runId, requestId, httpStatus: resp.status, outcome, createdAt: ctx.timestamp,
+      });
+      return { httpStatus: resp.status, outcome };
+    });
+    return JSON.stringify({ runId: claim.runId, httpStatus: result.httpStatus, outcome: result.outcome });
+  },
+);
+
+export const myToolExecutions = spacetimedb.view(
+  { name: 'my_tool_executions', public: true },
+  t.array(toolExecutions.rowType),
+  (ctx) => {
+    const mine = callerWorkspaceIds(ctx);
+    return [...ctx.db.toolExecutions.iter()].filter((x) => mine.has(x.workspaceId));
   },
 );

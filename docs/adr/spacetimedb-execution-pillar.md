@@ -1,7 +1,8 @@
 # ADR: Port Alice's execution pillar to the SpacetimeDB module — tick-slice
 
-Status: **Tick-slice live on maincloud (verified).** Tool execution is stubbed; the real
-proxy-execution path is a follow-on.
+Status: **Tick-slice + real (HTTP) execution live on maincloud (verified).** Execution runs through
+a procedure against a *stub tool endpoint*; per-run tool config + tools registry + secrets are the
+follow-on.
 
 ## Context
 
@@ -36,8 +37,14 @@ Reducers: `create_task`, `enqueue_task_run`, `tick_next_task_run` (manual single
 membership-checked), `scheduled_tick` (the scheduled target — a reducer, system tick on the row's
 workspace), `arm_ticker` / `disarm_ticker` (opt-in scheduler control).
 Views: `my_tasks`, `my_task_runs`.
-Execution is **STUBBED** via `stub_mode` (`succeed` | `fail_transient` | `fail_policy`) so the slice
-needs no secrets/HTTP while still exercising the full retry/failure-class machine.
+The stub path (`stub_mode` = `succeed` | `fail_transient` | `fail_policy`) exercises the retry/
+failure-class machine with no HTTP.
+
+**Real execution (added):** `tool_executions` table (idempotent ledger, `requestId .unique()`),
+`execute_next_task_run` procedure (claims the next run → `'running'`, HTTP-calls the tool *outside*
+any tx, then `withTx` records a `tool_executions` row and transitions the run by HTTP status: 2xx →
+`succeeded`, else retry-to-cap → `retrying`/`failed`), and `my_tool_executions` view. This is the
+real proxy-execution path; it calls a fixed stub endpoint until the tools registry + secrets land.
 
 ## Verification (observed on maincloud)
 
@@ -50,13 +57,19 @@ needs no secrets/HTTP while still exercising the full retry/failure-class machin
 - **Production** (`alice-continuity`): publish was additive (tables/views created, data preserved);
   the continuity regression (`qa_smoke`) stayed **23/23**; a manual production tick succeeded. The
   scheduler is **not armed** on production — it is opt-in via `arm_ticker`.
+- **Real execution** (production): an enqueued run was claimed → HTTP 200 → `succeeded` with one
+  `tool_executions` row; a replay with the same `requestId` returned the same outcome with **no**
+  second row and no re-claim; an empty queue returned `idle`.
 
 ## Not done (follow-on, in rough order)
 
-- Real **proxy-execution** as a procedure: the actual external tool call (HTTP) + `withTx` write of
-  a `tool_executions` row, idempotent on the existing idempotency key — replacing the `stub_mode`.
-- **Tools registry + allowlist** and **approval gating** ports (the trust layer before execution).
-- **Execution budgets** (cost/rate control), **task_steps / lineage / artifacts**.
+- **Per-run tool config + tools registry/allowlist + secrets:** `execute_next_task_run` calls a
+  fixed stub endpoint today; real tools need a registry/allowlist and (for authed tools) the
+  secrets-in-procedure pattern.
+- **Wire `execute_next_task_run` to the scheduler** (scheduled *procedure*, already proven) and add
+  **stuck-`running` recovery** (a claimed run whose procedure died mid-flight → requeue).
+- **Approval gating** port (the trust layer before execution), **execution budgets** (cost/rate),
+  **task_steps / lineage / artifacts**.
 - Retire the external worker process once the scheduled tick covers it; re-point the API/CLI surfaces.
 
 ## Notes
