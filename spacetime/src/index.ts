@@ -282,6 +282,45 @@ const toolExecutions = table(
   },
 );
 
+// tools: per-workspace tool registry. Being registered here IS the allowlist — execution only ever
+// calls a registered tool's endpoint.
+const tools = table(
+  { name: 'tools' },
+  {
+    id: t.u64().primaryKey().autoInc(),
+    workspaceId: t.u64().index('btree'),
+    name: t.string(),
+    endpoint: t.string(),
+    createdAt: t.timestamp(),
+  },
+);
+
+// task_tools: binds a task to the tool its runs execute (avoids a column-add on the existing tasks).
+const taskTools = table(
+  { name: 'task_tools' },
+  {
+    id: t.u64().primaryKey().autoInc(),
+    workspaceId: t.u64().index('btree'),
+    taskId: t.u64().index('btree'),
+    toolId: t.u64(),
+    createdAt: t.timestamp(),
+  },
+);
+
+// approvals: the trust gate. A task must have an 'approved' approval before its runs may be enqueued.
+const approvals = table(
+  { name: 'approvals' },
+  {
+    id: t.u64().primaryKey().autoInc(),
+    workspaceId: t.u64().index('btree'),
+    taskId: t.u64().index('btree'),
+    status: t.string(), // 'pending' | 'approved' | 'rejected'
+    createdBy: t.identity(),
+    createdAt: t.timestamp(),
+    resolvedAt: t.option(t.timestamp()),
+  },
+);
+
 const spacetimedb = schema({
   appliedRequests,
   workspaces,
@@ -303,6 +342,9 @@ const spacetimedb = schema({
   tickSchedule,
   execSchedule,
   toolExecutions,
+  tools,
+  taskTools,
+  approvals,
 });
 export default spacetimedb;
 
@@ -935,13 +977,19 @@ function tickOneTaskRun(ctx: any, workspaceId: bigint): boolean {
 
 // claimNextRun: atomically claim the next runnable run in a workspace (-> 'running'). Shared by the
 // client-callable and scheduled execution procedures. Returns the claimed run id, or null if idle.
-function claimNextRun(tx: any, workspaceId: bigint, now: any): { runId: bigint; retryCount: number } | null {
+function claimNextRun(tx: any, workspaceId: bigint, now: any): { runId: bigint; retryCount: number; endpoint: string } | null {
   let next: any = null;
   for (const r of tx.db.taskRuns.status.filter('queued')) { if (r.workspaceId === workspaceId) { next = r; break; } }
   if (!next) { for (const r of tx.db.taskRuns.status.filter('retrying')) { if (r.workspaceId === workspaceId) { next = r; break; } } }
   if (!next) return null;
+  // resolve the bound tool's endpoint (registry/allowlist); fall back to the stub if none bound.
+  let endpoint = 'https://example.com';
+  for (const b of tx.db.taskTools.taskId.filter(next.taskId)) {
+    const tool = tx.db.tools.id.find(b.toolId);
+    if (tool) { endpoint = tool.endpoint; break; }
+  }
   tx.db.taskRuns.id.update({ ...next, status: 'running', updatedAt: now });
-  return { runId: next.id, retryCount: next.retryCount };
+  return { runId: next.id, retryCount: next.retryCount, endpoint };
 }
 
 // recordAndTransition: write the idempotent tool_executions row and transition the run by HTTP
@@ -969,14 +1017,69 @@ export const createTask = spacetimedb.reducer(
   { workspaceId: t.u64(), title: t.string() },
   (ctx, { workspaceId, title }) => {
     assertMember(ctx, workspaceId);
-    ctx.db.tasks.insert({ id: 0n, workspaceId, title, status: 'approved', createdAt: ctx.timestamp });
+    ctx.db.tasks.insert({ id: 0n, workspaceId, title, status: 'open', createdAt: ctx.timestamp }); // gated: needs approval
   },
 );
 
+// registerTool: add a tool to the workspace registry (registration = allowlist).
+export const registerTool = spacetimedb.reducer(
+  { workspaceId: t.u64(), name: t.string(), endpoint: t.string() },
+  (ctx, { workspaceId, name, endpoint }) => {
+    assertMember(ctx, workspaceId);
+    ctx.db.tools.insert({ id: 0n, workspaceId, name, endpoint, createdAt: ctx.timestamp });
+  },
+);
+
+// bindTaskTool: bind a task to the tool its runs will execute (both must be in the workspace).
+export const bindTaskTool = spacetimedb.reducer(
+  { workspaceId: t.u64(), taskId: t.u64(), toolId: t.u64() },
+  (ctx, { workspaceId, taskId, toolId }) => {
+    assertMember(ctx, workspaceId);
+    const task = ctx.db.tasks.id.find(taskId);
+    if (!task || task.workspaceId !== workspaceId) throw new Error('task not found in workspace');
+    const tool = ctx.db.tools.id.find(toolId);
+    if (!tool || tool.workspaceId !== workspaceId) throw new Error('tool not found in workspace');
+    for (const b of ctx.db.taskTools.taskId.filter(taskId)) ctx.db.taskTools.id.delete(b.id); // one tool per task
+    ctx.db.taskTools.insert({ id: 0n, workspaceId, taskId, toolId, createdAt: ctx.timestamp });
+  },
+);
+
+// requestApproval / resolveApproval: the trust gate. Approving flips the task to 'approved'.
+export const requestApproval = spacetimedb.reducer(
+  { workspaceId: t.u64(), taskId: t.u64() },
+  (ctx, { workspaceId, taskId }) => {
+    assertMember(ctx, workspaceId);
+    const task = ctx.db.tasks.id.find(taskId);
+    if (!task || task.workspaceId !== workspaceId) throw new Error('task not found in workspace');
+    ctx.db.approvals.insert({
+      id: 0n, workspaceId, taskId, status: 'pending', createdBy: ctx.sender,
+      createdAt: ctx.timestamp, resolvedAt: undefined,
+    });
+  },
+);
+
+export const resolveApproval = spacetimedb.reducer(
+  { approvalId: t.u64(), decision: t.string() }, // 'approved' | 'rejected'
+  (ctx, { approvalId, decision }) => {
+    const ap = ctx.db.approvals.id.find(approvalId);
+    if (!ap) throw new Error('approval not found');
+    assertMember(ctx, ap.workspaceId);
+    ctx.db.approvals.id.update({ ...ap, status: decision, resolvedAt: ctx.timestamp });
+    if (decision === 'approved') {
+      const task = ctx.db.tasks.id.find(ap.taskId);
+      if (task) ctx.db.tasks.id.update({ ...task, status: 'approved' });
+    }
+  },
+);
+
+// enqueueTaskRun: GATED — only an 'approved' task may be enqueued for execution.
 export const enqueueTaskRun = spacetimedb.reducer(
   { workspaceId: t.u64(), taskId: t.u64(), stubMode: t.string(), retryCap: t.u32() },
   (ctx, { workspaceId, taskId, stubMode, retryCap }) => {
     assertMember(ctx, workspaceId);
+    const task = ctx.db.tasks.id.find(taskId);
+    if (!task || task.workspaceId !== workspaceId) throw new Error('task not found in workspace');
+    if (task.status !== 'approved') throw new SenderError('task is not approved'); // trust gate
     ctx.db.taskRuns.insert({
       id: 0n, workspaceId, taskId, status: 'queued', stubMode,
       stopReason: '', retryPosture: 'normal', retryCount: 0, retryCap,
@@ -1065,14 +1168,14 @@ export const executeNextTaskRun = spacetimedb.procedure(
         return { member: true, replay: true, runId: existing.taskRunId.toString(), httpStatus: existing.httpStatus, outcome: existing.outcome };
       }
       const c = claimNextRun(tx, workspaceId, ctx.timestamp);
-      return c ? { member: true, runId: c.runId.toString() } : { member: true, idle: true };
+      return c ? { member: true, runId: c.runId.toString(), endpoint: c.endpoint } : { member: true, idle: true };
     });
     if (!claim.member) throw new SenderError('unauthorized: not a member of this workspace');
     if (claim.replay) return JSON.stringify({ replay: true, runId: claim.runId, httpStatus: claim.httpStatus, outcome: claim.outcome });
     if (claim.idle) return JSON.stringify({ idle: true });
 
-    // HTTP: execute the tool (outside any tx). Stub endpoint until the tools registry + secrets land.
-    const resp = ctx.http.fetch('https://example.com', { method: 'GET' });
+    // HTTP: execute the run's registered tool (outside any tx).
+    const resp = ctx.http.fetch((claim as any).endpoint, { method: 'GET' });
     const runId = BigInt(claim.runId);
     const result = ctx.withTx((tx: any) => recordAndTransition(tx, workspaceId, runId, requestId, resp.status, ctx.timestamp));
     return JSON.stringify({ runId: claim.runId, httpStatus: resp.status, outcome: result.outcome });
@@ -1088,6 +1191,24 @@ export const myToolExecutions = spacetimedb.view(
   },
 );
 
+export const myTools = spacetimedb.view(
+  { name: 'my_tools', public: true },
+  t.array(tools.rowType),
+  (ctx) => {
+    const mine = callerWorkspaceIds(ctx);
+    return [...ctx.db.tools.iter()].filter((x) => mine.has(x.workspaceId));
+  },
+);
+
+export const myApprovals = spacetimedb.view(
+  { name: 'my_approvals', public: true },
+  t.array(approvals.rowType),
+  (ctx) => {
+    const mine = callerWorkspaceIds(ctx);
+    return [...ctx.db.approvals.iter()].filter((x) => mine.has(x.workspaceId));
+  },
+);
+
 // scheduledExecute: the scheduled REAL-execution target — a PROCEDURE (so it can do HTTP). Runs as a
 // system tick on the row's workspace: claim one run, HTTP-call the tool, record + transition. This
 // is the worker's execution loop fully inside the module. requestId is derived from the run+attempt
@@ -1099,11 +1220,11 @@ export const scheduledExecute = spacetimedb.procedure(
     const workspaceId = row.workspaceId;
     const claim = ctx.withTx((tx: any) => {
       const c = claimNextRun(tx, workspaceId, ctx.timestamp);
-      return { idle: !c, runId: c ? c.runId.toString() : '', retryCount: c ? c.retryCount : 0 };
+      return { idle: !c, runId: c ? c.runId.toString() : '', retryCount: c ? c.retryCount : 0, endpoint: c ? c.endpoint : 'https://example.com' };
     });
     if (claim.idle) return JSON.stringify({ idle: true });
     const requestId = `sched:${claim.runId}:${claim.retryCount}`;
-    const resp = ctx.http.fetch('https://example.com', { method: 'GET' });
+    const resp = ctx.http.fetch(claim.endpoint, { method: 'GET' });
     const result = ctx.withTx((tx: any) =>
       recordAndTransition(tx, workspaceId, BigInt(claim.runId), requestId, resp.status, ctx.timestamp),
     );

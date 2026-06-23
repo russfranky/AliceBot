@@ -1,9 +1,9 @@
 # ADR: Port Alice's execution pillar to the SpacetimeDB module — tick-slice
 
 Status: **Execution pillar slice live on maincloud (verified).** Claim+tick+retry, real HTTP
-execution, a **scheduled executor** (the worker loop fully in-module), and stuck-`running` recovery
-all work against a *stub tool endpoint*; per-run tool config + tools registry + secrets are the
-follow-on.
+execution to a **registered tool's endpoint**, a **scheduled executor** (the worker loop fully
+in-module), stuck-`running` recovery, and **approval gating** all work. Authed-tool secrets,
+execution budgets, and task lineage are the follow-on.
 
 ## Context
 
@@ -54,6 +54,13 @@ procedure that died after claiming) older than a threshold, counting the stuck a
 transient failure. Shared `claimNextRun` / `recordAndTransition` helpers back both the
 client-callable and scheduled paths. This is the worker's execution loop fully inside the module.
 
+**Approval gating + tools registry (added):** `tools` (per-workspace registry — registration *is*
+the allowlist), `task_tools` (binds a task → its tool, avoiding a column-add on `tasks`), and
+`approvals` (`request_approval` → `resolve_approval`; approving flips the task to `approved`).
+`create_task` now starts `open`; `enqueue_task_run` is **gated** — only an `approved` task may be
+enqueued. `claimNextRun` resolves the run's task → bound tool → endpoint and execution HTTP-calls
+**that** (stub fallback if unbound). Views: `my_tools`, `my_approvals`.
+
 ## Verification (observed on maincloud)
 
 - **Manual ticks** (throwaway db): `succeed` → `succeeded`; `fail_policy` → `failed` /
@@ -73,14 +80,17 @@ client-callable and scheduled paths. This is the worker's execution loop fully i
   (throwaway): a run forced to `running` and aged past the threshold was requeued to `retrying` /
   `retry_count 1` / `transient` (also validating the stored-timestamp comparison). Production:
   published additively (`exec_schedule` created, data preserved), regression 23/23.
+- **Approval gate + tools** (throwaway + production): enqueuing an unapproved task is rejected
+  (`task is not approved`); after `request_approval` / `resolve_approval(approved)` the task flips to
+  `approved` and enqueue is allowed; a run bound to a tool at `httpbin/status/418` executed with
+  `http_status 418` → `retrying` — proving the **registered tool's endpoint** is used, not the stub.
+  Production publish additive (3 tables + 2 views, data preserved), regression 23/23.
 
 ## Not done (follow-on, in rough order)
 
-- **Per-run tool config + tools registry/allowlist + secrets:** `execute_next_task_run` calls a
-  fixed stub endpoint today; real tools need a registry/allowlist and (for authed tools) the
-  secrets-in-procedure pattern.
-- **Approval gating** port (the trust layer before execution), **execution budgets** (cost/rate),
-  **task_steps / lineage / artifacts**.
+- **Secrets for authed tools:** the registry holds an endpoint; tools needing an API key reuse the
+  `provider_keys`-style secrets-in-procedure pattern (already proven for embeddings).
+- **Execution budgets** (cost/rate), **task_steps / lineage / artifacts**, richer approval policies.
 - Retire the external worker process once the scheduled tick covers it; re-point the API/CLI surfaces.
 
 ## Notes
