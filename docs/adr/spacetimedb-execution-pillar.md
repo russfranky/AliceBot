@@ -3,8 +3,8 @@
 Status: **Execution pillar slice live on maincloud (verified).** Claim+tick+retry, real HTTP
 execution to a **registered tool's endpoint** (with **authed-tool `Bearer` secrets**), a
 **scheduled executor** (the worker loop fully in-module), stuck-`running` recovery, **approval
-gating**, and **execution budgets** all work. Task lineage/artifacts and the Track B re-point are
-the follow-on.
+gating**, **execution budgets**, and **task artifacts** (tool output captured + linked) all work.
+The Track B re-point of Alice's surfaces onto the module is the main remaining follow-on.
 
 ## Context
 
@@ -69,6 +69,10 @@ one unit per claimed execution; when `consumed` reaches `maxExecutions` the next
 reaped as `failed` / `budget_exhausted` (a terminal policy failure) **before any HTTP**. View:
 `my_budgets`.
 
+**Task artifacts (added):** each execution captures the tool's response body (truncated) into
+`task_artifacts`, linked to the run and the `tool_executions` ledger entry — run → execution →
+artifact lineage. View: `my_task_artifacts`.
+
 ## Verification (observed on maincloud)
 
 - **Manual ticks** (throwaway db): `succeed` → `succeeded`; `fail_policy` → `failed` /
@@ -101,10 +105,13 @@ reaped as `failed` / `budget_exhausted` (a terminal policy failure) **before any
 - **Execution budget** (throwaway + production): a budget of 2 against 3 enqueued runs let 2 execute
   (`succeeded`) and reaped the 3rd as `failed` / `budget_exhausted` with no HTTP; `my_budgets` showed
   `2/2` consumed. Production publish additive (`budgets` + `my_budgets`, data preserved), regression 23/23.
+- **Task artifacts** (throwaway + production): an execution against `httpbin.org/get` wrote a
+  `task_artifacts` row linked to the run and the tool_execution, with the tool's JSON response as
+  content. Production publish additive (`task_artifacts` + `my_task_artifacts`, data preserved), regression 23/23.
 
 ## Not done (follow-on, in rough order)
 
-- **task_steps / lineage / artifacts**, rolling-window / agent-scoped budgets, richer approval policies.
+- **task_steps** (multi-step tasks), rolling-window / agent-scoped budgets, richer approval policies.
 - Retire the external worker process once the scheduled tick covers it; re-point the API/CLI surfaces.
 
 ## Notes

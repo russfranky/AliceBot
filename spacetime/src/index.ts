@@ -334,6 +334,20 @@ const budgets = table(
   },
 );
 
+// task_artifacts: durable record of a tool execution's output (truncated), linked to the run and
+// the tool_executions ledger entry — the lineage of what a run produced.
+const taskArtifacts = table(
+  { name: 'task_artifacts' },
+  {
+    id: t.u64().primaryKey().autoInc(),
+    workspaceId: t.u64().index('btree'),
+    taskRunId: t.u64().index('btree'),
+    toolExecutionId: t.u64(),
+    content: t.string(),
+    createdAt: t.timestamp(),
+  },
+);
+
 const spacetimedb = schema({
   appliedRequests,
   workspaces,
@@ -359,6 +373,7 @@ const spacetimedb = schema({
   taskTools,
   approvals,
   budgets,
+  taskArtifacts,
 });
 export default spacetimedb;
 
@@ -1025,7 +1040,7 @@ function claimNextRun(tx: any, workspaceId: bigint, now: any): { runId: bigint; 
 
 // recordAndTransition: write the idempotent tool_executions row and transition the run by HTTP
 // status (2xx -> succeeded; else retry-to-cap -> retrying/failed). Shared tx2 body.
-function recordAndTransition(tx: any, workspaceId: bigint, runId: bigint, requestId: string, httpStatus: number, now: any): { outcome: string } {
+function recordAndTransition(tx: any, workspaceId: bigint, runId: bigint, requestId: string, httpStatus: number, body: string, now: any): { outcome: string } {
   const won = tx.db.toolExecutions.requestId.find(requestId);
   if (won) return { outcome: won.outcome }; // concurrent winner / replay
   const run = tx.db.taskRuns.id.find(runId);
@@ -1040,7 +1055,9 @@ function recordAndTransition(tx: any, workspaceId: bigint, runId: bigint, reques
     else { outcome = 'failed'; stopReason = 'fatal_error'; failureClass = 'transient'; }
   }
   if (run) tx.db.taskRuns.id.update({ ...run, status: outcome, stopReason, failureClass, retryCount, updatedAt: now });
-  tx.db.toolExecutions.insert({ id: 0n, workspaceId, taskRunId: runId, requestId, httpStatus, outcome, createdAt: now });
+  const exec = tx.db.toolExecutions.insert({ id: 0n, workspaceId, taskRunId: runId, requestId, httpStatus, outcome, createdAt: now });
+  // durable artifact: the tool's response (truncated), linked to the run + execution (lineage).
+  tx.db.taskArtifacts.insert({ id: 0n, workspaceId, taskRunId: runId, toolExecutionId: exec.id, content: body.slice(0, 500), createdAt: now });
   return { outcome };
 }
 
@@ -1210,8 +1227,9 @@ export const executeNextTaskRun = spacetimedb.procedure(
     const authHeaders: any = {};
     if ((claim as any).apiKey) authHeaders['Authorization'] = `Bearer ${(claim as any).apiKey}`;
     const resp = ctx.http.fetch((claim as any).endpoint, { method: 'GET', headers: authHeaders });
+    const respText = resp.text();
     const runId = BigInt(claim.runId);
-    const result = ctx.withTx((tx: any) => recordAndTransition(tx, workspaceId, runId, requestId, resp.status, ctx.timestamp));
+    const result = ctx.withTx((tx: any) => recordAndTransition(tx, workspaceId, runId, requestId, resp.status, respText, ctx.timestamp));
     return JSON.stringify({ runId: claim.runId, httpStatus: resp.status, outcome: result.outcome });
   },
 );
@@ -1262,6 +1280,15 @@ export const myBudgets = spacetimedb.view(
   },
 );
 
+export const myTaskArtifacts = spacetimedb.view(
+  { name: 'my_task_artifacts', public: true },
+  t.array(taskArtifacts.rowType),
+  (ctx) => {
+    const mine = callerWorkspaceIds(ctx);
+    return [...ctx.db.taskArtifacts.iter()].filter((x) => mine.has(x.workspaceId));
+  },
+);
+
 // scheduledExecute: the scheduled REAL-execution target — a PROCEDURE (so it can do HTTP). Runs as a
 // system tick on the row's workspace: claim one run, HTTP-call the tool, record + transition. This
 // is the worker's execution loop fully inside the module. requestId is derived from the run+attempt
@@ -1280,8 +1307,9 @@ export const scheduledExecute = spacetimedb.procedure(
     const authHeaders: any = {};
     if (claim.apiKey) authHeaders['Authorization'] = `Bearer ${claim.apiKey}`;
     const resp = ctx.http.fetch(claim.endpoint, { method: 'GET', headers: authHeaders });
+    const respText = resp.text();
     const result = ctx.withTx((tx: any) =>
-      recordAndTransition(tx, workspaceId, BigInt(claim.runId), requestId, resp.status, ctx.timestamp),
+      recordAndTransition(tx, workspaceId, BigInt(claim.runId), requestId, resp.status, respText, ctx.timestamp),
     );
     return JSON.stringify({ runId: claim.runId, outcome: result.outcome });
   },
