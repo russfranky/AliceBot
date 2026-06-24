@@ -1,9 +1,9 @@
 # ADR: Port Alice's execution pillar to the SpacetimeDB module — tick-slice
 
 Status: **Execution pillar slice live on maincloud (verified).** Claim+tick+retry, real HTTP
-execution to a **registered tool's endpoint**, a **scheduled executor** (the worker loop fully
-in-module), stuck-`running` recovery, and **approval gating** all work. Authed-tool secrets,
-execution budgets, and task lineage are the follow-on.
+execution to a **registered tool's endpoint** (with **authed-tool `Bearer` secrets**), a
+**scheduled executor** (the worker loop fully in-module), stuck-`running` recovery, and **approval
+gating** all work. Execution budgets and task lineage are the follow-on.
 
 ## Context
 
@@ -58,8 +58,10 @@ client-callable and scheduled paths. This is the worker's execution loop fully i
 the allowlist), `task_tools` (binds a task → its tool, avoiding a column-add on `tasks`), and
 `approvals` (`request_approval` → `resolve_approval`; approving flips the task to `approved`).
 `create_task` now starts `open`; `enqueue_task_run` is **gated** — only an `approved` task may be
-enqueued. `claimNextRun` resolves the run's task → bound tool → endpoint and execution HTTP-calls
-**that** (stub fallback if unbound). Views: `my_tools`, `my_approvals`.
+enqueued. `claimNextRun` resolves the run's task → bound tool → endpoint **and, for authed tools, the API key
+from the private `provider_keys` table** (provider == tool name, set via `set_provider_key`);
+execution HTTP-calls that endpoint with an `Authorization: Bearer` header when a key is present
+(stub fallback if no tool is bound). Views: `my_tools`, `my_approvals`.
 
 ## Verification (observed on maincloud)
 
@@ -85,11 +87,14 @@ enqueued. `claimNextRun` resolves the run's task → bound tool → endpoint and
   `approved` and enqueue is allowed; a run bound to a tool at `httpbin/status/418` executed with
   `http_status 418` → `retrying` — proving the **registered tool's endpoint** is used, not the stub.
   Production publish additive (3 tables + 2 views, data preserved), regression 23/23.
+- **Authed-tool secrets** (throwaway + production): a tool pointed at `httpbin.org/bearer` returned
+  `401 → retrying` with no key; after `set_provider_key` for the tool the same run re-executed →
+  `200 → succeeded` — proving the key is read server-side from `provider_keys` and sent as
+  `Authorization: Bearer`, never as a call argument. Production publish was logic-only (data
+  preserved), regression 23/23.
 
 ## Not done (follow-on, in rough order)
 
-- **Secrets for authed tools:** the registry holds an endpoint; tools needing an API key reuse the
-  `provider_keys`-style secrets-in-procedure pattern (already proven for embeddings).
 - **Execution budgets** (cost/rate), **task_steps / lineage / artifacts**, richer approval policies.
 - Retire the external worker process once the scheduled tick covers it; re-point the API/CLI surfaces.
 

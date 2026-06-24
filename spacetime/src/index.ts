@@ -977,19 +977,27 @@ function tickOneTaskRun(ctx: any, workspaceId: bigint): boolean {
 
 // claimNextRun: atomically claim the next runnable run in a workspace (-> 'running'). Shared by the
 // client-callable and scheduled execution procedures. Returns the claimed run id, or null if idle.
-function claimNextRun(tx: any, workspaceId: bigint, now: any): { runId: bigint; retryCount: number; endpoint: string } | null {
+function claimNextRun(tx: any, workspaceId: bigint, now: any): { runId: bigint; retryCount: number; endpoint: string; apiKey: string } | null {
   let next: any = null;
   for (const r of tx.db.taskRuns.status.filter('queued')) { if (r.workspaceId === workspaceId) { next = r; break; } }
   if (!next) { for (const r of tx.db.taskRuns.status.filter('retrying')) { if (r.workspaceId === workspaceId) { next = r; break; } } }
   if (!next) return null;
-  // resolve the bound tool's endpoint (registry/allowlist); fall back to the stub if none bound.
+  // resolve the bound tool's endpoint (registry/allowlist) and, for authed tools, its API key from
+  // the private provider_keys table (provider == tool name, set via set_provider_key). Stub fallback.
   let endpoint = 'https://example.com';
+  let apiKey = '';
   for (const b of tx.db.taskTools.taskId.filter(next.taskId)) {
     const tool = tx.db.tools.id.find(b.toolId);
-    if (tool) { endpoint = tool.endpoint; break; }
+    if (tool) {
+      endpoint = tool.endpoint;
+      for (const k of tx.db.providerKeys.workspaceId.filter(workspaceId)) {
+        if (k.provider === tool.name) { apiKey = k.apiKey; break; }
+      }
+      break;
+    }
   }
   tx.db.taskRuns.id.update({ ...next, status: 'running', updatedAt: now });
-  return { runId: next.id, retryCount: next.retryCount, endpoint };
+  return { runId: next.id, retryCount: next.retryCount, endpoint, apiKey };
 }
 
 // recordAndTransition: write the idempotent tool_executions row and transition the run by HTTP
@@ -1168,14 +1176,17 @@ export const executeNextTaskRun = spacetimedb.procedure(
         return { member: true, replay: true, runId: existing.taskRunId.toString(), httpStatus: existing.httpStatus, outcome: existing.outcome };
       }
       const c = claimNextRun(tx, workspaceId, ctx.timestamp);
-      return c ? { member: true, runId: c.runId.toString(), endpoint: c.endpoint } : { member: true, idle: true };
+      return c ? { member: true, runId: c.runId.toString(), endpoint: c.endpoint, apiKey: c.apiKey } : { member: true, idle: true };
     });
     if (!claim.member) throw new SenderError('unauthorized: not a member of this workspace');
     if (claim.replay) return JSON.stringify({ replay: true, runId: claim.runId, httpStatus: claim.httpStatus, outcome: claim.outcome });
     if (claim.idle) return JSON.stringify({ idle: true });
 
-    // HTTP: execute the run's registered tool (outside any tx).
-    const resp = ctx.http.fetch((claim as any).endpoint, { method: 'GET' });
+    // HTTP: execute the run's registered tool (outside any tx). Authed tools get a Bearer header
+    // sourced server-side from the private provider_keys table — never a call argument.
+    const authHeaders: any = {};
+    if ((claim as any).apiKey) authHeaders['Authorization'] = `Bearer ${(claim as any).apiKey}`;
+    const resp = ctx.http.fetch((claim as any).endpoint, { method: 'GET', headers: authHeaders });
     const runId = BigInt(claim.runId);
     const result = ctx.withTx((tx: any) => recordAndTransition(tx, workspaceId, runId, requestId, resp.status, ctx.timestamp));
     return JSON.stringify({ runId: claim.runId, httpStatus: resp.status, outcome: result.outcome });
@@ -1220,11 +1231,13 @@ export const scheduledExecute = spacetimedb.procedure(
     const workspaceId = row.workspaceId;
     const claim = ctx.withTx((tx: any) => {
       const c = claimNextRun(tx, workspaceId, ctx.timestamp);
-      return { idle: !c, runId: c ? c.runId.toString() : '', retryCount: c ? c.retryCount : 0, endpoint: c ? c.endpoint : 'https://example.com' };
+      return { idle: !c, runId: c ? c.runId.toString() : '', retryCount: c ? c.retryCount : 0, endpoint: c ? c.endpoint : 'https://example.com', apiKey: c ? c.apiKey : '' };
     });
     if (claim.idle) return JSON.stringify({ idle: true });
     const requestId = `sched:${claim.runId}:${claim.retryCount}`;
-    const resp = ctx.http.fetch(claim.endpoint, { method: 'GET' });
+    const authHeaders: any = {};
+    if (claim.apiKey) authHeaders['Authorization'] = `Bearer ${claim.apiKey}`;
+    const resp = ctx.http.fetch(claim.endpoint, { method: 'GET', headers: authHeaders });
     const result = ctx.withTx((tx: any) =>
       recordAndTransition(tx, workspaceId, BigInt(claim.runId), requestId, resp.status, ctx.timestamp),
     );
