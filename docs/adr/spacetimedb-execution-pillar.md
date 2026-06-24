@@ -2,8 +2,9 @@
 
 Status: **Execution pillar slice live on maincloud (verified).** Claim+tick+retry, real HTTP
 execution to a **registered tool's endpoint** (with **authed-tool `Bearer` secrets**), a
-**scheduled executor** (the worker loop fully in-module), stuck-`running` recovery, and **approval
-gating** all work. Execution budgets and task lineage are the follow-on.
+**scheduled executor** (the worker loop fully in-module), stuck-`running` recovery, **approval
+gating**, and **execution budgets** all work. Task lineage/artifacts and the Track B re-point are
+the follow-on.
 
 ## Context
 
@@ -63,6 +64,11 @@ from the private `provider_keys` table** (provider == tool name, set via `set_pr
 execution HTTP-calls that endpoint with an `Authorization: Bearer` header when a key is present
 (stub fallback if no tool is bound). Views: `my_tools`, `my_approvals`.
 
+**Execution budgets (added):** `budgets` (per-workspace cap) + `set_budget`. `claimNextRun` consumes
+one unit per claimed execution; when `consumed` reaches `maxExecutions` the next runnable run is
+reaped as `failed` / `budget_exhausted` (a terminal policy failure) **before any HTTP**. View:
+`my_budgets`.
+
 ## Verification (observed on maincloud)
 
 - **Manual ticks** (throwaway db): `succeed` → `succeeded`; `fail_policy` → `failed` /
@@ -92,10 +98,13 @@ execution HTTP-calls that endpoint with an `Authorization: Bearer` header when a
   `200 → succeeded` — proving the key is read server-side from `provider_keys` and sent as
   `Authorization: Bearer`, never as a call argument. Production publish was logic-only (data
   preserved), regression 23/23.
+- **Execution budget** (throwaway + production): a budget of 2 against 3 enqueued runs let 2 execute
+  (`succeeded`) and reaped the 3rd as `failed` / `budget_exhausted` with no HTTP; `my_budgets` showed
+  `2/2` consumed. Production publish additive (`budgets` + `my_budgets`, data preserved), regression 23/23.
 
 ## Not done (follow-on, in rough order)
 
-- **Execution budgets** (cost/rate), **task_steps / lineage / artifacts**, richer approval policies.
+- **task_steps / lineage / artifacts**, rolling-window / agent-scoped budgets, richer approval policies.
 - Retire the external worker process once the scheduled tick covers it; re-point the API/CLI surfaces.
 
 ## Notes

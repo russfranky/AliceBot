@@ -321,6 +321,19 @@ const approvals = table(
   },
 );
 
+// budgets: per-workspace execution cap. Each claimed execution consumes one unit; when consumed
+// reaches the cap, further runs are reaped as failed/budget_exhausted before any HTTP is made.
+const budgets = table(
+  { name: 'budgets' },
+  {
+    id: t.u64().primaryKey().autoInc(),
+    workspaceId: t.u64().index('btree'),
+    maxExecutions: t.u32(),
+    consumed: t.u32(),
+    createdAt: t.timestamp(),
+  },
+);
+
 const spacetimedb = schema({
   appliedRequests,
   workspaces,
@@ -345,6 +358,7 @@ const spacetimedb = schema({
   tools,
   taskTools,
   approvals,
+  budgets,
 });
 export default spacetimedb;
 
@@ -982,6 +996,14 @@ function claimNextRun(tx: any, workspaceId: bigint, now: any): { runId: bigint; 
   for (const r of tx.db.taskRuns.status.filter('queued')) { if (r.workspaceId === workspaceId) { next = r; break; } }
   if (!next) { for (const r of tx.db.taskRuns.status.filter('retrying')) { if (r.workspaceId === workspaceId) { next = r; break; } } }
   if (!next) return null;
+  // budget gate: if the workspace has a budget and it is exhausted, reap this run as a terminal
+  // policy failure before any HTTP; otherwise consume one unit (reserve the execution slot).
+  let budget: any = null;
+  for (const b of tx.db.budgets.workspaceId.filter(workspaceId)) { budget = b; break; }
+  if (budget && budget.consumed >= budget.maxExecutions) {
+    tx.db.taskRuns.id.update({ ...next, status: 'failed', stopReason: 'budget_exhausted', failureClass: 'policy', updatedAt: now });
+    return null;
+  }
   // resolve the bound tool's endpoint (registry/allowlist) and, for authed tools, its API key from
   // the private provider_keys table (provider == tool name, set via set_provider_key). Stub fallback.
   let endpoint = 'https://example.com';
@@ -996,6 +1018,7 @@ function claimNextRun(tx: any, workspaceId: bigint, now: any): { runId: bigint; 
       break;
     }
   }
+  if (budget) tx.db.budgets.id.update({ ...budget, consumed: budget.consumed + 1 });
   tx.db.taskRuns.id.update({ ...next, status: 'running', updatedAt: now });
   return { runId: next.id, retryCount: next.retryCount, endpoint, apiKey };
 }
@@ -1217,6 +1240,25 @@ export const myApprovals = spacetimedb.view(
   (ctx) => {
     const mine = callerWorkspaceIds(ctx);
     return [...ctx.db.approvals.iter()].filter((x) => mine.has(x.workspaceId));
+  },
+);
+
+// setBudget: set (replace) the workspace's execution cap and reset its consumed counter.
+export const setBudget = spacetimedb.reducer(
+  { workspaceId: t.u64(), maxExecutions: t.u32() },
+  (ctx, { workspaceId, maxExecutions }) => {
+    assertMember(ctx, workspaceId);
+    for (const b of ctx.db.budgets.workspaceId.filter(workspaceId)) ctx.db.budgets.id.delete(b.id); // one per workspace
+    ctx.db.budgets.insert({ id: 0n, workspaceId, maxExecutions, consumed: 0, createdAt: ctx.timestamp });
+  },
+);
+
+export const myBudgets = spacetimedb.view(
+  { name: 'my_budgets', public: true },
+  t.array(budgets.rowType),
+  (ctx) => {
+    const mine = callerWorkspaceIds(ctx);
+    return [...ctx.db.budgets.iter()].filter((x) => mine.has(x.workspaceId));
   },
 );
 
