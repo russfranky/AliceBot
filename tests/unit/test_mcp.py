@@ -117,6 +117,41 @@ def test_call_mcp_tool_requires_object_arguments() -> None:
         call_mcp_tool(context, name="alice_recall", arguments=["not-a-json-object"])
 
 
+def test_spacetime_tools_are_hidden_and_unknown_without_flag(monkeypatch) -> None:
+    monkeypatch.delenv("ALICE_BACKEND", raising=False)
+    names = [tool["name"] for tool in list_mcp_tools()]
+    assert not any(name.startswith("alice_spacetime") for name in names)
+
+    context = MCPRuntimeContext(
+        database_url="postgresql://localhost/alicebot",
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+    with pytest.raises(MCPToolNotFoundError, match="unknown tool"):
+        call_mcp_tool(context, name="alice_spacetime_exec_status", arguments={})
+
+
+def test_spacetime_tools_are_exposed_and_dispatched_with_flag(monkeypatch) -> None:
+    monkeypatch.setenv("ALICE_BACKEND", "spacetimedb")
+    tools = list_mcp_tools()
+    spacetime = [tool for tool in tools if tool["name"].startswith("alice_spacetime")]
+    assert {tool["name"] for tool in spacetime} == set(mcp_tools_module._SPACETIME_TOOL_HANDLERS)
+    for tool in spacetime:
+        assert tool["inputSchema"].get("additionalProperties") is False
+
+    # Dispatch resolves to the Track B backend (no network: the backend is faked).
+    class _FakeBackend:
+        def exec_status(self) -> dict:
+            return {"backend": "spacetimedb", "runs": []}
+
+    monkeypatch.setattr(mcp_tools_module, "_spacetime_backend", lambda: _FakeBackend())
+    context = MCPRuntimeContext(
+        database_url="postgresql://localhost/alicebot",
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+    payload = call_mcp_tool(context, name="alice_spacetime_exec_status", arguments={})
+    assert payload == {"backend": "spacetimedb", "runs": []}
+
+
 def test_call_mcp_tool_converts_postgres_check_violation(monkeypatch) -> None:
     context = MCPRuntimeContext(
         database_url="postgresql://localhost/alicebot",

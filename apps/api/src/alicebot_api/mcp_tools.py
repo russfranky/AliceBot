@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -3775,8 +3776,234 @@ _TOOL_HANDLERS = {
 }
 
 
+# ---------------------------------------------------------------------------------------------
+# SpacetimeDB (Track B) tools — additive, behind ALICE_BACKEND=spacetimedb. These route to the
+# hosted module via spacetime_backend.SpacetimeBackend over HTTP (no Postgres connection). They are
+# only listed/dispatched when the backend flag is set, so the default Postgres surface above is
+# unchanged when the flag is off. SpacetimeBackend raises ValueError on a module reject (e.g. the
+# approval gate) -> call_mcp_tool already maps that to a clean MCPToolError.
+# ---------------------------------------------------------------------------------------------
+def _spacetime_enabled() -> bool:
+    return os.environ.get("ALICE_BACKEND", "postgres") == "spacetimedb"
+
+
+def _spacetime_backend():
+    # Lazy import: only needed on the Track B path (pulls in the HTTP/secret transport).
+    from alicebot_api.spacetime_backend import SpacetimeBackend
+
+    return SpacetimeBackend()
+
+
+def _parse_required_int(arguments: Mapping[str, object], key: str) -> int:
+    value = arguments.get(key)
+    if isinstance(value, bool) or value is None:
+        raise MCPToolError(f"{key} is required and must be an integer")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip() != "":
+        try:
+            return int(value.strip())
+        except ValueError as exc:
+            raise MCPToolError(f"{key} must be an integer") from exc
+    raise MCPToolError(f"{key} is required and must be an integer")
+
+
+def _handle_alice_spacetime_capture(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    explicit_signal = arguments.get("explicit_signal")
+    if explicit_signal is not None and not isinstance(explicit_signal, str):
+        raise MCPToolError("explicit_signal must be a string when provided")
+    return _spacetime_backend().capture(_parse_required_text(arguments, "raw_content"), explicit_signal)
+
+
+def _handle_alice_spacetime_recall(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    limit = _parse_int(
+        arguments, key="limit", default=DEFAULT_CONTINUITY_RECALL_LIMIT, minimum=1, maximum=MAX_CONTINUITY_RECALL_LIMIT
+    )
+    return _spacetime_backend().recall(_parse_optional_text(arguments, "query") or "", limit)
+
+
+def _handle_alice_spacetime_exec_task_create(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    return _spacetime_backend().create_task(_parse_required_text(arguments, "title"))
+
+
+def _handle_alice_spacetime_exec_tool_register(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    return _spacetime_backend().register_tool(
+        _parse_required_text(arguments, "name"), _parse_required_text(arguments, "endpoint")
+    )
+
+
+def _handle_alice_spacetime_exec_tool_bind(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    return _spacetime_backend().bind_task_tool(
+        _parse_required_int(arguments, "task_id"), _parse_required_int(arguments, "tool_id")
+    )
+
+
+def _handle_alice_spacetime_exec_approval_request(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    return _spacetime_backend().request_approval(_parse_required_int(arguments, "task_id"))
+
+
+def _handle_alice_spacetime_exec_approval_resolve(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    decision = _parse_required_text(arguments, "decision")
+    if decision not in ("approved", "rejected"):
+        raise MCPToolError("decision must be 'approved' or 'rejected'")
+    return _spacetime_backend().resolve_approval(_parse_required_int(arguments, "approval_id"), decision)
+
+
+def _handle_alice_spacetime_exec_budget_set(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    return _spacetime_backend().set_budget(_parse_required_int(arguments, "max_executions"))
+
+
+def _handle_alice_spacetime_exec_enqueue(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    stub_mode = _parse_optional_text(arguments, "stub_mode") or "succeed"
+    if stub_mode not in ("succeed", "fail_transient", "fail_policy"):
+        raise MCPToolError("stub_mode must be one of succeed|fail_transient|fail_policy")
+    retry_cap = _parse_int(arguments, key="retry_cap", default=2, minimum=0, maximum=100)
+    return _spacetime_backend().enqueue(_parse_required_int(arguments, "task_id"), stub_mode, retry_cap)
+
+
+def _handle_alice_spacetime_exec_execute(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    return _spacetime_backend().execute(_parse_optional_text(arguments, "request_id"))
+
+
+def _handle_alice_spacetime_exec_status(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    return _spacetime_backend().exec_status()
+
+
+_SPACETIME_TOOL_DEFINITIONS: list[dict[str, object]] = [
+    {
+        "name": "alice_spacetime_capture",
+        "description": "Capture continuity input into the hosted SpacetimeDB module (Track B).",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["raw_content"],
+            "properties": {
+                "raw_content": {"type": "string"},
+                "explicit_signal": {"type": "string", "enum": list(CONTINUITY_CAPTURE_EXPLICIT_SIGNALS)},
+            },
+        },
+    },
+    {
+        "name": "alice_spacetime_recall",
+        "description": "Lexical recall over SpacetimeDB-backed continuity objects (Track B).",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+        },
+    },
+    {
+        "name": "alice_spacetime_exec_task_create",
+        "description": "Create an execution task on the SpacetimeDB module (status: open).",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["title"],
+            "properties": {"title": {"type": "string"}},
+        },
+    },
+    {
+        "name": "alice_spacetime_exec_tool_register",
+        "description": "Register (allowlist) a tool by name + HTTP endpoint on the module.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["name", "endpoint"],
+            "properties": {"name": {"type": "string"}, "endpoint": {"type": "string"}},
+        },
+    },
+    {
+        "name": "alice_spacetime_exec_tool_bind",
+        "description": "Bind a task to the tool its runs execute.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["task_id", "tool_id"],
+            "properties": {"task_id": {"type": "integer"}, "tool_id": {"type": "integer"}},
+        },
+    },
+    {
+        "name": "alice_spacetime_exec_approval_request",
+        "description": "Open an approval for a task (the execution trust gate).",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["task_id"],
+            "properties": {"task_id": {"type": "integer"}},
+        },
+    },
+    {
+        "name": "alice_spacetime_exec_approval_resolve",
+        "description": "Resolve an approval; 'approved' flips the task to approved.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["approval_id", "decision"],
+            "properties": {
+                "approval_id": {"type": "integer"},
+                "decision": {"type": "string", "enum": ["approved", "rejected"]},
+            },
+        },
+    },
+    {
+        "name": "alice_spacetime_exec_budget_set",
+        "description": "Set the workspace execution budget (cap; resets consumed).",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["max_executions"],
+            "properties": {"max_executions": {"type": "integer"}},
+        },
+    },
+    {
+        "name": "alice_spacetime_exec_enqueue",
+        "description": "Enqueue a run for an approved task (gated: approval required).",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["task_id"],
+            "properties": {
+                "task_id": {"type": "integer"},
+                "stub_mode": {"type": "string", "enum": ["succeed", "fail_transient", "fail_policy"]},
+                "retry_cap": {"type": "integer"},
+            },
+        },
+    },
+    {
+        "name": "alice_spacetime_exec_execute",
+        "description": "Execute the next runnable run via real HTTP (idempotent on request_id).",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"request_id": {"type": "string"}},
+        },
+    },
+    {
+        "name": "alice_spacetime_exec_status",
+        "description": "Read execution state (tasks, tools, approvals, runs, executions, budgets, artifacts).",
+        "inputSchema": {"type": "object", "additionalProperties": False, "properties": {}},
+    },
+]
+
+
+_SPACETIME_TOOL_HANDLERS = {
+    "alice_spacetime_capture": _handle_alice_spacetime_capture,
+    "alice_spacetime_recall": _handle_alice_spacetime_recall,
+    "alice_spacetime_exec_task_create": _handle_alice_spacetime_exec_task_create,
+    "alice_spacetime_exec_tool_register": _handle_alice_spacetime_exec_tool_register,
+    "alice_spacetime_exec_tool_bind": _handle_alice_spacetime_exec_tool_bind,
+    "alice_spacetime_exec_approval_request": _handle_alice_spacetime_exec_approval_request,
+    "alice_spacetime_exec_approval_resolve": _handle_alice_spacetime_exec_approval_resolve,
+    "alice_spacetime_exec_budget_set": _handle_alice_spacetime_exec_budget_set,
+    "alice_spacetime_exec_enqueue": _handle_alice_spacetime_exec_enqueue,
+    "alice_spacetime_exec_execute": _handle_alice_spacetime_exec_execute,
+    "alice_spacetime_exec_status": _handle_alice_spacetime_exec_status,
+}
+
+
 def list_mcp_tools() -> list[dict[str, object]]:
-    return _canonicalize_json(_TOOL_DEFINITIONS)  # type: ignore[return-value]
+    definitions = _TOOL_DEFINITIONS + (_SPACETIME_TOOL_DEFINITIONS if _spacetime_enabled() else [])
+    return _canonicalize_json(definitions)  # type: ignore[return-value]
 
 
 def call_mcp_tool(
@@ -3786,6 +4013,8 @@ def call_mcp_tool(
     arguments: object,
 ) -> JsonObject:
     handler = _TOOL_HANDLERS.get(name)
+    if handler is None and _spacetime_enabled():
+        handler = _SPACETIME_TOOL_HANDLERS.get(name)  # Track B tools, only when the flag is set
     if handler is None:
         raise MCPToolNotFoundError(f"unknown tool '{name}'")
 
