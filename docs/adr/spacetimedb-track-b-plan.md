@@ -1,7 +1,9 @@
 # Track B plan: re-point Alice's Python surfaces as thin SpacetimeDB HTTP clients
 
-Status: **Plan (design only).** No existing Alice code is modified by this document. Executing the
-re-pointing requires explicit scope-and-data sign-off (Track B/C gate).
+Status: **CLI surface live (continuity + execution).** `alice capture` / `alice recall` and the
+`alice exec` execution group (tasks, tools, approvals, budgets, real HTTP runs) route to the live
+module behind `--backend spacetimedb`, non-destructively (the Postgres default is untouched). MCP
+and FastAPI surfaces are the remaining re-points; Track C (data migration) is still deferred.
 
 ## Proven foundation
 
@@ -41,6 +43,10 @@ A single `SpacetimeClient` (the reference is the prototype):
 | recall / resume / brief reads | `SELECT … FROM my_continuity_objects / my_open_loops / my_artifacts` |
 | list workspaces | `SELECT … FROM my_workspaces` |
 | (admin) grant worker membership | `add_member` (TS tooling — identity arg) |
+| **exec** task create / register+bind tool | `create_task` / `register_tool` / `bind_task_tool` reducers (`alice exec task-create / tool-register / tool-bind`) |
+| **exec** request / resolve approval | `request_approval` / `resolve_approval` reducers (`alice exec approval-request / approval-resolve`) |
+| **exec** budget + enqueue + execute | `set_budget` / `enqueue_task_run` reducers + `execute_next_task_run` procedure (`alice exec budget-set / enqueue / execute`) |
+| **exec** status reads | `SELECT … FROM my_tasks / my_tools / my_approvals / my_task_runs / my_tool_executions / my_budgets / my_task_artifacts` (`alice exec status`) |
 
 ## Token lifecycle & storage (resolved + implemented in the CLI backend — reuses `vnext_secrets.SecretProvider`)
 
@@ -95,8 +101,11 @@ they hold the long-lived token), and the TS worker uses the client SDK, which pe
 ## Rollout strategy (non-destructive)
 
 1. Add a `SpacetimeBackend` behind Alice's existing internal persistence interface — do **not**
-   delete the SQLAlchemy/Postgres path.
+   delete the SQLAlchemy/Postgres path. **Done** (`spacetime_backend.py`).
 2. Switch one surface at a time (CLI → MCP → FastAPI) behind a config flag once parity is proven.
+   **CLI done:** `capture`/`recall` + the `exec` execution group route via `--backend spacetimedb`,
+   verified end-to-end on maincloud (approval gate, real HTTP execution, idempotent replay) with
+   `qa_smoke` 23/23. **Next:** MCP, then FastAPI.
 3. Keep both backends runnable until Track C migration + parity sign-off.
 
 ## Open decisions for execution (need a human call)
