@@ -1,11 +1,12 @@
 # Track B plan: re-point Alice's Python surfaces as thin SpacetimeDB HTTP clients
 
-Status: **CLI + MCP surfaces live (continuity + execution).** `alice capture` / `alice recall` and
-the `alice exec` group (tasks, tools, approvals, budgets, real HTTP runs) route to the live module
-behind `--backend spacetimedb`; the MCP server exposes the same surface as eleven additive
-`alice_spacetime_*` tools gated on `ALICE_BACKEND=spacetimedb`. Both are non-destructive (the
-Postgres default is untouched when the flag is off). FastAPI is the remaining re-point; Track C
-(data migration) is still deferred.
+Status: **CLI + MCP + FastAPI surfaces live (continuity + execution).** `alice capture` / `alice
+recall` and the `alice exec` group (tasks, tools, approvals, budgets, real HTTP runs) route to the
+live module behind `--backend spacetimedb`; the MCP server exposes the same surface as eleven
+additive `alice_spacetime_*` tools gated on `ALICE_BACKEND=spacetimedb`; the FastAPI app exposes it
+as eleven additive `/spacetime/*` routes (outside `/v0/`) under the same flag. All three are
+non-destructive (the Postgres default is untouched when the flag is off). The Next.js console is the
+remaining re-point; Track C (data migration) is still deferred.
 
 ## Proven foundation
 
@@ -109,7 +110,10 @@ they hold the long-lived token), and the TS worker uses the client SDK, which pe
    verified end-to-end on maincloud (approval gate, real HTTP execution, idempotent replay) with
    `qa_smoke` 23/23. **MCP done:** `alice_spacetime_*` tools gated on `ALICE_BACKEND=spacetimedb`
    (hidden + non-dispatchable when off; Postgres 73-tool surface unchanged), same flow verified via
-   `call_mcp_tool` on maincloud; MCP unit suite 20/20. **Next:** FastAPI.
+   `call_mcp_tool` on maincloud; MCP unit suite 20/20. **FastAPI done:** eleven `/spacetime/*` routes
+   under the same flag (404 when off; mounted outside `/v0/` to bypass legacy-v0 auth; module rejects
+   -> 400), same flow verified on maincloud through the route handlers; main unit suite 68/68.
+   **Next:** the Next.js console.
 3. Keep both backends runnable until Track C migration + parity sign-off.
 
 ## Open decisions for execution (need a human call)
