@@ -7,6 +7,7 @@ import hashlib
 import ipaddress
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -14014,3 +14015,144 @@ def reject_v1_telegram_approval(
         return JSONResponse(status_code=409, content={"detail": str(resolution_error)})
 
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+# ---------------------------------------------------------------------------------------------
+# SpacetimeDB (Track B) HTTP surface — additive, behind ALICE_BACKEND=spacetimedb. These routes
+# mirror the proven CLI/MCP surface, routing to spacetime_backend.SpacetimeBackend over HTTP (no
+# Postgres). Mounted under /spacetime/ (outside /v0/) so they bypass the legacy-v0 auth middleware
+# and stay self-contained. When the flag is off every route returns 404, so the Postgres API is
+# unchanged. The module's own per-user token gates writes server-side.
+# ---------------------------------------------------------------------------------------------
+def _spacetime_backend_or_none():
+    if os.environ.get("ALICE_BACKEND", "postgres") != "spacetimedb":
+        return None
+    from alicebot_api.spacetime_backend import SpacetimeBackend
+
+    return SpacetimeBackend()
+
+
+def _spacetime_response(call: Callable[[object], object]) -> JSONResponse:
+    """Run a backend call, mapping the flag-off path to 404 and a module reject (SpacetimeBackend
+    raises ValueError, e.g. the approval gate) to 400 — returned as JSONResponse to match this app."""
+    backend = _spacetime_backend_or_none()
+    if backend is None:
+        return JSONResponse(status_code=404, content={"detail": "spacetimedb backend is not enabled"})
+    try:
+        payload = call(backend)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+class SpacetimeCaptureRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    raw_content: str = Field(min_length=1)
+    explicit_signal: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class SpacetimeRecallRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(default="")
+    limit: int = Field(default=DEFAULT_CONTINUITY_RECALL_LIMIT, ge=1, le=MAX_CONTINUITY_RECALL_LIMIT)
+
+
+class SpacetimeTaskCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1)
+
+
+class SpacetimeToolRegisterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    endpoint: str = Field(min_length=1)
+
+
+class SpacetimeToolBindRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tool_id: int = Field(ge=0)
+
+
+class SpacetimeApprovalResolveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["approved", "rejected"]
+
+
+class SpacetimeBudgetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    max_executions: int = Field(ge=0)
+
+
+class SpacetimeEnqueueRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    stub_mode: Literal["succeed", "fail_transient", "fail_policy"] = "succeed"
+    retry_cap: int = Field(default=2, ge=0, le=100)
+
+
+class SpacetimeExecuteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+@app.post("/spacetime/capture")
+def spacetime_capture(request: SpacetimeCaptureRequest) -> JSONResponse:
+    return _spacetime_response(lambda b: b.capture(request.raw_content, request.explicit_signal))
+
+
+@app.post("/spacetime/recall")
+def spacetime_recall(request: SpacetimeRecallRequest) -> JSONResponse:
+    return _spacetime_response(lambda b: b.recall(request.query, request.limit))
+
+
+@app.post("/spacetime/exec/tasks")
+def spacetime_exec_task_create(request: SpacetimeTaskCreateRequest) -> JSONResponse:
+    return _spacetime_response(lambda b: b.create_task(request.title))
+
+
+@app.post("/spacetime/exec/tools")
+def spacetime_exec_tool_register(request: SpacetimeToolRegisterRequest) -> JSONResponse:
+    return _spacetime_response(lambda b: b.register_tool(request.name, request.endpoint))
+
+
+@app.post("/spacetime/exec/tasks/{task_id}/tool")
+def spacetime_exec_tool_bind(task_id: int, request: SpacetimeToolBindRequest) -> JSONResponse:
+    return _spacetime_response(lambda b: b.bind_task_tool(task_id, request.tool_id))
+
+
+@app.post("/spacetime/exec/tasks/{task_id}/approval")
+def spacetime_exec_approval_request(task_id: int) -> JSONResponse:
+    return _spacetime_response(lambda b: b.request_approval(task_id))
+
+
+@app.post("/spacetime/exec/approvals/{approval_id}")
+def spacetime_exec_approval_resolve(approval_id: int, request: SpacetimeApprovalResolveRequest) -> JSONResponse:
+    return _spacetime_response(lambda b: b.resolve_approval(approval_id, request.decision))
+
+
+@app.post("/spacetime/exec/budget")
+def spacetime_exec_budget_set(request: SpacetimeBudgetRequest) -> JSONResponse:
+    return _spacetime_response(lambda b: b.set_budget(request.max_executions))
+
+
+@app.post("/spacetime/exec/tasks/{task_id}/enqueue")
+def spacetime_exec_enqueue(task_id: int, request: SpacetimeEnqueueRequest) -> JSONResponse:
+    return _spacetime_response(lambda b: b.enqueue(task_id, request.stub_mode, request.retry_cap))
+
+
+@app.post("/spacetime/exec/execute")
+def spacetime_exec_execute(request: SpacetimeExecuteRequest) -> JSONResponse:
+    return _spacetime_response(lambda b: b.execute(request.request_id))
+
+
+@app.get("/spacetime/exec/status")
+def spacetime_exec_status() -> JSONResponse:
+    return _spacetime_response(lambda b: b.exec_status())

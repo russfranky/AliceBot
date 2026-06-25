@@ -195,6 +195,53 @@ def test_healthcheck_route_is_registered() -> None:
     assert "/v1/admin/hosted/design-partners/{design_partner_id}/feedback" in route_paths
 
 
+def test_spacetime_routes_registered() -> None:
+    route_paths = {route.path for route in main_module.app.routes}
+    for path in (
+        "/spacetime/capture",
+        "/spacetime/recall",
+        "/spacetime/exec/tasks",
+        "/spacetime/exec/tools",
+        "/spacetime/exec/tasks/{task_id}/tool",
+        "/spacetime/exec/tasks/{task_id}/approval",
+        "/spacetime/exec/approvals/{approval_id}",
+        "/spacetime/exec/budget",
+        "/spacetime/exec/tasks/{task_id}/enqueue",
+        "/spacetime/exec/execute",
+        "/spacetime/exec/status",
+    ):
+        assert path in route_paths
+
+
+def test_spacetime_routes_return_404_without_flag(monkeypatch) -> None:
+    monkeypatch.delenv("ALICE_BACKEND", raising=False)
+    response = main_module.spacetime_exec_status()
+    assert response.status_code == 404
+    assert json.loads(response.body) == {"detail": "spacetimedb backend is not enabled"}
+
+
+def test_spacetime_route_dispatches_to_backend_with_flag(monkeypatch) -> None:
+    monkeypatch.setenv("ALICE_BACKEND", "spacetimedb")
+
+    class _FakeBackend:
+        def exec_status(self) -> dict:
+            return {"backend": "spacetimedb", "runs": []}
+
+        def enqueue(self, task_id: int, stub_mode: str, retry_cap: int) -> dict:
+            raise ValueError("spacetimedb rejected the call (HTTP 530): task is not approved")
+
+    monkeypatch.setattr(main_module, "_spacetime_backend_or_none", lambda: _FakeBackend())
+
+    ok = main_module.spacetime_exec_status()
+    assert ok.status_code == 200
+    assert json.loads(ok.body) == {"backend": "spacetimedb", "runs": []}
+
+    # A module reject (SpacetimeBackend raises ValueError) maps to a clean 400, not a 500.
+    rejected = main_module.spacetime_exec_enqueue(1, main_module.SpacetimeEnqueueRequest())
+    assert rejected.status_code == 400
+    assert "task is not approved" in json.loads(rejected.body)["detail"]
+
+
 def test_redact_url_credentials_strips_embedded_secrets() -> None:
     assert main_module.redact_url_credentials("redis://alicebot:supersecret@cache:6379/0") == (
         "redis://cache:6379/0"
