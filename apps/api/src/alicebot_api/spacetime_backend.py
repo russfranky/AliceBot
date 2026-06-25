@@ -1,7 +1,8 @@
-"""Track B: thin SpacetimeDB backend for the Alice CLI (capture + recall).
+"""Track B: thin SpacetimeDB backend for the Alice CLI (capture + recall + execution surface).
 
-Routes `alice capture` / `alice recall` to the hosted SpacetimeDB continuity module over plain
-HTTP with a per-user token, instead of Postgres. Selected via `--backend spacetimedb` (or
+Routes `alice capture` / `alice recall` and the `alice exec` execution surface (tasks, tools,
+approvals, budgets, runs) to the hosted SpacetimeDB continuity/execution module over plain HTTP with
+a per-user token, instead of Postgres. Selected via `--backend spacetimedb` (or
 `ALICE_BACKEND=spacetimedb`). Non-destructive: the Postgres path stays the default and is untouched.
 
 State: the non-secret identity + workspace persist in a 0600 file under the user's config dir; the
@@ -10,8 +11,9 @@ at rest and auto-redacted in logs because the ref contains "token"). When the mo
 standalone without the app package, it falls back to keeping the token in the 0600 state file.
 stdlib transport only; no local database.
 
-Deliberately NOT yet included (follow-up): output parity with the Postgres `format_capture_output`
-/ `format_recall_output`. (Write idempotency and SecretProvider-backed tokens are done.)
+Deliberately NOT yet included (follow-up): output parity with the Postgres formatters
+(`format_capture_output` etc.), and the MCP/FastAPI surfaces. (Write idempotency,
+SecretProvider-backed tokens, and the CLI execution surface are done.)
 """
 from __future__ import annotations
 
@@ -19,6 +21,7 @@ import json
 import os
 import ssl
 import stat
+import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
@@ -62,8 +65,15 @@ def _post(path: str, body, token: str | None, content_type: str) -> tuple[int, s
     req.add_header("Content-Type", content_type)
     if token:
         req.add_header("Authorization", f"Bearer {token}")
-    with urllib.request.urlopen(req, context=_SSL) as resp:
-        return resp.status, resp.read().decode()
+    try:
+        with urllib.request.urlopen(req, context=_SSL) as resp:
+            return resp.status, resp.read().decode()
+    except urllib.error.HTTPError as exc:
+        # The module throws (e.g. an ungated enqueue, or a not-found id) -> 4xx/5xx. Surface the
+        # module's message as a clean ValueError (the CLI's main() maps ValueError to `error: ...`)
+        # instead of leaking an HTTPError traceback.
+        body = exc.read().decode(errors="replace").strip()
+        raise ValueError(f"spacetimedb rejected the call (HTTP {exc.code}): {body[:300]}") from exc
 
 
 def _decode(body: str):
@@ -159,3 +169,102 @@ class SpacetimeBackend:
     def recall(self, query: str, limit: int) -> dict:
         hits = self._call_proc("recall_lexical", [self._workspace, query or "", limit])
         return {"backend": "spacetimedb", "query": query, "results": hits}
+
+    # --- execution pillar (Track B) -------------------------------------------------------
+    # Each method drives one module reducer/procedure, then reads the affected row back through a
+    # per-caller view so the CLI can echo the resulting state. Reads use the same private-table ->
+    # public-view isolation as capture/recall; writes are membership-checked server-side.
+    def _latest(self, query: str):
+        rows = self._sql(query)
+        return max(rows, key=lambda r: r[0]) if rows else None
+
+    def create_task(self, title: str) -> dict:
+        self._call("create_task", [self._workspace, title])
+        row = self._latest("SELECT id, title, status FROM my_tasks")
+        return {
+            "backend": "spacetimedb",
+            "workspace_id": self._workspace,
+            "task": ({"id": row[0], "title": row[1], "status": row[2]} if row else None),
+        }
+
+    def register_tool(self, name: str, endpoint: str) -> dict:
+        self._call("register_tool", [self._workspace, name, endpoint])
+        row = self._latest("SELECT id, name, endpoint FROM my_tools")
+        return {
+            "backend": "spacetimedb",
+            "workspace_id": self._workspace,
+            "tool": ({"id": row[0], "name": row[1], "endpoint": row[2]} if row else None),
+        }
+
+    def bind_task_tool(self, task_id: int, tool_id: int) -> dict:
+        self._call("bind_task_tool", [self._workspace, task_id, tool_id])
+        return {
+            "backend": "spacetimedb",
+            "workspace_id": self._workspace,
+            "bound": {"task_id": task_id, "tool_id": tool_id},
+        }
+
+    def request_approval(self, task_id: int) -> dict:
+        self._call("request_approval", [self._workspace, task_id])
+        row = self._latest("SELECT id, task_id, status FROM my_approvals")
+        return {
+            "backend": "spacetimedb",
+            "workspace_id": self._workspace,
+            "approval": ({"id": row[0], "task_id": row[1], "status": row[2]} if row else None),
+        }
+
+    def resolve_approval(self, approval_id: int, decision: str) -> dict:
+        self._call("resolve_approval", [approval_id, decision])
+        rows = self._sql("SELECT id, task_id, status FROM my_approvals")
+        row = next((r for r in rows if r[0] == approval_id), None)
+        return {
+            "backend": "spacetimedb",
+            "approval": ({"id": row[0], "task_id": row[1], "status": row[2]} if row else None),
+        }
+
+    def set_budget(self, max_executions: int) -> dict:
+        self._call("set_budget", [self._workspace, max_executions])
+        row = self._latest("SELECT id, max_executions, consumed FROM my_budgets")
+        return {
+            "backend": "spacetimedb",
+            "workspace_id": self._workspace,
+            "budget": ({"max_executions": row[1], "consumed": row[2]} if row else None),
+        }
+
+    def enqueue(self, task_id: int, stub_mode: str, retry_cap: int) -> dict:
+        # Gated server-side: only an approved task may be enqueued (otherwise the module throws and
+        # _post raises a clean ValueError).
+        self._call("enqueue_task_run", [self._workspace, task_id, stub_mode, retry_cap])
+        row = self._latest("SELECT id, task_id, status FROM my_task_runs")
+        return {
+            "backend": "spacetimedb",
+            "workspace_id": self._workspace,
+            "run": ({"id": row[0], "task_id": row[1], "status": row[2]} if row else None),
+        }
+
+    def execute(self, request_id: str | None = None) -> dict:
+        # The real execution path: claim the next runnable run, HTTP-call its bound tool, record +
+        # transition. Idempotent on requestId. Returns the procedure's decoded result object.
+        result = self._call_proc(
+            "execute_next_task_run", [self._workspace, request_id or uuid.uuid4().hex]
+        )
+        return {"backend": "spacetimedb", "workspace_id": self._workspace, "result": result}
+
+    def exec_status(self) -> dict:
+        return {
+            "backend": "spacetimedb",
+            "workspace_id": self._workspace,
+            "tasks": self._sql("SELECT id, title, status FROM my_tasks"),
+            "tools": self._sql("SELECT id, name, endpoint FROM my_tools"),
+            "approvals": self._sql("SELECT id, task_id, status FROM my_approvals"),
+            "runs": self._sql(
+                "SELECT id, task_id, status, retry_count, failure_class, stop_reason FROM my_task_runs"
+            ),
+            "executions": self._sql(
+                "SELECT id, task_run_id, http_status, outcome FROM my_tool_executions"
+            ),
+            "budgets": self._sql("SELECT max_executions, consumed FROM my_budgets"),
+            "artifacts": self._sql(
+                "SELECT task_run_id, tool_execution_id, content FROM my_task_artifacts"
+            ),
+        }

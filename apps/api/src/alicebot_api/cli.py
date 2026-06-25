@@ -3663,6 +3663,65 @@ def _run_recall(ctx: CLIContext, args: argparse.Namespace) -> str:
     return format_recall_output(payload)
 
 
+def _spacetime_exec_backend(args: argparse.Namespace):
+    """Resolve the SpacetimeDB backend for the `exec` surface, or fail clearly. This surface is
+    Track B only (the Postgres execution pillar runs through the worker/API, not this CLI group),
+    so it requires `--backend spacetimedb` (or ALICE_BACKEND=spacetimedb)."""
+    if getattr(args, "backend", "postgres") != "spacetimedb":
+        raise ValueError(
+            "the `exec` surface currently requires --backend spacetimedb (Track B); "
+            "the Postgres execution pillar is driven by the worker/API, not this command group"
+        )
+    from alicebot_api.spacetime_backend import SpacetimeBackend
+
+    return SpacetimeBackend()
+
+
+def _run_exec_task_create(ctx: CLIContext, args: argparse.Namespace) -> str:
+    backend = _spacetime_exec_backend(args)
+    return _json_dumps(backend.create_task(" ".join(args.title).strip()))
+
+
+def _run_exec_tool_register(ctx: CLIContext, args: argparse.Namespace) -> str:
+    backend = _spacetime_exec_backend(args)
+    return _json_dumps(backend.register_tool(args.name, args.endpoint))
+
+
+def _run_exec_tool_bind(ctx: CLIContext, args: argparse.Namespace) -> str:
+    backend = _spacetime_exec_backend(args)
+    return _json_dumps(backend.bind_task_tool(args.task_id, args.tool_id))
+
+
+def _run_exec_approval_request(ctx: CLIContext, args: argparse.Namespace) -> str:
+    backend = _spacetime_exec_backend(args)
+    return _json_dumps(backend.request_approval(args.task_id))
+
+
+def _run_exec_approval_resolve(ctx: CLIContext, args: argparse.Namespace) -> str:
+    backend = _spacetime_exec_backend(args)
+    return _json_dumps(backend.resolve_approval(args.approval_id, args.decision))
+
+
+def _run_exec_budget_set(ctx: CLIContext, args: argparse.Namespace) -> str:
+    backend = _spacetime_exec_backend(args)
+    return _json_dumps(backend.set_budget(args.max_executions))
+
+
+def _run_exec_enqueue(ctx: CLIContext, args: argparse.Namespace) -> str:
+    backend = _spacetime_exec_backend(args)
+    return _json_dumps(backend.enqueue(args.task_id, args.stub_mode, args.retry_cap))
+
+
+def _run_exec_execute(ctx: CLIContext, args: argparse.Namespace) -> str:
+    backend = _spacetime_exec_backend(args)
+    return _json_dumps(backend.execute(args.request_id))
+
+
+def _run_exec_status(ctx: CLIContext, args: argparse.Namespace) -> str:
+    backend = _spacetime_exec_backend(args)
+    return _json_dumps(backend.exec_status())
+
+
 def _run_state_at(ctx: CLIContext, args: argparse.Namespace) -> str:
     with _store_context(ctx) as store:
         payload = get_temporal_state_at(
@@ -5270,6 +5329,87 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_backend_argument(recall_parser)
     recall_parser.set_defaults(handler=_run_recall)
+
+    # `exec`: Track B execution surface — drives the SpacetimeDB module's approval-gated task-run
+    # state machine (tasks, tools, approvals, budgets, real HTTP execution). Behind --backend
+    # spacetimedb; non-destructive (the Postgres execution pillar is unchanged).
+    exec_parser = subparsers.add_parser(
+        "exec",
+        help="Execution surface on the SpacetimeDB module (Track B; requires --backend spacetimedb).",
+    )
+    exec_subparsers = exec_parser.add_subparsers(dest="exec_command", required=True)
+
+    exec_task_create_parser = exec_subparsers.add_parser("task-create", help="Create a task (status: open).")
+    exec_task_create_parser.add_argument("title", nargs="+", help="Task title.")
+    _add_backend_argument(exec_task_create_parser)
+    exec_task_create_parser.set_defaults(handler=_run_exec_task_create)
+
+    exec_tool_register_parser = exec_subparsers.add_parser(
+        "tool-register", help="Register (allowlist) a tool by name + HTTP endpoint."
+    )
+    exec_tool_register_parser.add_argument("name", help="Tool name (also the provider key name for authed tools).")
+    exec_tool_register_parser.add_argument("endpoint", help="HTTP endpoint the tool's runs call.")
+    _add_backend_argument(exec_tool_register_parser)
+    exec_tool_register_parser.set_defaults(handler=_run_exec_tool_register)
+
+    exec_tool_bind_parser = exec_subparsers.add_parser("tool-bind", help="Bind a task to the tool its runs execute.")
+    exec_tool_bind_parser.add_argument("task_id", type=int, help="Task id.")
+    exec_tool_bind_parser.add_argument("tool_id", type=int, help="Tool id.")
+    _add_backend_argument(exec_tool_bind_parser)
+    exec_tool_bind_parser.set_defaults(handler=_run_exec_tool_bind)
+
+    exec_approval_request_parser = exec_subparsers.add_parser(
+        "approval-request", help="Open an approval for a task (the trust gate)."
+    )
+    exec_approval_request_parser.add_argument("task_id", type=int, help="Task id.")
+    _add_backend_argument(exec_approval_request_parser)
+    exec_approval_request_parser.set_defaults(handler=_run_exec_approval_request)
+
+    exec_approval_resolve_parser = exec_subparsers.add_parser(
+        "approval-resolve", help="Resolve an approval; 'approved' flips the task to approved."
+    )
+    exec_approval_resolve_parser.add_argument("approval_id", type=int, help="Approval id.")
+    exec_approval_resolve_parser.add_argument(
+        "decision", choices=("approved", "rejected"), help="Approval decision."
+    )
+    _add_backend_argument(exec_approval_resolve_parser)
+    exec_approval_resolve_parser.set_defaults(handler=_run_exec_approval_resolve)
+
+    exec_budget_set_parser = exec_subparsers.add_parser(
+        "budget-set", help="Set the workspace execution budget (cap; resets consumed)."
+    )
+    exec_budget_set_parser.add_argument("max_executions", type=int, help="Max executions before runs are reaped.")
+    _add_backend_argument(exec_budget_set_parser)
+    exec_budget_set_parser.set_defaults(handler=_run_exec_budget_set)
+
+    exec_enqueue_parser = exec_subparsers.add_parser(
+        "enqueue", help="Enqueue a run for an approved task (gated: approval required)."
+    )
+    exec_enqueue_parser.add_argument("task_id", type=int, help="Task id (must be approved).")
+    exec_enqueue_parser.add_argument(
+        "--stub-mode",
+        choices=("succeed", "fail_transient", "fail_policy"),
+        default="succeed",
+        help="Stub outcome for tick-driven runs; ignored by real `exec execute`.",
+    )
+    exec_enqueue_parser.add_argument("--retry-cap", type=int, default=2, help="Max transient retries before failing.")
+    _add_backend_argument(exec_enqueue_parser)
+    exec_enqueue_parser.set_defaults(handler=_run_exec_enqueue)
+
+    exec_execute_parser = exec_subparsers.add_parser(
+        "execute", help="Execute the next runnable run via real HTTP (idempotent on --request-id)."
+    )
+    exec_execute_parser.add_argument(
+        "--request-id", default=None, help="Idempotency key; a replay returns the prior outcome with no re-run."
+    )
+    _add_backend_argument(exec_execute_parser)
+    exec_execute_parser.set_defaults(handler=_run_exec_execute)
+
+    exec_status_parser = exec_subparsers.add_parser(
+        "status", help="Read execution state (tasks, tools, approvals, runs, executions, budgets, artifacts)."
+    )
+    _add_backend_argument(exec_status_parser)
+    exec_status_parser.set_defaults(handler=_run_exec_status)
 
     state_at_parser = subparsers.add_parser(
         "state-at",
