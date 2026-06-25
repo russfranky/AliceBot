@@ -1,9 +1,11 @@
 # Track B plan: re-point Alice's Python surfaces as thin SpacetimeDB HTTP clients
 
-Status: **CLI surface live (continuity + execution).** `alice capture` / `alice recall` and the
-`alice exec` execution group (tasks, tools, approvals, budgets, real HTTP runs) route to the live
-module behind `--backend spacetimedb`, non-destructively (the Postgres default is untouched). MCP
-and FastAPI surfaces are the remaining re-points; Track C (data migration) is still deferred.
+Status: **CLI + MCP surfaces live (continuity + execution).** `alice capture` / `alice recall` and
+the `alice exec` group (tasks, tools, approvals, budgets, real HTTP runs) route to the live module
+behind `--backend spacetimedb`; the MCP server exposes the same surface as eleven additive
+`alice_spacetime_*` tools gated on `ALICE_BACKEND=spacetimedb`. Both are non-destructive (the
+Postgres default is untouched when the flag is off). FastAPI is the remaining re-point; Track C
+(data migration) is still deferred.
 
 ## Proven foundation
 
@@ -105,7 +107,9 @@ they hold the long-lived token), and the TS worker uses the client SDK, which pe
 2. Switch one surface at a time (CLI → MCP → FastAPI) behind a config flag once parity is proven.
    **CLI done:** `capture`/`recall` + the `exec` execution group route via `--backend spacetimedb`,
    verified end-to-end on maincloud (approval gate, real HTTP execution, idempotent replay) with
-   `qa_smoke` 23/23. **Next:** MCP, then FastAPI.
+   `qa_smoke` 23/23. **MCP done:** `alice_spacetime_*` tools gated on `ALICE_BACKEND=spacetimedb`
+   (hidden + non-dispatchable when off; Postgres 73-tool surface unchanged), same flow verified via
+   `call_mcp_tool` on maincloud; MCP unit suite 20/20. **Next:** FastAPI.
 3. Keep both backends runnable until Track C migration + parity sign-off.
 
 ## Open decisions for execution (need a human call)
